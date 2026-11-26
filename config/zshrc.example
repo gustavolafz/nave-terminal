@@ -2,7 +2,9 @@
 # ~/.zshrc example for Nave Terminal v4 (100% Standalone — Zero Oh My Zsh)
 # ==============================================================================
 
-export PATH="$HOME/.local/bin:$PATH"
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+export EDITOR="nave-edit"
+export VISUAL="nave-edit"
 
 # Directory used by the `p` project hub command
 export NAVE_PROJECTS_DIR="$HOME/projects"

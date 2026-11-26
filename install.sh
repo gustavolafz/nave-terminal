@@ -31,7 +31,7 @@ fi
 
 mkdir -p "$NAVE_DIR" "$HOME/.local/bin"
 
-# 1. Install all native Nave modules (100% standalone, zero third-party Zsh plugins)
+# 1. Install all native Nave Zsh modules (100% standalone, zero third-party Zsh plugins)
 cp "$REPO_DIR/config/init.zsh"        "$NAVE_DIR/init.zsh"
 cp "$REPO_DIR/theme/nave.zsh-theme"   "$NAVE_DIR/theme.zsh"
 cp "$REPO_DIR/config/highlight.zsh"   "$NAVE_DIR/highlight.zsh"
@@ -48,48 +48,34 @@ echo "│ [ok] Nave Shell Core instalado em $NAVE_DIR (init, theme, highlight, s
 echo "│ [ok] Cockpit apps instalados em ~/.local/bin (nave-hud, nave-warp)"
 echo "│ [ok] Zero dependencia de Oh My Zsh ou plugins externos"
 
-# 1b. On WSL, compile tiny native Windows RAM helper (~40ms live host RAM readout)
-CSC_EXE="/mnt/c/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe"
-if [[ -f "$CSC_EXE" && -f "$REPO_DIR/windows-terminal/nave-winmem.cs" ]]; then
-  WIN_USER_DIR="$(ls -d /mnt/c/Users/*/AppData/Local 2>/dev/null | grep -vE '/(Public|Default|All Users)/' | head -n 1 | xargs -r dirname | xargs -r dirname)"
-  if [[ -n "$WIN_USER_DIR" ]]; then
-    WIN_NAVE="$WIN_USER_DIR/.config/nave"
-    mkdir -p "$WIN_NAVE"
-    cp "$REPO_DIR/windows-terminal/nave-winmem.cs" "$WIN_NAVE/nave-winmem.cs"
-    WIN_CS="$(wslpath -w "$WIN_NAVE/nave-winmem.cs")"
-    WIN_EXE="$(wslpath -w "$WIN_NAVE/nave-winmem.exe")"
-    if "$CSC_EXE" /nologo /optimize+ "/out:$WIN_EXE" "$WIN_CS" </dev/null >/dev/null 2>&1; then
-      echo "│ [ok] Helper Windows RAM compilado em $WIN_NAVE/nave-winmem.exe"
-    fi
+# 1b. Build & install nave-edit (native Rust terminal editor) if cargo is available
+CARGO_BIN="$(command -v cargo 2>/dev/null || echo "$HOME/.cargo/bin/cargo")"
+if [[ -x "$CARGO_BIN" && -f "$REPO_DIR/editor/Cargo.toml" ]]; then
+  echo "│ [..] Compilando nave-edit (Rust release)..."
+  if (cd "$REPO_DIR/editor" && "$CARGO_BIN" build --release >/dev/null 2>&1); then
+    cp "$REPO_DIR/editor/target/release/nave-edit" "$HOME/.local/bin/nave-edit"
+    chmod +x "$HOME/.local/bin/nave-edit"
+    echo "│ [ok] nave-edit (Rust nativo) instalado em ~/.local/bin/nave-edit (alias: ne)"
+  else
+    echo "│ [warn] Falha ao compilar nave-edit; rode 'cd editor && cargo build --release' para detalhes"
   fi
+else
+  echo "│ [info] Rust/cargo nao encontrado — pulei nave-edit (instale via https://rustup.rs)"
 fi
 
-# Optional WSL helper: compile tiny native GlobalMemoryStatusEx reader (~40ms) for live Windows host RAM
+# 1c. On WSL, compile tiny native Windows host RAM helper (~4.5 KB, ~40ms) via built-in .NET csc.exe
 CSC_EXE="/mnt/c/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe"
 if [[ -x "$CSC_EXE" && -f "$REPO_DIR/windows-terminal/nave-winmem.cs" ]]; then
-  WIN_PROFILE=$(cmd.exe /C "echo %USERPROFILE%" </dev/null 2>/dev/null | tr -d '\r') || true
+  WIN_PROFILE="$(cmd.exe /C 'echo %USERPROFILE%' </dev/null 2>/dev/null | tr -d '\r\n' || true)"
   if [[ -n "$WIN_PROFILE" ]]; then
-    WIN_NAVE_WSL=$(wslpath -u "$WIN_PROFILE" 2>/dev/null)/.config/nave
+    WIN_NAVE_WSL="$(wslpath -u "$WIN_PROFILE" 2>/dev/null)/.config/nave"
     mkdir -p "$WIN_NAVE_WSL"
     cp "$REPO_DIR/windows-terminal/nave-winmem.cs" "$WIN_NAVE_WSL/nave-winmem.cs"
-    if "$CSC_EXE" /nologo /optimize+ "/out:${WIN_PROFILE}\\.config\\nave\\nave-winmem.exe" "${WIN_PROFILE}\\.config\\nave\\nave-winmem.cs" </dev/null >/dev/null 2>&1; then
-      echo "│ [ok] Helper WSL->Windows RAM compilado em ${WIN_PROFILE}\\.config\\nave\\nave-winmem.exe"
+    if "$CSC_EXE" /nologo /optimize+ \
+      "/out:${WIN_PROFILE}\\.config\\nave\\nave-winmem.exe" \
+      "${WIN_PROFILE}\\.config\\nave\\nave-winmem.cs" </dev/null >/dev/null 2>&1; then
+      echo "│ [ok] Helper nativo Windows RAM compilado em ${WIN_PROFILE}\\.config\\nave\\nave-winmem.exe"
     fi
-  fi
-fi
-
-# 1b. On WSL2, compile tiny native Windows host RAM helper (~4.5 KB, ~40ms) via built-in .NET csc.exe
-CSC="/mnt/c/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe"
-if [[ -x "$CSC" && -f "$REPO_DIR/windows-terminal/nave-winmem.cs" ]]; then
-  WIN_USER="$(cmd.exe /c 'echo %USERNAME%' </dev/null 2>/dev/null | tr -d '\r\n' || true)"
-  if [[ -n "$WIN_USER" && -d "/mnt/c/Users/$WIN_USER" ]]; then
-    WIN_NAVE="/mnt/c/Users/$WIN_USER/.config/nave"
-    mkdir -p "$WIN_NAVE"
-    cp "$REPO_DIR/windows-terminal/nave-winmem.cs" "$WIN_NAVE/nave-winmem.cs"
-    "$CSC" /nologo /optimize+ \
-      "/out:C:\\Users\\${WIN_USER}\\.config\\nave\\nave-winmem.exe" \
-      "C:\\Users\\${WIN_USER}\\.config\\nave\\nave-winmem.cs" </dev/null >/dev/null 2>&1 \
-      && echo "│ [ok] Helper nativo Windows RAM compilado em $WIN_NAVE/nave-winmem.exe" || true
   fi
 fi
 
@@ -149,7 +135,8 @@ fi
 
 echo "│"
 echo "│ Proximo passo no seu ~/.zshrc (apenas 1 linha — veja config/zshrc.example):"
-echo "│   export PATH=\"\$HOME/.local/bin:\$PATH\""
+echo "│   export PATH=\"\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH\""
+echo "│   export EDITOR=\"nave-edit\""
 echo "│   export NAVE_PROJECTS_DIR=\"\$HOME/projects\""
 echo "│   [[ -r \"\$HOME/.config/nave/init.zsh\" ]] && source \"\$HOME/.config/nave/init.zsh\""
 echo "│"

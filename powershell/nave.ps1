@@ -487,6 +487,21 @@ function sysinfo {
 
 function nave-hud  { if (Get-Command wsl.exe -ErrorAction SilentlyContinue) { & wsl.exe -e bash -lc "~/.local/bin/nave-hud $($script:NavePalette)" } else { sysinfo } }
 function nave-warp { if (Get-Command wsl.exe -ErrorAction SilentlyContinue) { & wsl.exe -e bash -lc "~/.local/bin/nave-warp" } else { Write-Host "Requer WSL/Python instalado." } }
+function nave-edit {
+    if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) { Write-Host "Requer WSL instalado."; return }
+    $wslArgs = @()
+    foreach ($a in $args) {
+        if ($a -match '^[A-Za-z]:\\' -or (Test-Path $a -ErrorAction SilentlyContinue)) {
+            $full = try { (Resolve-Path $a -ErrorAction Stop).Path } catch { [System.IO.Path]::GetFullPath($a) }
+            $conv = (& wsl.exe wslpath -u $full 2>$null)
+            if ($conv) { $wslArgs += $conv.Trim() } else { $wslArgs += $a }
+        } else {
+            $wslArgs += $a
+        }
+    }
+    & wsl.exe bash -lc 'exec "$HOME/.local/bin/nave-edit" "$@"' -- @wslArgs
+}
+Set-Alias -Name ne -Value nave-edit -Scope Global -ErrorAction SilentlyContinue
 
 function ginfo {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Write-Host "Git nao encontrado."; return }
@@ -558,6 +573,7 @@ function nave-help {
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-bg / welcome    ") + "Liga/desliga fundo OSC 11 ou welcome bar")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "sysinfo / hr [tit]   ") + "Arte gradiente + sistema / regua divisoria")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-hud / nave-warp ") + "Cockpit em tempo real / starfield 3D")
+    Write-Host ("$frm " + (_Nave-Fg $c.ok "ne / nave-edit <arq> ") + "Editor nativo Rust estilo VS Code (multi-cursor, Git)")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "ginfo / ports / mkcd ") + "Git painel / portas TCP (+ killport) / mkcd")
     Write-Host (_Nave-Fg $c.dir ("$($script:CH_BL)" + ([string]$script:CH_H * 57)))
 }

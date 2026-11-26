@@ -60,6 +60,7 @@ fi
 
 command -v lazygit >/dev/null 2>&1 && alias lg='lazygit'
 command -v btop >/dev/null 2>&1 && alias mon='btop'
+command -v nave-edit >/dev/null 2>&1 && alias ne='nave-edit'
 
 # ------------------------------------------------------------------------------
 # Visual Art Helpers: TrueColor gradient, hr divider, Windows Terminal shaders
@@ -546,6 +547,7 @@ function nave-help {
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-bg / transient%f    Liga/desliga fundo OSC 11 ou transient prompt"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}sysinfo / hr [titulo]%f  Arte + barras de sistema / regua divisoria"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-hud / nave-warp%f   Cockpit em tempo real / starfield 3D"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}ne <arquivo> (nave-edit)%f Editor nativo Rust estilo VS Code (multi-cursor, Git)"
   print -P "%F{${c_frm}}│%f"
   print -P "%F{${c_frm}}│%f %F{${c_lbl}}%BNavegacao & Busca%b%f"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}p [projeto]%f            Pula para \$NAVE_PROJECTS_DIR (fzf + preview)"

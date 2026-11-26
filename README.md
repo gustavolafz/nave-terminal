@@ -23,6 +23,7 @@
 Construído para ser rápido, legível e consistente em qualquer visualizador (Windows Terminal, VS Code, Cursor, Antigravity, ConHost ou SSH), usando apenas Box Drawing (`╭─`, `╰─`, `█`, `░`) e Unicode padrão (`❯`, `±`, `↑`, `↓`, `≡`, `×`):
 
 - **100% Standalone no Zsh (Zero Oh My Zsh, Zero plugins externos)**: inicializador próprio (`init.zsh` com `compinit` em cache diário), motor nativo de autosuggestions (`nave-suggest`), syntax highlighting em tempo real sincronizado com a paleta (`nave-highlight`) e salto inteligente de diretórios por frecency (`nave-z`). Basta ter `zsh` instalado.
+- **Editor de terminal nativo em Rust (`nave-edit` / `ne`, ~750 KB, <3ms de boot)**: buffer Rope UTF-8 próprio, **multi-cursor real estilo VS Code** (`Ctrl+D`, `Ctrl+Shift+L`, `Ctrl+Alt+↑/↓`), lexer multi-linha com estado (14 linguagens + bracket matching + auto-close/wrap), **Git gutter assíncrono (`▎`)**, múltiplas abas + **Quick Open fuzzy (`Ctrl+P`)**, **word-wrap alternável (`Alt+Z`)**, busca/substituição incremental com Regex (`Ctrl+F`), mouse SGR 1006, Command Palette (`F1`) e render zero-flicker DEC 2026.
 - **5 paletas + fundo e cursor ao vivo (`OSC 11 / 12`)**: trocar com `nave-theme <nome>` muda instantaneamente o fundo da aba, cursor, prompt, `nave-highlight`, `PSReadLine`, `fzf` e `sysinfo`.
 - **4 layouts de prompt (`nave-layout`)**: alterne entre `framed`, `rail` (trilho contínuo até o relógio), `hud` (divisores geométricos `◆ │`) e `compact` (1 linha para split panes).
 - **Transient Prompt**: após pressionar Enter, prompts antigos colapsam para uma única linha minimalista (`HH:MM ❯ comando`).
@@ -154,27 +155,28 @@ Add-Content -Path $PROFILE -Value "`n. `"$env:USERPROFILE\.config\nave\nave.ps1`
 
 Depois você pode alternar o shader direto pelo terminal com `nave-shader glow`, `nave-shader crt` ou `nave-shader off`.
 
-Para habilitar também `Ctrl+Shift+Z` (refazer), `Ctrl+Shift+K` (apagar linha), `Shift+Alt+↓/↑` / `Ctrl+Shift+D` (duplicar), `Shift+Enter` (quebra de linha), `Ctrl+;`/`Ctrl+/` (comentar) e `Ctrl+F` (busca) no Windows Terminal, adicione em `"actions"` e `"keybindings"` do `settings.json`:
+Para habilitar também `Ctrl+Shift+Z` (refazer), `Ctrl+Shift+K` (apagar linha), `Ctrl+Shift+L` (multi-cursor em todas as ocorrências no `nave-edit`), `Shift+Alt+↓/↑` / `Ctrl+Shift+D` (duplicar), `Shift+Enter` (quebra de linha) e `Ctrl+;`/`Ctrl+/` (comentar) no Windows Terminal (mantendo busca da aba em `Ctrl+Shift+F` para liberar `Ctrl+F` ao editor), adicione em `"actions"` e `"keybindings"` do `settings.json`:
 
 ```json
 "actions": [
-  { "id": "Nave.redo",       "command": { "action": "sendInput", "input": "\u001b[90;6u" } },
-  { "id": "Nave.deleteLine", "command": { "action": "sendInput", "input": "\u001b[75;6u" } },
-  { "id": "Nave.duplicate",  "command": { "action": "sendInput", "input": "\u001b[68;6u" } },
-  { "id": "Nave.dupDown",    "command": { "action": "sendInput", "input": "\u001b[1;4B" } },
-  { "id": "Nave.dupUp",      "command": { "action": "sendInput", "input": "\u001b[1;4A" } },
-  { "id": "Nave.shiftEnter", "command": { "action": "sendInput", "input": "\u001b\r" } },
-  { "id": "Nave.comment",    "command": { "action": "sendInput", "input": "\u001b[47;5u" } }
+  { "id": "Nave.redo",                 "command": { "action": "sendInput", "input": "\u001b[90;6u" } },
+  { "id": "Nave.deleteLine",           "command": { "action": "sendInput", "input": "\u001b[75;6u" } },
+  { "id": "Nave.duplicate",            "command": { "action": "sendInput", "input": "\u001b[68;6u" } },
+  { "id": "Nave.selectAllOccurrences", "command": { "action": "sendInput", "input": "\u001b[76;6u" } },
+  { "id": "Nave.dupDown",              "command": { "action": "sendInput", "input": "\u001b[1;4B" } },
+  { "id": "Nave.dupUp",                "command": { "action": "sendInput", "input": "\u001b[1;4A" } },
+  { "id": "Nave.shiftEnter",           "command": { "action": "sendInput", "input": "\u001b\r" } },
+  { "id": "Nave.comment",              "command": { "action": "sendInput", "input": "\u001b[47;5u" } }
 ],
 "keybindings": [
-  { "id": "User.find",       "keys": "ctrl+f" },
-  { "id": "Nave.redo",       "keys": "ctrl+shift+z" },
-  { "id": "Nave.deleteLine", "keys": "ctrl+shift+k" },
-  { "id": "Nave.duplicate",  "keys": "ctrl+shift+d" },
-  { "id": "Nave.dupDown",    "keys": "alt+shift+down" },
-  { "id": "Nave.dupUp",      "keys": "alt+shift+up" },
-  { "id": "Nave.shiftEnter", "keys": "shift+enter" },
-  { "id": "Nave.comment",    "keys": "ctrl+oem_2" }
+  { "id": "Nave.redo",                 "keys": "ctrl+shift+z" },
+  { "id": "Nave.deleteLine",           "keys": "ctrl+shift+k" },
+  { "id": "Nave.duplicate",            "keys": "ctrl+shift+d" },
+  { "id": "Nave.selectAllOccurrences", "keys": "ctrl+shift+l" },
+  { "id": "Nave.dupDown",              "keys": "alt+shift+down" },
+  { "id": "Nave.dupUp",                "keys": "alt+shift+up" },
+  { "id": "Nave.shiftEnter",           "keys": "shift+enter" },
+  { "id": "Nave.comment",              "keys": "ctrl+oem_2" }
 ]
 ```
 </details>
@@ -210,6 +212,7 @@ Adicione o conteúdo de [config/gitconfig.delta](config/gitconfig.delta) ao seu 
 | **Estilo** | `nave-transient` / `nave-bg` / `nave-welcome` | Liga/desliga transient prompt, fundo dinâmico e welcome bar |
 | **Arte & HUD** | `sysinfo` / `hr [titulo]` | Painel com arte gradiente TrueColor / régua divisória na largura da tela |
 | **Arte & HUD** | `nave-hud` / `nave-warp` | Cockpit em tela cheia em tempo real / starfield 3D interativo |
+| **Editor** | `ne <arq[:lin]>` (`nave-edit`) | Editor nativo em Rust estilo VS Code (multi-cursor, Git gutter, `Ctrl+P`, `Ctrl+F`, `Alt+Z`, `F1`) |
 | **Sistema** | `ports` / `killport <porta>` | Radar de portas TCP/UDP abertas e encerramento rápido |
 | **Navegação** | `p [projeto]` / `z <termo>` / `zi` / `z -l` | Hub fuzzy de projetos em `$NAVE_PROJECTS_DIR` e salto nativo por frecency (`nave-z`) |
 | **Motor Zsh** | `nave-suggest` / `nave-highlight` | Liga/desliga autosuggestions e syntax highlighting nativos do Nave (zero plugins externos) |
@@ -243,6 +246,7 @@ nave-terminal/
 ├── config/gitconfig.delta             # Configuração recomendada para git-delta
 ├── bin/nave-hud                       # Cockpit interativo em tela cheia (relógio + CPU sparkline)
 ├── bin/nave-warp                      # Starfield 3D interativo sincronizado com a paleta
+├── editor/                            # nave-edit: editor de terminal nativo em Rust (Rope, multi-cursor, Git gutter)
 ├── powershell/                        # Versão nativa completa para Windows PowerShell 5.1 e 7+
 ├── windows-terminal/
 │   ├── schemes.json                   # Os 5 esquemas de cor do Windows Terminal
