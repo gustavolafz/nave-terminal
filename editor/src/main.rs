@@ -1,3 +1,4 @@
+mod config;
 mod document;
 mod git;
 mod input;
@@ -9,6 +10,7 @@ mod search;
 mod syntax;
 mod terminal;
 
+use config::EditorConfig;
 use document::{Document, Motion};
 use input::{Event, InputDecoder, KeyCode, KeyEvent, MouseKind};
 use palette::Palette;
@@ -37,7 +39,8 @@ struct App {
     tabs: Vec<Document>,
     active_tab: usize,
     palette: &'static Palette,
-    wrap: bool,
+    cfg: EditorConfig,
+    term_sync_needed: bool,
     mode: Mode,
     clipboard: String,
     status_msg: Option<(String, Instant)>,
@@ -49,16 +52,19 @@ struct App {
 }
 
 impl App {
-    fn new(tabs: Vec<Document>, palette: &'static Palette) -> Self {
+    fn new(mut tabs: Vec<Document>, palette: &'static Palette, cfg: EditorConfig) -> Self {
+        if tabs.is_empty() {
+            tabs.push(Document::new_empty());
+        }
+        for t in &mut tabs {
+            t.auto_close = cfg.auto_close;
+        }
         Self {
-            tabs: if tabs.is_empty() {
-                vec![Document::new_empty()]
-            } else {
-                tabs
-            },
+            tabs,
             active_tab: 0,
             palette,
-            wrap: false,
+            cfg,
+            term_sync_needed: false,
             mode: Mode::Edit,
             clipboard: String::new(),
             status_msg: None,
@@ -255,7 +261,7 @@ impl App {
         let line_txt = self.doc().rope.line(vinfo.doc_row);
         let rel_x = col.saturating_sub(self.layout.gutter_width);
 
-        if self.wrap {
+        if self.cfg.wrap {
             let seg: String = line_txt
                 .chars()
                 .skip(vinfo.start_char_col)
@@ -458,8 +464,16 @@ impl App {
                     return;
                 }
                 KeyCode::Char('z') => {
-                    self.wrap = !self.wrap;
-                    self.set_status(format!("Word Wrap: {}", if self.wrap { "ON" } else { "OFF" }));
+                    self.cfg.wrap = !self.cfg.wrap;
+                    self.cfg.save();
+                    self.set_status(format!("Word Wrap: {}", if self.cfg.wrap { "ON" } else { "OFF" }));
+                    return;
+                }
+                KeyCode::Char('v') => {
+                    self.cfg.toggle_vim_visual();
+                    self.term_sync_needed = true;
+                    let st = if self.cfg.vim_visual { "ON (relnum + bloco + sem mouse)" } else { "OFF (VS Code padrao)" };
+                    self.set_status(format!("Estilo Vim Visual: {}", st));
                     return;
                 }
                 KeyCode::Char('f') => {
@@ -585,6 +599,14 @@ impl App {
                     self.doc_mut().move_cursors(Motion::WordRight, false);
                     return;
                 }
+                KeyCode::Up => {
+                    self.doc_mut().move_cursors(Motion::PageUp(5), false);
+                    return;
+                }
+                KeyCode::Down => {
+                    self.doc_mut().move_cursors(Motion::PageDown(5), false);
+                    return;
+                }
                 KeyCode::Home => {
                     self.doc_mut().move_cursors(Motion::DocStart, false);
                     return;
@@ -666,7 +688,7 @@ impl App {
     }
 
     fn open_command_palette(&mut self) {
-        let pk = Picker::command_palette(self.wrap, self.doc().auto_close, self.doc().eol.label());
+        let pk = Picker::command_palette(&self.cfg, self.doc().eol.label());
         self.mode = Mode::Picker(pk);
     }
 
@@ -880,13 +902,56 @@ impl App {
         if let Some(act) = action {
             match act {
                 PickerAction::OpenFile(path) => self.open_or_focus_file(&path, None),
+                PickerAction::ToggleVimVisual => {
+                    self.cfg.toggle_vim_visual();
+                    self.term_sync_needed = true;
+                    let st = if self.cfg.vim_visual { "ON (relnum + bloco + sem mouse)" } else { "OFF (VS Code padrao)" };
+                    self.set_status(format!("Estilo Vim Visual: {}", st));
+                }
+                PickerAction::ToggleRelativeNumbers => {
+                    self.cfg.relative_numbers = !self.cfg.relative_numbers;
+                    self.cfg.save();
+                    let st = if self.cfg.relative_numbers { "ON" } else { "OFF" };
+                    self.set_status(format!("Numeros Relativos: {}", st));
+                }
+                PickerAction::ToggleBlockCursor => {
+                    self.cfg.block_cursor = !self.cfg.block_cursor;
+                    self.cfg.save();
+                    self.term_sync_needed = true;
+                    let st = if self.cfg.block_cursor { "Bloco (█)" } else { "Barra (|)" };
+                    self.set_status(format!("Cursor: {}", st));
+                }
+                PickerAction::ToggleMouse => {
+                    self.cfg.mouse = !self.cfg.mouse;
+                    self.cfg.save();
+                    self.term_sync_needed = true;
+                    let st = if self.cfg.mouse { "ON" } else { "OFF (teclado puro)" };
+                    self.set_status(format!("Mouse: {}", st));
+                }
+                PickerAction::ToggleScrollbar => {
+                    self.cfg.scrollbar = !self.cfg.scrollbar;
+                    self.cfg.save();
+                    let st = if self.cfg.scrollbar { "ON" } else { "OFF" };
+                    self.set_status(format!("Scrollbar lateral: {}", st));
+                }
+                PickerAction::ToggleCenterScroll => {
+                    self.cfg.center_scroll = !self.cfg.center_scroll;
+                    self.cfg.save();
+                    let st = if self.cfg.center_scroll { "ON (typewriter)" } else { "OFF" };
+                    self.set_status(format!("Scroll centralizado: {}", st));
+                }
                 PickerAction::ToggleWrap => {
-                    self.wrap = !self.wrap;
-                    self.set_status(format!("Word Wrap: {}", if self.wrap { "ON" } else { "OFF" }));
+                    self.cfg.wrap = !self.cfg.wrap;
+                    self.cfg.save();
+                    self.set_status(format!("Word Wrap: {}", if self.cfg.wrap { "ON" } else { "OFF" }));
                 }
                 PickerAction::ToggleAutoClose => {
-                    self.doc_mut().auto_close = !self.doc().auto_close;
-                    let st = if self.doc().auto_close { "ON" } else { "OFF" };
+                    self.cfg.auto_close = !self.cfg.auto_close;
+                    self.cfg.save();
+                    for t in &mut self.tabs {
+                        t.auto_close = self.cfg.auto_close;
+                    }
+                    let st = if self.cfg.auto_close { "ON" } else { "OFF" };
                     self.set_status(format!("Auto-Close Pares: {}", st));
                 }
                 PickerAction::ToggleLineEnding => {
@@ -978,8 +1043,8 @@ impl App {
 
     fn render(&mut self, cols: usize, rows: usize, synced: bool) -> String {
         let has_prompt = !matches!(self.mode, Mode::Edit | Mode::Picker(_));
-        let wrap = self.wrap;
-        ensure_cursor_visible(self.doc_mut(), cols, rows, wrap, has_prompt);
+        let cfg = self.cfg;
+        ensure_cursor_visible(self.doc_mut(), cols, rows, &cfg, has_prompt);
 
         let status = self.active_status().map(str::to_string);
         let active_tab = self.active_tab;
@@ -1039,7 +1104,7 @@ impl App {
             pal,
             cols,
             rows,
-            wrap,
+            &cfg,
             prompt,
             picker_ref,
             status.as_deref(),
@@ -1066,7 +1131,7 @@ fn parse_file_arg(arg: &str) -> (PathBuf, Option<usize>) {
 
 fn print_help() {
     println!(
-        "{}\n\nUso:\n  nave-edit [opcoes] [arquivo[:linha] ...]\n  nave-edit +<linha> <arquivo>\n\nOpcoes:\n  -h, --help          Mostra esta ajuda\n  -v, --version       Mostra versao\n  --render-once <f>   Renderiza 1 frame estatico e sai\n\nAtalhos principais (VS Code):\n  Ctrl+S salvar · Ctrl+Q sair · Ctrl+W fechar aba · Ctrl+P abrir arquivo · F1 comandos\n  Ctrl+D multi-cursor · Ctrl+Shift+L todas ocorrencias · Ctrl+Alt+↑/↓ cursor acima/abaixo\n  Ctrl+F buscar (Tab substitui) · Ctrl+G ir p/ linha · Alt+Z word-wrap · Alt+1..5 paletas",
+        "{}\n\nUso:\n  nave-edit [opcoes] [arquivo[:linha] ...]\n  nave-edit +<linha> <arquivo>\n\nOpcoes:\n  -h, --help          Mostra esta ajuda\n  -v, --version       Mostra versao\n  --render-once <f>   Renderiza 1 frame estatico e sai\n\nAtalhos principais (VS Code):\n  Ctrl+S salvar · Ctrl+Q sair · Ctrl+W fechar aba · Ctrl+P abrir arquivo · F1 comandos\n  Ctrl+D multi-cursor · Ctrl+Shift+L todas ocorrencias · Ctrl+Alt+↑/↓ cursor acima/abaixo\n  Ctrl+F buscar (Tab substitui) · Ctrl+G ir p/ linha · Alt+V estilo Vim Visual · Alt+Z wrap · Alt+1..5 paletas",
         VERSION
     );
 }
@@ -1108,7 +1173,8 @@ fn main() {
     }
 
     let pal = Palette::load_active();
-    let mut app = App::new(docs, pal);
+    let cfg = EditorConfig::load();
+    let mut app = App::new(docs, pal, cfg);
 
     if render_once {
         let (cols, rows) = Terminal::size();
@@ -1117,7 +1183,7 @@ fn main() {
         return;
     }
 
-    let term = match Terminal::enter() {
+    let term = match Terminal::enter(app.cfg.mouse, app.cfg.block_cursor) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("nave-edit: requer um terminal interativo (TTY): {}", e);
@@ -1131,6 +1197,13 @@ fn main() {
 
     while !app.should_quit {
         let (cols, rows) = Terminal::size();
+
+        if app.term_sync_needed {
+            term.set_mouse(app.cfg.mouse);
+            term.set_cursor_block(app.cfg.block_cursor);
+            app.term_sync_needed = false;
+            needs_redraw = true;
+        }
 
         if Terminal::take_resized() {
             needs_redraw = true;

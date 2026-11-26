@@ -12,6 +12,12 @@ pub struct PickerItem {
 #[derive(Clone, Debug)]
 pub enum PickerAction {
     OpenFile(PathBuf),
+    ToggleVimVisual,
+    ToggleRelativeNumbers,
+    ToggleBlockCursor,
+    ToggleMouse,
+    ToggleScrollbar,
+    ToggleCenterScroll,
     ToggleWrap,
     ToggleAutoClose,
     ToggleLineEnding,
@@ -66,15 +72,46 @@ impl Picker {
         p
     }
 
-    pub fn command_palette(wrap: bool, auto_close: bool, eol: &str) -> Self {
+    pub fn command_palette(cfg: &crate::config::EditorConfig, eol: &str) -> Self {
+        let onoff = |b: bool| if b { "ON" } else { "OFF" };
         let items = vec![
             PickerItem {
-                label: format!("Alternar Word Wrap [{}]", if wrap { "ON" } else { "OFF" }),
+                label: format!("Estilo Vim Visual [{}]", onoff(cfg.vim_visual)),
+                detail: "Alt+V (relnum + bloco + sem mouse + scroll)".into(),
+                action: PickerAction::ToggleVimVisual,
+            },
+            PickerItem {
+                label: format!("Numeros de Linha Relativos [{}]", onoff(cfg.relative_numbers)),
+                detail: "relativenumber".into(),
+                action: PickerAction::ToggleRelativeNumbers,
+            },
+            PickerItem {
+                label: format!("Cursor em Bloco Solido [{}]", onoff(cfg.block_cursor)),
+                detail: "█ vs |".into(),
+                action: PickerAction::ToggleBlockCursor,
+            },
+            PickerItem {
+                label: format!("Captura de Mouse [{}]", onoff(cfg.mouse)),
+                detail: "teclado puro quando OFF".into(),
+                action: PickerAction::ToggleMouse,
+            },
+            PickerItem {
+                label: format!("Barra de Rolagem Lateral [{}]", onoff(cfg.scrollbar)),
+                detail: "┃ borda direita".into(),
+                action: PickerAction::ToggleScrollbar,
+            },
+            PickerItem {
+                label: format!("Scroll Centralizado / Typewriter [{}]", onoff(cfg.center_scroll)),
+                detail: "mantem linha no centro".into(),
+                action: PickerAction::ToggleCenterScroll,
+            },
+            PickerItem {
+                label: format!("Alternar Word Wrap [{}]", onoff(cfg.wrap)),
                 detail: "Alt+Z".into(),
                 action: PickerAction::ToggleWrap,
             },
             PickerItem {
-                label: format!("Alternar Auto-Close Pares [{}]", if auto_close { "ON" } else { "OFF" }),
+                label: format!("Alternar Auto-Close Pares [{}]", onoff(cfg.auto_close)),
                 detail: "() [] {} \"\"".into(),
                 action: PickerAction::ToggleAutoClose,
             },

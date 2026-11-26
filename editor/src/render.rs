@@ -1,6 +1,7 @@
+use crate::config::EditorConfig;
 use crate::document::Document;
 use crate::git::GutterMark;
-use crate::palette::{push_bg, push_fg, push_grad_text, Palette, TokenKind};
+use crate::palette::{lerp_grad, push_bg, push_fg, push_grad_text, Palette, TokenKind};
 use crate::picker::Picker;
 use crate::syntax::{find_matching_bracket, Span};
 use std::collections::HashMap;
@@ -112,21 +113,26 @@ pub fn char_col_at_visual(line: &str, target_vis: usize, tab_w: usize) -> usize 
     line.chars().count()
 }
 
-pub fn ensure_cursor_visible(doc: &mut Document, cols: usize, rows: usize, wrap: bool, has_prompt: bool) {
+pub fn ensure_cursor_visible(doc: &mut Document, cols: usize, rows: usize, cfg: &EditorConfig, has_prompt: bool) {
     let reserved = if has_prompt { 3 } else { 2 };
     let view_h = rows.saturating_sub(reserved).max(1);
     let gutter_w = compute_gutter_width(doc.rope.line_count());
-    let text_w = cols.saturating_sub(gutter_w).max(4);
+    let sb_w = if cfg.scrollbar && cols >= 24 { 1 } else { 0 };
+    let text_w = cols.saturating_sub(gutter_w + sb_w).max(4);
     let (prow, pcol) = doc.primary_line_col();
 
-    let scrolloff = 3.min(view_h / 3);
-    if prow < doc.scroll_row + scrolloff {
-        doc.scroll_row = prow.saturating_sub(scrolloff);
-    } else if prow + scrolloff >= doc.scroll_row + view_h {
-        doc.scroll_row = (prow + scrolloff + 1).saturating_sub(view_h);
+    if cfg.center_scroll {
+        doc.scroll_row = prow.saturating_sub(view_h / 2);
+    } else {
+        let scrolloff = cfg.scrolloff.min(view_h / 2);
+        if prow < doc.scroll_row + scrolloff {
+            doc.scroll_row = prow.saturating_sub(scrolloff);
+        } else if prow + scrolloff >= doc.scroll_row + view_h {
+            doc.scroll_row = (prow + scrolloff + 1).saturating_sub(view_h);
+        }
     }
 
-    if wrap {
+    if cfg.wrap {
         doc.scroll_col = 0;
     } else {
         let line_txt = doc.rope.line(prow);
@@ -142,7 +148,7 @@ pub fn ensure_cursor_visible(doc: &mut Document, cols: usize, rows: usize, wrap:
 
 pub fn compute_gutter_width(line_count: usize) -> usize {
     let digits = line_count.max(1).to_string().len().max(3);
-    digits + 4 // " 123 ▎ "
+    digits + 5 // "▸ 123 ▎ " or "  123 ▎ "
 }
 
 pub fn render_editor(
@@ -152,12 +158,13 @@ pub fn render_editor(
     pal: &Palette,
     cols: usize,
     rows: usize,
-    wrap: bool,
+    cfg: &EditorConfig,
     prompt: PromptBar<'_>,
     picker: Option<&Picker>,
     status_msg: Option<&str>,
     synced: bool,
 ) -> (String, LayoutInfo) {
+    let wrap = cfg.wrap;
     let mut out = String::with_capacity(cols * rows * 4);
     if synced {
         out.push_str(SYNC_START);
@@ -168,7 +175,9 @@ pub fn render_editor(
     let reserved = if has_prompt { 3 } else { 2 };
     let content_h = rows.saturating_sub(reserved).max(1);
     let gutter_w = compute_gutter_width(doc.rope.line_count());
-    let text_w = cols.saturating_sub(gutter_w).max(4);
+    let show_sb = cfg.scrollbar && cols >= 24;
+    let sb_w = if show_sb { 1 } else { 0 };
+    let text_w = cols.saturating_sub(gutter_w + sb_w).max(4);
 
     let mut layout = LayoutInfo {
         gutter_width: gutter_w,
@@ -190,10 +199,11 @@ pub fn render_editor(
     used_cols += 1;
 
     let right_meta = format!(
-        " [{} · {}{}] [{}] ",
+        " [{} · {}{}{}] [{}] ",
         doc.lang.name(),
         doc.eol.label(),
         if wrap { " · WRAP" } else { "" },
+        if cfg.relative_numbers { " · REL" } else { "" },
         pal.name
     );
     let right_w = right_meta.chars().count();
@@ -257,7 +267,23 @@ pub fn render_editor(
     let bracket_pair = find_matching_bracket(&doc.rope, primary_head);
     let git_marks: HashMap<usize, GutterMark> = doc.git.snapshot();
     let total_lines = doc.rope.line_count();
-    let num_digits = gutter_w - 4;
+    let num_digits = gutter_w - 5;
+
+    // Precompute right-edge scrollbar geometry
+    let (sb_start, sb_end, sb_cursor_row) = if show_sb {
+        let tot = total_lines.max(1);
+        let thumb_h = ((content_h * content_h) / tot).clamp(1, content_h);
+        let max_scroll = tot.saturating_sub(content_h).max(1);
+        let start = if tot <= content_h {
+            0
+        } else {
+            (doc.scroll_row.min(max_scroll) * (content_h - thumb_h)) / max_scroll
+        };
+        let cur_y = (primary_row * content_h.saturating_sub(1)) / tot.saturating_sub(1).max(1);
+        (start, (start + thumb_h).min(content_h), cur_y.min(content_h.saturating_sub(1)))
+    } else {
+        (0, 0, 0)
+    };
 
     // Precompute selection ranges and secondary caret bytes
     let sel_ranges: Vec<(usize, usize)> = doc
@@ -281,9 +307,17 @@ pub fn render_editor(
     while screen_y < content_h {
         if doc_row >= total_lines {
             push_fg(&mut out, pal.border, false);
-            let _ = write!(out, "{:>width$} │ ", "~", width = num_digits + 1);
+            let _ = write!(out, "  {:>width$} │ ", "~", width = num_digits);
             out.push_str(RST);
-            out.push_str("\x1b[K");
+            if show_sb {
+                for _ in 0..text_w {
+                    out.push(' ');
+                }
+                push_scrollbar_cell(&mut out, screen_y, content_h, sb_start, sb_end, sb_cursor_row, pal);
+                out.push_str(RST);
+            } else {
+                out.push_str("\x1b[K");
+            }
             if screen_y + 1 < content_h || has_prompt || rows > 2 {
                 out.push_str("\r\n");
             }
@@ -316,17 +350,25 @@ pub fn render_editor(
                 end_char_col: seg_end,
             });
 
-            // Gutter
+            // Gutter (with optional Vim relativenumber + vibrant active line indicator ▸)
             if is_cur_line {
                 push_bg(&mut out, pal.cur_line_bg);
-                push_fg(&mut out, pal.grad[0], true);
-            } else {
-                push_fg(&mut out, pal.dim, false);
             }
             if seg_idx == 0 {
-                let _ = write!(out, " {:>width$} ", doc_row + 1, width = num_digits);
+                if is_cur_line {
+                    push_fg(&mut out, pal.grad[0], true);
+                    let _ = write!(out, "▸ {:>width$} ", doc_row + 1, width = num_digits);
+                } else if cfg.relative_numbers {
+                    let dist = doc_row.abs_diff(primary_row);
+                    push_fg(&mut out, pal.dim, false);
+                    let _ = write!(out, "  {:>width$} ", dist, width = num_digits);
+                } else {
+                    push_fg(&mut out, pal.dim, false);
+                    let _ = write!(out, "  {:>width$} ", doc_row + 1, width = num_digits);
+                }
             } else {
-                let _ = write!(out, " {:>width$} ", "↪", width = num_digits);
+                push_fg(&mut out, pal.dim, false);
+                let _ = write!(out, "  {:>width$} ", "↪", width = num_digits);
             }
 
             // Git gutter marker
@@ -450,16 +492,25 @@ pub fn render_editor(
                 drawn_cols += 1;
             }
 
-            if is_cur_line && drawn_cols < text_w {
-                push_bg(&mut out, pal.cur_line_bg);
+            if drawn_cols < text_w {
+                if is_cur_line {
+                    push_bg(&mut out, pal.cur_line_bg);
+                } else {
+                    out.push_str("\x1b[49m");
+                }
                 for _ in 0..(text_w - drawn_cols) {
                     out.push(' ');
                 }
-            } else {
-                out.push_str("\x1b[49m");
             }
-            out.push_str(RST);
-            out.push_str("\x1b[K\r\n");
+            if show_sb {
+                out.push_str("\x1b[49m");
+                push_scrollbar_cell(&mut out, screen_y, content_h, sb_start, sb_end, sb_cursor_row, pal);
+                out.push_str(RST);
+                out.push_str("\r\n");
+            } else {
+                out.push_str(RST);
+                out.push_str("\x1b[K\r\n");
+            }
             screen_y += 1;
         }
 
@@ -771,6 +822,28 @@ pub fn render_editor(
         out.push_str(SYNC_END);
     }
     (out, layout)
+}
+
+fn push_scrollbar_cell(
+    out: &mut String,
+    screen_y: usize,
+    content_h: usize,
+    sb_start: usize,
+    sb_end: usize,
+    sb_cursor_row: usize,
+    pal: &Palette,
+) {
+    let t = screen_y as f32 / content_h.saturating_sub(1).max(1) as f32;
+    if screen_y == sb_cursor_row {
+        push_fg(out, pal.grad[0], true);
+        out.push('█');
+    } else if screen_y >= sb_start && screen_y < sb_end {
+        push_fg(out, lerp_grad(pal.grad, t), false);
+        out.push('┃');
+    } else {
+        push_fg(out, pal.border, false);
+        out.push('│');
+    }
 }
 
 #[derive(Clone, Copy)]

@@ -53,8 +53,9 @@ CARGO_BIN="$(command -v cargo 2>/dev/null || echo "$HOME/.cargo/bin/cargo")"
 if [[ -x "$CARGO_BIN" && -f "$REPO_DIR/editor/Cargo.toml" ]]; then
   echo "│ [..] Compilando nave-edit (Rust release)..."
   if (cd "$REPO_DIR/editor" && "$CARGO_BIN" build --release >/dev/null 2>&1); then
-    cp "$REPO_DIR/editor/target/release/nave-edit" "$HOME/.local/bin/nave-edit"
-    chmod +x "$HOME/.local/bin/nave-edit"
+    cp "$REPO_DIR/editor/target/release/nave-edit" "$HOME/.local/bin/nave-edit.tmp.$$"
+    chmod +x "$HOME/.local/bin/nave-edit.tmp.$$"
+    mv -f "$HOME/.local/bin/nave-edit.tmp.$$" "$HOME/.local/bin/nave-edit"
     echo "│ [ok] nave-edit (Rust nativo) instalado em ~/.local/bin/nave-edit (alias: ne)"
   else
     echo "│ [warn] Falha ao compilar nave-edit; rode 'cd editor && cargo build --release' para detalhes"

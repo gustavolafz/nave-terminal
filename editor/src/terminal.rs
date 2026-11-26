@@ -16,7 +16,7 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    pub fn enter() -> io::Result<Self> {
+    pub fn enter(mouse_enabled: bool, block_cursor: bool) -> io::Result<Self> {
         let fd = libc::STDIN_FILENO;
         let mut orig: libc::termios = unsafe { std::mem::zeroed() };
         if unsafe { libc::tcgetattr(fd, &mut orig) } != 0 {
@@ -44,11 +44,13 @@ impl Terminal {
             libc::sigaction(libc::SIGWINCH, &sa, std::ptr::null_mut());
         }
 
-        // Alt screen + SGR 1006 mouse (click + drag + wheel) + Bracketed Paste + bar cursor
         let mut stdout = io::stdout().lock();
-        stdout.write_all(
-            b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[6 q\x1b[2J\x1b[H",
-        )?;
+        stdout.write_all(b"\x1b[?1049h\x1b[?2004h")?;
+        if mouse_enabled {
+            stdout.write_all(b"\x1b[?1000h\x1b[?1002h\x1b[?1006h")?;
+        }
+        stdout.write_all(if block_cursor { b"\x1b[2 q" } else { b"\x1b[6 q" })?;
+        stdout.write_all(b"\x1b[2J\x1b[H")?;
         stdout.flush()?;
 
         Ok(Self {
@@ -56,6 +58,24 @@ impl Terminal {
             fd,
             active: true,
         })
+    }
+
+    pub fn set_mouse(&self, enabled: bool) {
+        let seq: &[u8] = if enabled {
+            b"\x1b[?1000h\x1b[?1002h\x1b[?1006h"
+        } else {
+            b"\x1b[?1006l\x1b[?1002l\x1b[?1000l"
+        };
+        let mut stdout = io::stdout().lock();
+        let _ = stdout.write_all(seq);
+        let _ = stdout.flush();
+    }
+
+    pub fn set_cursor_block(&self, block: bool) {
+        let seq: &[u8] = if block { b"\x1b[2 q" } else { b"\x1b[6 q" };
+        let mut stdout = io::stdout().lock();
+        let _ = stdout.write_all(seq);
+        let _ = stdout.flush();
     }
 
     pub fn size() -> (usize, usize) {
