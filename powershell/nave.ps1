@@ -544,7 +544,7 @@ function nave-welcome {
     switch ($Mode) {
         "on"  { Set-Content $f "1" -NoNewline; Write-Host (_Nave-Fg $script:NaveC.ok "Welcome banner ativado.") }
         "off" { Set-Content $f "0" -NoNewline; Write-Host (_Nave-Fg $script:NaveC.warn "Welcome banner desativado.") }
-        default { Write-Host "Welcome banner: $(if ((_Nave-LoadSetting 'welcome' '1') -eq '1') {'on'} else {'off'}) (uso: nave-welcome on|off)" }
+        default { Write-Host "Welcome banner: $(if ((_Nave-LoadSetting 'welcome' '0') -eq '1') {'on'} else {'off'}) (uso: nave-welcome on|off)" }
     }
 }
 
@@ -562,7 +562,7 @@ function nave-help {
     Write-Host (_Nave-Fg $c.dir ("$($script:CH_BL)" + ([string]$script:CH_H * 57)))
 }
 
-if ((_Nave-LoadSetting "welcome" "1") -eq "1" -and $Host.Name -eq "ConsoleHost") {
+if ((_Nave-LoadSetting "welcome" "0") -eq "1" -and $Host.Name -eq "ConsoleHost") {
     $osW = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
     $dkW = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction SilentlyContinue
     if ($osW -and $dkW) {

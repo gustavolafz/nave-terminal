@@ -504,7 +504,7 @@ function nave-welcome {
     on|1)  print -r -- "1" > "$NAVE_CONFIG_DIR/welcome"; print -P "%F{${_NAVE_C[ok]:-78}}Welcome banner ativado.%f" ;;
     off|0) print -r -- "0" > "$NAVE_CONFIG_DIR/welcome"; print -P "%F{${_NAVE_C[warn]:-215}}Welcome banner desativado.%f" ;;
     *)
-      local st="1"
+      local st="0"
       [[ -r "$NAVE_CONFIG_DIR/welcome" ]] && st="$(<"$NAVE_CONFIG_DIR/welcome")"
       print -P "Welcome banner: %B$([[ $st == 1 ]] && echo on || echo off)%b (uso: nave-welcome on|off)"
       ;;
@@ -512,7 +512,7 @@ function nave-welcome {
 }
 
 function _nave_show_welcome {
-  local enabled="1"
+  local enabled="0"
   [[ -r "$NAVE_CONFIG_DIR/welcome" ]] && enabled="$(<"$NAVE_CONFIG_DIR/welcome")"
   [[ "$enabled" == "1" ]] || return
   [[ -o interactive && -t 1 ]] || return
