@@ -171,41 +171,40 @@ function drawBackdrop(ctx, W, H, planet, rng) {
   // Built purely from positional-density 1.6px square grain (zero 8-bit gradient banding!)
   const { cx, cy, R } = planet;
   ctx.save();
-  for (let i = 0; i < 9500; i++) {
+  for (let i = 0; i < 6500; i++) {
     // Sample polar band just outside the sunlit upper-left horizon of the planet
     const deg = 175 + rng() * 112;
     const rad = (deg * Math.PI) / 180;
-    const u = Math.pow(rng(), 1.65); // denser near the planet limb, fading smoothly into dark space
-    const dist = R + 4 + u * 235;
+    const u = Math.pow(rng(), 1.65);
+    const dist = R + 3 + u * 160;
     const x = cx + Math.cos(rad) * dist;
     const y = cy + Math.sin(rad) * dist;
-    if (x < W * 0.42 || x > W || y < 0 || y > H) continue;
+    if (x < W * 0.56 || x > W || y < 0 || y > H) continue;
 
-    // Fade smoothly toward left/right horizon ends
     const arcCenter = Math.cos(((deg - 230) * Math.PI) / 115);
     if (arcCenter <= 0 || rng() > arcCenter) continue;
 
     const col = u < 0.28 ? '#7DCFFF' : (u < 0.65 ? '#5E82D6' : '#BB9AF7');
     ctx.fillStyle = col;
     ctx.globalAlpha = (1 - u) * 0.24 * arcCenter * (0.5 + 0.5 * rng());
-    const sz = u < 0.4 ? 1.5 : 1.8;
+    const sz = u < 0.4 ? 1.3 : 1.55;
     ctx.fillRect(x, y, sz, sz);
   }
   ctx.restore();
 
-  // Calm starfield (denser on right, sparse on left code area)
-  const cell = 40;
+  // Calm starfield (denser on right corner, ultra-sparse on left code area)
+  const cell = 42;
   ctx.save();
   for (let gx = 0; gx < W; gx += cell) {
     for (let gy = 0; gy < H; gy += cell) {
       const x = gx + rng() * cell;
       const y = gy + rng() * cell;
-      const keepProb = x < W * 0.48 ? 0.06 : 0.22;
+      const keepProb = x < W * 0.58 ? 0.04 : 0.20;
       if (rng() > keepProb) continue;
 
       const bright = Math.pow(rng(), 2.7);
-      const r = 0.40 + bright * 0.90;
-      ctx.globalAlpha = 0.16 + bright * 0.60;
+      const r = 0.38 + bright * 0.85;
+      ctx.globalAlpha = 0.14 + bright * 0.58;
       ctx.fillStyle = bright > 0.72 ? '#F8FAFC' : (rng() < 0.55 ? '#7DCFFF' : '#BB9AF7');
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
@@ -214,10 +213,10 @@ function drawBackdrop(ctx, W, H, planet, rng) {
   }
   ctx.restore();
 
-  // Two delicate hand-tapered navigational stars
+  // Two delicate hand-tapered navigational stars tucked cleanly in the right quadrant
   for (const [sx, sy, sz, col] of [
-    [W * 0.575, H * 0.195, 7.2, '#A4E4FF'],
-    [W * 0.915, H * 0.235, 5.8, '#BB9AF7'],
+    [W * 0.73, H * 0.34, 6.2, '#A4E4FF'],
+    [W * 0.94, H * 0.39, 5.2, '#BB9AF7'],
   ]) {
     gougeStroke(ctx, [[sx - sz, sy], [sx + sz, sy]], { color: col, maxWidth: 1.05, alpha: 0.72, taperStart: 0.45, taperEnd: 0.45, wobble: 0.08, rng });
     gougeStroke(ctx, [[sx, sy - sz], [sx, sy + sz]], { color: col, maxWidth: 1.05, alpha: 0.72, taperStart: 0.45, taperEnd: 0.45, wobble: 0.08, rng });
@@ -418,7 +417,7 @@ function drawGrainyFlatPlanet(ctx, W, H, dpr, planet, rng, noise) {
 // Shared 3D Ship Projection Factory
 // -----------------------------------------------------------------------------
 function makeShipProjector(scx, scy) {
-  const scale = 1.18;
+  const scale = 0.80;
   const roll = -26 * Math.PI / 180;
   const pitch = 22 * Math.PI / 180;
   const yaw2D = -33 * Math.PI / 180;
@@ -498,9 +497,9 @@ function drawOrbitalChart(ctx, W, H, planet, rng) {
     }
   };
 
-  drawConcentricArc(34, 194, 276, '#7DCFFF', 0.85, 0.28, true, false);
-  drawConcentricArc(195, 200, 266, '#7AA2F7', 1.0, 0.30, false, true);
-  drawConcentricArc(345, 212, 256, '#BB9AF7', 0.85, 0.26, true, false);
+  drawConcentricArc(24, 194, 276, '#7DCFFF', 0.80, 0.26, true, false);
+  drawConcentricArc(134, 200, 266, '#7AA2F7', 0.90, 0.28, false, true);
+  drawConcentricArc(236, 212, 256, '#BB9AF7', 0.80, 0.24, true, false);
 }
 
 // -----------------------------------------------------------------------------
@@ -864,8 +863,8 @@ window.render = function (frame, env) {
   const rng = mulberry32(20261126 + (frame || 0));
   const noise = makeNoise2D(7741);
 
-  const planet = { cx: W * 0.90, cy: H * 1.24, R: H * 0.62 };
-  const P = makeShipProjector(W * 0.685, H * 0.395);
+  const planet = { cx: W * 0.955, cy: H * 1.18, R: H * 0.44 };
+  const P = makeShipProjector(W * 0.810, H * 0.545);
 
   drawBackdrop(ctx, W, H, planet, rng);
   drawGrainyFlatPlanet(ctx, W, H, dpr, planet, rng, noise);
