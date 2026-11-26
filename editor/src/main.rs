@@ -472,8 +472,17 @@ impl App {
                 KeyCode::Char('v') => {
                     self.cfg.toggle_vim_visual();
                     self.term_sync_needed = true;
-                    let st = if self.cfg.vim_visual { "ON (relnum + bloco + sem mouse)" } else { "OFF (VS Code padrao)" };
+                    let st = if self.cfg.vim_visual { "ON (relnum + scrollbar + sem mouse)" } else { "OFF (VS Code padrao)" };
                     self.set_status(format!("Estilo Vim Visual: {}", st));
+                    return;
+                }
+                KeyCode::Char('m') => {
+                    let head = self.doc().primary_cursor().head;
+                    if let Some((_a, b)) = syntax::find_matching_bracket(&self.doc().rope, head) {
+                        let doc = self.doc_mut();
+                        doc.cursors = vec![document::Selection::caret(b)];
+                        doc.primary = 0;
+                    }
                     return;
                 }
                 KeyCode::Char('f') => {
@@ -1194,15 +1203,23 @@ fn main() {
     let mut decoder = InputDecoder::new();
     let mut read_buf = [0u8; 4096];
     let mut needs_redraw = true;
+    let mut last_activity = Instant::now();
+    let mut standby_blink = false;
 
     while !app.should_quit {
         let (cols, rows) = Terminal::size();
 
         if app.term_sync_needed {
             term.set_mouse(app.cfg.mouse);
-            term.set_cursor_block(app.cfg.block_cursor);
+            term.set_cursor_style(app.cfg.block_cursor, standby_blink);
             app.term_sync_needed = false;
             needs_redraw = true;
+        }
+
+        // Standby blink: solid cursor while actively typing/scrolling, gentle blink after 750ms idle
+        if !standby_blink && last_activity.elapsed() >= Duration::from_millis(750) {
+            standby_blink = true;
+            term.set_cursor_style(app.cfg.block_cursor, true);
         }
 
         if Terminal::take_resized() {
@@ -1232,6 +1249,11 @@ fn main() {
         if term.poll_stdin(poll_ms) {
             let n = term.read_bytes(&mut read_buf);
             if n > 0 {
+                last_activity = Instant::now();
+                if standby_blink {
+                    standby_blink = false;
+                    term.set_cursor_style(app.cfg.block_cursor, false);
+                }
                 decoder.push(&read_buf[..n]);
                 while let Some(ev) = decoder.next_event() {
                     app.handle_event(ev, cols, rows);

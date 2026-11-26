@@ -441,6 +441,7 @@ pub fn render_editor(
                 let is_bracket = bracket_pair.is_some_and(|(a, b)| byte_abs == a || byte_abs == b);
 
                 let (mut fg_c, mut bold) = pal.token_color(cell.kind);
+                let mut underline = false;
                 let bg_c = if is_sec_caret {
                     fg_c = pal.bar_bg;
                     bold = true;
@@ -453,8 +454,11 @@ pub fn render_editor(
                 } else if is_match {
                     Some(pal.match_bg)
                 } else if is_bracket {
+                    // Vibrant Vim MatchParen highlight on both opening & matching closing bracket
+                    fg_c = pal.bar_bg;
                     bold = true;
-                    Some(pal.bracket_bg)
+                    underline = true;
+                    Some(pal.grad[0])
                 } else if is_cur_line {
                     Some(pal.cur_line_bg)
                 } else {
@@ -467,6 +471,9 @@ pub fn render_editor(
                     out.push_str("\x1b[49m");
                 }
                 push_fg(&mut out, fg_c, bold);
+                if underline {
+                    out.push_str("\x1b[4m");
+                }
 
                 if cell.ch == '\t' {
                     for _ in 0..cw {
@@ -474,6 +481,9 @@ pub fn render_editor(
                     }
                 } else {
                     out.push(cell.ch);
+                }
+                if underline {
+                    out.push_str("\x1b[24m");
                 }
                 cur_vis += cw;
                 drawn_cols += cw;

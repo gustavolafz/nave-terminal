@@ -109,7 +109,7 @@ impl EditorConfig {
         self.vim_visual = !self.vim_visual;
         if self.vim_visual {
             self.relative_numbers = true;
-            self.block_cursor = true;
+            self.block_cursor = false; // thin bar (solid active, blinks in standby)
             self.mouse = false;
             self.scrollbar = true;
             self.scrolloff = 8;

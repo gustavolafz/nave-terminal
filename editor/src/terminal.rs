@@ -71,8 +71,13 @@ impl Terminal {
         let _ = stdout.flush();
     }
 
-    pub fn set_cursor_block(&self, block: bool) {
-        let seq: &[u8] = if block { b"\x1b[2 q" } else { b"\x1b[6 q" };
+    pub fn set_cursor_style(&self, block: bool, blinking: bool) {
+        let seq: &[u8] = match (block, blinking) {
+            (true, true) => b"\x1b[1 q",
+            (true, false) => b"\x1b[2 q",
+            (false, true) => b"\x1b[5 q",
+            (false, false) => b"\x1b[6 q",
+        };
         let mut stdout = io::stdout().lock();
         let _ = stdout.write_all(seq);
         let _ = stdout.flush();
