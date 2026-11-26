@@ -93,7 +93,8 @@ def read_mem():
     return used, tot, int(round(used / tot * 100))
 
 def read_disk():
-    st = os.statvfs("/")
+    target = "/mnt/c" if os.path.isdir("/mnt/c") else "/"
+    st = os.statvfs(target)
     tot = (st.f_blocks * st.f_frsize) / (1024 ** 3)
     free = (st.f_bavail * st.f_frsize) / (1024 ** 3)
     used = tot - free

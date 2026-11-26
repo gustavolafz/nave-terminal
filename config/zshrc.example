@@ -29,7 +29,9 @@ setopt SHARE_HISTORY AUTO_CD AUTO_PUSHD PUSHD_IGNORE_DUPS PUSHD_SILENT
 zstyle ':completion:*' menu select
 zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' 'r:|=*' 'l:|=* r:|=*'
 command -v dircolors >/dev/null 2>&1 && eval "$(dircolors -b)"
-zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
+LS_COLORS="$(printf '%s' "$LS_COLORS" | sed -E 's/(^|:)(ow|tw|st)=[^:]*//g; s/^://'):ow=01;34:tw=01;34:st=01;36"
+export LS_COLORS
+zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}" 'ma=48;5;238;38;5;81;1'
 
 # Autosuggestions style (syntax highlighting is synced automatically by nave-theme)
 ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=244'

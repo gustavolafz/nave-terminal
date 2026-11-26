@@ -426,8 +426,13 @@ function sysinfo {
   kernel=$(uname -r)
   up=$(uptime -p 2>/dev/null | sed 's/^up //')
 
+  local disk_target="/" disk_lbl="Disk /:"
+  if [[ -d /mnt/c ]] && df -h /mnt/c >/dev/null 2>&1; then
+    disk_target="/mnt/c"
+    disk_lbl="SSD C::"
+  fi
   read -r mem_used mem_tot mem_pct <<< "$(free -m | awk '/^Mem:/ {printf "%.1fGi %.1fGi %d", $3/1024, $2/1024, ($3/$2)*100}')"
-  read -r disk_used disk_tot disk_pct <<< "$(df -h / | awk 'NR==2 {gsub(/%/,"",$5); print $3, $2, $5}')"
+  read -r disk_used disk_tot disk_pct <<< "$(df -h "$disk_target" | awk 'NR==2 {gsub(/%/,"",$5); print $3, $2, $5}')"
   ip_addr=$(hostname -I 2>/dev/null | awk '{print $1}')
   open_ports=$(ss -tlnH 2>/dev/null | wc -l | tr -d ' ')
   dk_run=$(docker ps -q 2>/dev/null | wc -l | tr -d ' ')
@@ -459,7 +464,7 @@ function sysinfo {
     "%F{${c_frm}}│%f %F{${c_lbl}}Kernel:%f  ${kernel}"
     "%F{${c_frm}}│%f %F{${c_lbl}}Uptime:%f  ${up:-N/A}"
     "%F{${c_frm}}│%f %F{${c_lbl}}Memory:%f  ${mem_bar} ${mem_used}/${mem_tot} (${mem_pct}%%)"
-    "%F{${c_frm}}│%f %F{${c_lbl}}Disk /:%f  ${disk_bar} ${disk_used}/${disk_tot} (${disk_pct}%%)"
+    "%F{${c_frm}}│%f %F{${c_lbl}}${disk_lbl}%f  ${disk_bar} ${disk_used}/${disk_tot} (${disk_pct}%%)"
     "%F{${c_frm}}│%f %F{${c_lbl}}Net:%f     WSL ${ip_addr:-N/A} · ${open_ports} TCP · ${dk_run} docker"
     "%F{${c_dir}}╰──────────────────────────────────────────────%f"
   )
@@ -492,9 +497,10 @@ function _nave_show_welcome {
   [[ "$enabled" == "1" ]] || return
   [[ -o interactive && -t 1 ]] || return
 
-  local mem_pct disk_pct mem_bar disk_bar
+  local mem_pct disk_pct mem_bar disk_bar disk_target="/"
+  [[ -d /mnt/c ]] && df -h /mnt/c >/dev/null 2>&1 && disk_target="/mnt/c"
   mem_pct=$(free -m | awk '/^Mem:/ {printf "%d", ($3/$2)*100}')
-  disk_pct=$(df -h / | awk 'NR==2 {gsub(/%/,"",$5); print $5}')
+  disk_pct=$(df -h "$disk_target" | awk 'NR==2 {gsub(/%/,"",$5); print $5}')
   mem_bar=$(_nave_bar "$mem_pct" 10)
   disk_bar=$(_nave_bar "$disk_pct" 10)
 
