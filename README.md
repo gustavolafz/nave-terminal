@@ -17,17 +17,15 @@
   <img src="assets/hero-showcase.png" alt="Nave Terminal Showcase" width="100%" />
 </p>
 
-## Por que o Nave Terminal?
+## Destaques
 
-Muitos temas famosos de terminal dependem de glifos da Private Use Area (Nerd Fonts) ou emojis de largura ambígua — basta abrir o WSL no terminal integrado do VS Code, em outro visualizador ou via SSH para tudo virar `□□□` e o cursor desalinhar.
+Construído para ser rápido, legível e consistente em qualquer visualizador (Windows Terminal, VS Code, Cursor, Antigravity, ConHost ou SSH), usando apenas Box Drawing (`╭─`, `╰─`, `█`, `░`) e Unicode padrão (`❯`, `±`, `↑`, `↓`, `≡`, `×`):
 
-O **Nave Terminal** resolve isso usando **exclusivamente Box Drawing (`╭─`, `╰─`, `█`, `░`) e Unicode padrão universal (`❯`, `±`, `↑`, `↓`, `≡`, `×`)**, mantendo o visual moderno, rápido e cheio de recursos avançados:
-
-- **Zero caracteres quebrados** em Windows Terminal, VS Code, Cursor, Antigravity, ConHost ou SSH.
-- **Transient Prompt**: após pressionar Enter, prompts antigos colapsam para uma única linha minimalista (`HH:MM ❯ comando`), mantendo a tela limpa.
+- **Renderização limpa em qualquer terminal**: sem glifos proprietários que viram `□□□` ou emojis que desalinharam o cursor.
+- **Transient Prompt**: após pressionar Enter, prompts antigos colapsam para uma única linha minimalista (`HH:MM ❯ comando`), mantendo o foco no comando atual.
 - **5 paletas integradas com troca ao vivo** (`nave-theme`): sincroniza automaticamente o prompt, `zsh-syntax-highlighting`, `fzf` e `sysinfo`.
-- **Contexto inteligente**: truncamento automático de diretórios profundos, Git completo (`± branch`, `+` staged, `*` dirty, `?` untracked, `↑`/`↓` ahead/behind, `≡N` stashes, `MERGE`/`REBASE`), `venv`/`conda`, `node` e `[docker]`.
-- **Notificações nativas no Windows**: comandos demorados (`>= 15s`) disparam um toast assíncrono do Windows avisando se terminou com sucesso ou erro.
+- **Contexto inteligente**: truncamento automático de diretórios profundos, status Git completo (`± branch`, `+` staged, `*` dirty, `?` untracked, `↑`/`↓` ahead/behind, `≡N` stashes, `MERGE`/`REBASE`), `venv`/`conda`, `node` e `[docker]`.
+- **Notificações nativas no Windows**: comandos demorados (`>= 15s`) disparam um toast assíncrono do Windows avisando se concluiu com sucesso ou erro.
 - **Toolkit WSL + Dev pronto**: hub de projetos fuzzy (`p`), radar de portas (`ports` / `killport`), ponte WSL ↔ Windows (`clip`, `paste`, `winopen`, `winip`), Git turbo (`ginfo`, `gbf`, `gwip`, `gbclean`) e Docker cockpit (`dks`, `dkl`, `dksh`).
 
 ---
