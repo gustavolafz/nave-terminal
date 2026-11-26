@@ -300,6 +300,34 @@ pub fn render_editor(
         .map(|(_, c)| c.head)
         .collect();
 
+    // 1. Cursorword (illuminate) — collect whole-word matches in visible viewport only when >= 2 occurrences
+    let cursorword_ranges: Vec<(usize, usize)> = if cfg.cursorword && doc.search.query.is_empty() {
+        if let Some(word) = doc.word_at_primary() {
+            let mut found = Vec::new();
+            let last_vis = (doc.scroll_row + content_h + 2).min(total_lines);
+            for r in doc.scroll_row..last_vis {
+                let ls = doc.rope.line_start_byte(r);
+                let txt = doc.rope.line(r);
+                for (s, e) in find_whole_word_in_line(&txt, &word) {
+                    found.push((ls + s, ls + e));
+                }
+            }
+            if found.len() >= 2 { found } else { Vec::new() }
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    // 2. Active indent scope for indent-blankline guides (`▏`)
+    let indent_w = doc.tab_width.max(1);
+    let active_scope: Option<(usize, usize, usize)> = if cfg.indent_guides {
+        compute_active_indent_scope(&doc.rope, primary_row, indent_w)
+    } else {
+        None
+    };
+
     let mut primary_screen_pos: Option<(usize, usize)> = None;
     let mut screen_y = 0usize;
     let mut doc_row = doc.scroll_row;
@@ -350,21 +378,31 @@ pub fn render_editor(
                 end_char_col: seg_end,
             });
 
-            // Gutter (with optional Vim relativenumber + vibrant active line indicator ▸)
+            // Gutter (with optional Vim relativenumber, bookmark `◆`, and active line indicator `▸`)
+            let is_bookmarked = doc.bookmarks.contains(&doc_row);
             if is_cur_line {
                 push_bg(&mut out, pal.cur_line_bg);
             }
             if seg_idx == 0 {
+                if is_bookmarked {
+                    push_fg(&mut out, pal.grad[2], true);
+                    out.push('◆');
+                } else if is_cur_line {
+                    push_fg(&mut out, pal.grad[0], true);
+                    out.push('▸');
+                } else {
+                    out.push(' ');
+                }
                 if is_cur_line {
                     push_fg(&mut out, pal.grad[0], true);
-                    let _ = write!(out, "▸ {:>width$} ", doc_row + 1, width = num_digits);
+                    let _ = write!(out, " {:>width$} ", doc_row + 1, width = num_digits);
                 } else if cfg.relative_numbers {
                     let dist = doc_row.abs_diff(primary_row);
                     push_fg(&mut out, pal.dim, false);
-                    let _ = write!(out, "  {:>width$} ", dist, width = num_digits);
+                    let _ = write!(out, " {:>width$} ", dist, width = num_digits);
                 } else {
                     push_fg(&mut out, pal.dim, false);
-                    let _ = write!(out, "  {:>width$} ", doc_row + 1, width = num_digits);
+                    let _ = write!(out, " {:>width$} ", doc_row + 1, width = num_digits);
                 }
             } else {
                 push_fg(&mut out, pal.dim, false);
@@ -415,7 +453,36 @@ pub fn render_editor(
                 }
             }
 
-            for cell in &char_info[seg_start..seg_end] {
+            // Leading-whitespace visual width (for indent guides) and trailing-space start index
+            let is_blank_line = line_text.trim().is_empty();
+            let lead_vis = if cfg.indent_guides {
+                if is_blank_line {
+                    blank_line_inherited_indent(&doc.rope, doc_row, indent_w)
+                } else {
+                    leading_visual_width(&line_text, indent_w)
+                }
+            } else {
+                0
+            };
+            let trail_start_idx = if cfg.show_trailing && !is_blank_line {
+                let trimmed_chars = line_text.trim_end_matches(|c| c == ' ' || c == '\t').chars().count();
+                // Don't show trailing dots while user is actively typing at end of current line
+                if is_cur_line && primary_col >= trimmed_chars {
+                    char_info.len()
+                } else {
+                    trimmed_chars
+                }
+            } else {
+                char_info.len()
+            };
+            let ruler_col = if !wrap && cfg.color_column > 0 {
+                Some(cfg.color_column)
+            } else {
+                None
+            };
+
+            for (local_i, cell) in char_info[seg_start..seg_end].iter().enumerate() {
+                let char_idx = seg_start + local_i;
                 let cw = cell.width;
                 if cur_vis + cw <= h_off {
                     cur_vis += cw;
@@ -439,9 +506,18 @@ pub fn render_editor(
                         .iter()
                         .any(|&(s, e)| byte_abs >= s && byte_abs < e);
                 let is_bracket = bracket_pair.is_some_and(|(a, b)| byte_abs == a || byte_abs == b);
+                let is_cursorword = !is_selected
+                    && !is_match
+                    && !is_active_match
+                    && cursorword_ranges
+                        .iter()
+                        .any(|&(s, e)| byte_abs >= s && byte_abs < e);
+                let is_ruler = ruler_col == Some(cur_vis);
 
                 let (mut fg_c, mut bold) = pal.token_color(cell.kind);
                 let mut underline = false;
+                let mut glyph_override: Option<char> = None;
+
                 let bg_c = if is_sec_caret {
                     fg_c = pal.bar_bg;
                     bold = true;
@@ -459,11 +535,35 @@ pub fn render_editor(
                     bold = true;
                     underline = true;
                     Some(pal.grad[0])
+                } else if is_cursorword {
+                    underline = true;
+                    Some(pal.match_bg)
                 } else if is_cur_line {
+                    Some(pal.cur_line_bg)
+                } else if is_ruler {
                     Some(pal.cur_line_bg)
                 } else {
                     None
                 };
+
+                // Trailing whitespace marker (`·`) or Indent guide (`▏`)
+                if !is_sec_caret && !is_selected && !is_match && !is_active_match {
+                    if char_idx >= trail_start_idx && (cell.ch == ' ' || cell.ch == '\t') {
+                        fg_c = pal.err;
+                        glyph_override = Some('·');
+                    } else if cfg.indent_guides
+                        && cell.ch == ' '
+                        && cur_vis > 0
+                        && cur_vis < lead_vis
+                        && cur_vis % indent_w == 0
+                    {
+                        let in_active_scope = active_scope.is_some_and(|(s_r, e_r, a_col)| {
+                            doc_row >= s_r && doc_row <= e_r && cur_vis == a_col
+                        });
+                        fg_c = if in_active_scope { pal.grad[1] } else { pal.border };
+                        glyph_override = Some('▏');
+                    }
+                }
 
                 if let Some(bg) = bg_c {
                     push_bg(&mut out, bg);
@@ -476,11 +576,18 @@ pub fn render_editor(
                 }
 
                 if cell.ch == '\t' {
-                    for _ in 0..cw {
-                        out.push(' ');
+                    if let Some(g) = glyph_override {
+                        out.push(g);
+                        for _ in 1..cw {
+                            out.push(' ');
+                        }
+                    } else {
+                        for _ in 0..cw {
+                            out.push(' ');
+                        }
                     }
                 } else {
-                    out.push(cell.ch);
+                    out.push(glyph_override.unwrap_or(cell.ch));
                 }
                 if underline {
                     out.push_str("\x1b[24m");
@@ -502,15 +609,32 @@ pub fn render_editor(
                 drawn_cols += 1;
             }
 
-            if drawn_cols < text_w {
-                if is_cur_line {
+            // Fill remaining width, painting blank-line indent guides and/or colorcolumn ruler!
+            while drawn_cols < text_w {
+                let vis_x = h_off + drawn_cols;
+                let is_blank_guide = is_blank_line
+                    && cfg.indent_guides
+                    && seg_idx == 0
+                    && vis_x > 0
+                    && vis_x < lead_vis
+                    && vis_x % indent_w == 0;
+                let is_ruler = ruler_col == Some(vis_x);
+
+                if is_cur_line || is_ruler {
                     push_bg(&mut out, pal.cur_line_bg);
                 } else {
                     out.push_str("\x1b[49m");
                 }
-                for _ in 0..(text_w - drawn_cols) {
+                if is_blank_guide {
+                    let in_active_scope = active_scope.is_some_and(|(s_r, e_r, a_col)| {
+                        doc_row >= s_r && doc_row <= e_r && vis_x == a_col
+                    });
+                    push_fg(&mut out, if in_active_scope { pal.grad[1] } else { pal.border }, false);
+                    out.push('▏');
+                } else {
                     out.push(' ');
                 }
+                drawn_cols += 1;
             }
             if show_sb {
                 out.push_str("\x1b[49m");
@@ -832,6 +956,103 @@ pub fn render_editor(
         out.push_str(SYNC_END);
     }
     (out, layout)
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn find_whole_word_in_line(line: &str, word: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let wlen = word.len();
+    if wlen == 0 || line.len() < wlen {
+        return out;
+    }
+    let bytes = line.as_bytes();
+    let mut off = 0;
+    while let Some(rel) = line[off..].find(word) {
+        let s = off + rel;
+        let e = s + wlen;
+        let left_ok = s == 0 || !is_ident_byte(bytes[s - 1]);
+        let right_ok = e == bytes.len() || !is_ident_byte(bytes[e]);
+        if left_ok && right_ok {
+            out.push((s, e));
+        }
+        off = e;
+    }
+    out
+}
+
+fn leading_visual_width(line: &str, tab_w: usize) -> usize {
+    let mut v = 0usize;
+    for ch in line.chars() {
+        if ch == ' ' {
+            v += 1;
+        } else if ch == '\t' {
+            v += tab_w - (v % tab_w);
+        } else {
+            break;
+        }
+    }
+    v
+}
+
+fn blank_line_inherited_indent(rope: &crate::rope::Rope, row: usize, tab_w: usize) -> usize {
+    let total = rope.line_count();
+    let mut above = 0usize;
+    for r in (row.saturating_sub(8)..row).rev() {
+        let t = rope.line(r);
+        if !t.trim().is_empty() {
+            above = leading_visual_width(&t, tab_w);
+            break;
+        }
+    }
+    let mut below = 0usize;
+    for r in (row + 1)..(row + 9).min(total) {
+        let t = rope.line(r);
+        if !t.trim().is_empty() {
+            below = leading_visual_width(&t, tab_w);
+            break;
+        }
+    }
+    above.min(below)
+}
+
+fn compute_active_indent_scope(
+    rope: &crate::rope::Rope,
+    primary_row: usize,
+    indent_w: usize,
+) -> Option<(usize, usize, usize)> {
+    let total = rope.line_count();
+    let cur_txt = rope.line(primary_row);
+    let cur_lead = if cur_txt.trim().is_empty() {
+        blank_line_inherited_indent(rope, primary_row, indent_w)
+    } else {
+        leading_visual_width(&cur_txt, indent_w)
+    };
+    let active_col = (cur_lead / indent_w) * indent_w;
+    if active_col == 0 {
+        return None;
+    }
+    let mut s = primary_row;
+    while s > 0 && primary_row - s < 80 {
+        let t = rope.line(s - 1);
+        if t.trim().is_empty() || leading_visual_width(&t, indent_w) >= active_col {
+            s -= 1;
+        } else {
+            break;
+        }
+    }
+    let mut e = primary_row;
+    while e + 1 < total && e - primary_row < 80 {
+        let t = rope.line(e + 1);
+        if t.trim().is_empty() || leading_visual_width(&t, indent_w) >= active_col {
+            e += 1;
+        } else {
+            break;
+        }
+    }
+    Some((s, e, active_col))
 }
 
 fn push_scrollbar_cell(

@@ -76,6 +76,7 @@ pub struct Document {
     pub scroll_row: usize,
     pub scroll_col: usize,
     pub search: SearchState,
+    pub bookmarks: BTreeSet<usize>,
     pub auto_close: bool,
     pub tab_width: usize,
     undo_stack: Vec<UndoEntry>,
@@ -100,6 +101,7 @@ impl Document {
             scroll_row: 0,
             scroll_col: 0,
             search: SearchState::default(),
+            bookmarks: BTreeSet::new(),
             auto_close: true,
             tab_width: 2,
             undo_stack: Vec::new(),
@@ -1179,6 +1181,131 @@ impl Document {
         count
     }
 
+    pub fn word_at_primary(&self) -> Option<String> {
+        let p = self.primary_cursor();
+        if !p.is_empty() {
+            return None;
+        }
+        let (s, e) = self.word_bounds_at(p.head)?;
+        let w = self.rope.slice(s, e);
+        if w.chars().count() < 2 || !w.chars().any(|c| c.is_alphabetic()) || !w.chars().all(is_word_char) {
+            return None;
+        }
+        Some(w)
+    }
+
+    /// Vim-style `Alt+B` line bookmark toggle (`◆` in gutter).
+    pub fn toggle_bookmark(&mut self) -> (bool, usize) {
+        let (row, _) = self.primary_line_col();
+        let added = if self.bookmarks.contains(&row) {
+            self.bookmarks.remove(&row);
+            false
+        } else {
+            self.bookmarks.insert(row);
+            true
+        };
+        (added, row)
+    }
+
+    /// Jump to next/previous bookmarked line (wraps around).
+    pub fn jump_bookmark(&mut self, forward: bool) -> Option<(usize, usize, usize)> {
+        let max_r = self.rope.line_count().saturating_sub(1);
+        self.bookmarks.retain(|&r| r <= max_r);
+        if self.bookmarks.is_empty() {
+            return None;
+        }
+        let (cur_row, _) = self.primary_line_col();
+        let list: Vec<usize> = self.bookmarks.iter().copied().collect();
+        let idx = if forward {
+            list.iter().position(|&r| r > cur_row).unwrap_or(0)
+        } else {
+            list.iter().rposition(|&r| r < cur_row).unwrap_or(list.len() - 1)
+        };
+        let target = list[idx];
+        self.goto_line(target + 1);
+        Some((idx + 1, list.len(), target + 1))
+    }
+
+    /// Jump to next/previous modified Git hunk (`Alt+]` / `Alt+[`, like Vim `]c` / `[c`).
+    pub fn jump_git_hunk(&mut self, forward: bool) -> Option<(usize, usize, usize)> {
+        let marks = self.git.snapshot();
+        if marks.is_empty() {
+            return None;
+        }
+        let mut rows: Vec<usize> = marks.keys().copied().collect();
+        rows.sort_unstable();
+        // Collapse contiguous marked rows into distinct hunk start lines
+        let mut hunks = Vec::new();
+        for r in rows {
+            if hunks.last().map_or(true, |&prev: &usize| r > prev + 1) {
+                hunks.push(r);
+            }
+        }
+        if hunks.is_empty() {
+            return None;
+        }
+        let (cur_row, _) = self.primary_line_col();
+        let idx = if forward {
+            hunks.iter().position(|&r| r > cur_row).unwrap_or(0)
+        } else {
+            hunks.iter().rposition(|&r| r < cur_row).unwrap_or(hunks.len() - 1)
+        };
+        let target = hunks[idx];
+        self.goto_line(target + 1);
+        Some((idx + 1, hunks.len(), target + 1))
+    }
+
+    /// Smart Vim-like `Alt+I` Expand Selection:
+    /// word -> inner `() [] {} "" '' `` ` -> around delimiters -> outer block -> line -> document.
+    pub fn expand_selection(&mut self) {
+        let p = self.primary_cursor();
+        let (s, e) = p.range();
+        if s == e {
+            if let Some((ws, we)) = self.word_bounds_at(s) {
+                self.cursors = vec![Selection {
+                    anchor: ws,
+                    head: we,
+                    desired_col: 0,
+                }];
+                self.primary = 0;
+                return;
+            }
+        }
+
+        // Look for the tightest enclosing pair around (s, e) within a 32 KB window
+        const WIN: usize = 32_768;
+        let win_start = s.saturating_sub(WIN);
+        let win_end = (e + WIN).min(self.rope.len_bytes());
+        let chunk = self.rope.slice(win_start, win_end);
+        let rel_s = s - win_start;
+        let rel_e = e - win_start;
+
+        if let Some((ns, ne)) = find_enclosing_expansion(&chunk, rel_s, rel_e) {
+            self.cursors = vec![Selection {
+                anchor: win_start + ns,
+                head: win_start + ne,
+                desired_col: 0,
+            }];
+            self.primary = 0;
+            return;
+        }
+
+        // Fallback: expand to current line, then full document
+        let (row, _) = self.rope.byte_to_line_col(s);
+        let ls = self.rope.line_start_byte(row);
+        let le = self.rope.line_end_byte(row);
+        if s > ls || e < le {
+            self.cursors = vec![Selection {
+                anchor: ls,
+                head: le,
+                desired_col: 0,
+            }];
+            self.primary = 0;
+        } else {
+            self.select_all();
+        }
+    }
+
     fn affected_rows(&self) -> Vec<usize> {
         let mut set = BTreeSet::new();
         for c in &self.cursors {
@@ -1230,6 +1357,80 @@ impl Document {
         let eb = ls + chars[e].0 + chars[e].1.len_utf8();
         Some((sb, eb))
     }
+}
+
+fn find_enclosing_expansion(chunk: &str, sel_s: usize, sel_e: usize) -> Option<(usize, usize)> {
+    let bytes = chunk.as_bytes();
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut stack: Vec<(u8, usize)> = Vec::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        // Handle quoted strings on the same line or backticks
+        if matches!(b, b'"' | b'\'' | b'`') {
+            let start = i;
+            i += 1;
+            let mut found_end = None;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == b {
+                    found_end = Some(i);
+                    i += 1;
+                    break;
+                }
+                if b != b'`' && bytes[i] == b'\n' {
+                    break;
+                }
+                i += 1;
+            }
+            if let Some(end) = found_end {
+                pairs.push((start, end));
+            }
+            continue;
+        }
+        match b {
+            b'(' | b'[' | b'{' => stack.push((b, i)),
+            b')' | b']' | b'}' => {
+                let want = match b {
+                    b')' => b'(',
+                    b']' => b'[',
+                    _ => b'{',
+                };
+                if let Some(pos) = stack.iter().rposition(|&(op, _)| op == want) {
+                    let (_, open_i) = stack.remove(pos);
+                    pairs.push((open_i, i));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    // Choose the smallest enclosing pair that strictly expands (sel_s, sel_e)
+    let mut best: Option<(usize, usize)> = None;
+    for (open_i, close_i) in pairs {
+        if open_i > sel_s || close_i + 1 < sel_e {
+            continue;
+        }
+        let inner = (open_i + 1, close_i);
+        let around = (open_i, close_i + 1);
+        let candidate = if sel_s >= inner.0 && sel_e <= inner.1 && (sel_s, sel_e) != inner && inner.0 < inner.1 {
+            inner
+        } else if (sel_s, sel_e) != around {
+            around
+        } else {
+            continue;
+        };
+        let cand_len = candidate.1 - candidate.0;
+        if best.map_or(true, |(bs, be)| cand_len < (be - bs)) {
+            best = Some(candidate);
+        }
+    }
+    best
 }
 
 fn is_word_char(c: char) -> bool {
@@ -1435,5 +1636,42 @@ mod tests {
         doc.search.recompute(&doc.rope, 0);
         assert_eq!(doc.replace_all_matches(), 3);
         assert_eq!(doc.rope.line(0), "wolf dog wolf bird wolf");
+    }
+
+    #[test]
+    fn smart_expand_selection_and_bookmarks() {
+        let mut doc = Document::new_empty();
+        doc.rope = Rope::from_str("fn run(args: Vec<\"hello world\">) {\n    let x = 1;\n}\n");
+        let pos = doc.rope.slice(0, doc.rope.len_bytes()).find("hello").unwrap() + 1;
+        doc.cursors = vec![Selection::caret(pos)];
+
+        // 1) word -> "hello"
+        doc.expand_selection();
+        let (s, e) = doc.primary_cursor().range();
+        assert_eq!(doc.rope.slice(s, e), "hello");
+
+        // 2) inner quotes -> "hello world"
+        doc.expand_selection();
+        let (s, e) = doc.primary_cursor().range();
+        assert_eq!(doc.rope.slice(s, e), "hello world");
+
+        // 3) around quotes -> "\"hello world\""
+        doc.expand_selection();
+        let (s, e) = doc.primary_cursor().range();
+        assert_eq!(doc.rope.slice(s, e), "\"hello world\"");
+
+        // 4) inner parens -> "args: Vec<\"hello world\">"
+        doc.expand_selection();
+        let (s, e) = doc.primary_cursor().range();
+        assert_eq!(doc.rope.slice(s, e), "args: Vec<\"hello world\">");
+
+        // Bookmarks toggle & wrap jump
+        doc.goto_line(1);
+        assert_eq!(doc.toggle_bookmark(), (true, 0));
+        doc.goto_line(3);
+        assert_eq!(doc.toggle_bookmark(), (true, 2));
+        doc.goto_line(1);
+        assert_eq!(doc.jump_bookmark(true), Some((2, 2, 3)));
+        assert_eq!(doc.jump_bookmark(true), Some((1, 2, 1)));
     }
 }

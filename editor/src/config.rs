@@ -12,6 +12,10 @@ pub struct EditorConfig {
     pub scrolloff: usize,
     pub wrap: bool,
     pub auto_close: bool,
+    pub cursorword: bool,
+    pub indent_guides: bool,
+    pub show_trailing: bool,
+    pub color_column: usize, // 0 = off, else 80 / 100 / 120
 }
 
 impl Default for EditorConfig {
@@ -26,6 +30,10 @@ impl Default for EditorConfig {
             scrolloff: 3,
             wrap: false,
             auto_close: true,
+            cursorword: true,
+            indent_guides: true,
+            show_trailing: true,
+            color_column: 100,
         }
     }
 }
@@ -70,6 +78,14 @@ impl EditorConfig {
                 }
                 "wrap" => cfg.wrap = parse_bool(v),
                 "auto_close" => cfg.auto_close = parse_bool(v),
+                "cursorword" => cfg.cursorword = parse_bool(v),
+                "indent_guides" => cfg.indent_guides = parse_bool(v),
+                "show_trailing" => cfg.show_trailing = parse_bool(v),
+                "color_column" => {
+                    if let Ok(n) = v.parse::<usize>() {
+                        cfg.color_column = n.min(200);
+                    }
+                }
                 _ => {}
             }
         }
@@ -91,7 +107,11 @@ impl EditorConfig {
              center_scroll={}\n\
              scrolloff={}\n\
              wrap={}\n\
-             auto_close={}\n",
+             auto_close={}\n\
+             cursorword={}\n\
+             indent_guides={}\n\
+             show_trailing={}\n\
+             color_column={}\n",
             self.vim_visual,
             self.relative_numbers,
             self.block_cursor,
@@ -100,7 +120,11 @@ impl EditorConfig {
             self.center_scroll,
             self.scrolloff,
             self.wrap,
-            self.auto_close
+            self.auto_close,
+            self.cursorword,
+            self.indent_guides,
+            self.show_trailing,
+            self.color_column
         );
         let _ = fs::write(path, body);
     }
@@ -109,7 +133,7 @@ impl EditorConfig {
         self.vim_visual = !self.vim_visual;
         if self.vim_visual {
             self.relative_numbers = true;
-            self.block_cursor = false; // thin bar (solid active, blinks in standby)
+            self.block_cursor = false;
             self.mouse = false;
             self.scrollbar = true;
             self.scrolloff = 8;
@@ -120,6 +144,16 @@ impl EditorConfig {
             self.center_scroll = false;
             self.scrolloff = 3;
         }
+        self.save();
+    }
+
+    pub fn cycle_color_column(&mut self) {
+        self.color_column = match self.color_column {
+            0 => 80,
+            80 => 100,
+            100 => 120,
+            _ => 0,
+        };
         self.save();
     }
 }

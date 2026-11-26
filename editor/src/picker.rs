@@ -18,6 +18,10 @@ pub enum PickerAction {
     ToggleMouse,
     ToggleScrollbar,
     ToggleCenterScroll,
+    ToggleCursorWord,
+    ToggleIndentGuides,
+    ToggleTrailingSpaces,
+    CycleColorColumn,
     ToggleWrap,
     ToggleAutoClose,
     ToggleLineEnding,
@@ -104,6 +108,29 @@ impl Picker {
                 label: format!("Scroll Centralizado / Typewriter [{}]", onoff(cfg.center_scroll)),
                 detail: "mantem linha no centro".into(),
                 action: PickerAction::ToggleCenterScroll,
+            },
+            PickerItem {
+                label: format!("Destacar Palavra sob Cursor [{}]", onoff(cfg.cursorword)),
+                detail: "illuminate / cursorword".into(),
+                action: PickerAction::ToggleCursorWord,
+            },
+            PickerItem {
+                label: format!("Guias de Indentacao [{}]", onoff(cfg.indent_guides)),
+                detail: "▏ indent-blankline".into(),
+                action: PickerAction::ToggleIndentGuides,
+            },
+            PickerItem {
+                label: format!("Mostrar Espacos no Fim da Linha [{}]", onoff(cfg.show_trailing)),
+                detail: "· listchars trail".into(),
+                action: PickerAction::ToggleTrailingSpaces,
+            },
+            PickerItem {
+                label: format!(
+                    "Regua de Coluna (colorcolumn) [{}]",
+                    if cfg.color_column == 0 { "OFF".into() } else { cfg.color_column.to_string() }
+                ),
+                detail: "0 / 80 / 100 / 120".into(),
+                action: PickerAction::CycleColorColumn,
             },
             PickerItem {
                 label: format!("Alternar Word Wrap [{}]", onoff(cfg.wrap)),

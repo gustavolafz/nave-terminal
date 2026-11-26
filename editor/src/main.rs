@@ -485,6 +485,35 @@ impl App {
                     }
                     return;
                 }
+                KeyCode::Char('i') => {
+                    self.doc_mut().expand_selection();
+                    return;
+                }
+                KeyCode::Char('b') => {
+                    let (added, row) = self.doc_mut().toggle_bookmark();
+                    if added {
+                        self.set_status(format!("◆ Bookmark adicionado na linha {}", row + 1));
+                    } else {
+                        self.set_status(format!("Bookmark removido da linha {}", row + 1));
+                    }
+                    return;
+                }
+                KeyCode::Char(']') => {
+                    if let Some((idx, tot, ln)) = self.doc_mut().jump_git_hunk(true) {
+                        self.set_status(format!("Git hunk {}/{} (Ln {})", idx, tot, ln));
+                    } else {
+                        self.set_status("Nenhuma alteracao Git neste arquivo");
+                    }
+                    return;
+                }
+                KeyCode::Char('[') => {
+                    if let Some((idx, tot, ln)) = self.doc_mut().jump_git_hunk(false) {
+                        self.set_status(format!("Git hunk {}/{} (Ln {})", idx, tot, ln));
+                    } else {
+                        self.set_status("Nenhuma alteracao Git neste arquivo");
+                    }
+                    return;
+                }
                 KeyCode::Char('f') => {
                     self.enter_find(false);
                     return;
@@ -665,6 +694,13 @@ impl App {
                     self.select_byte_range(s, e);
                 }
             }
+            KeyCode::F(4) => {
+                if let Some((idx, tot, ln)) = self.doc_mut().jump_bookmark(!k.shift) {
+                    self.set_status(format!("◆ Bookmark {}/{} (Ln {})", idx, tot, ln));
+                } else {
+                    self.set_status("Nenhum bookmark (use Alt+B para marcar linha)");
+                }
+            }
             KeyCode::F(5) => {
                 if let Err(e) = self.doc_mut().reload_from_disk() {
                     self.set_status(format!("Erro ao recarregar: {}", e));
@@ -802,6 +838,13 @@ impl App {
                 };
                 if let Some((s, e)) = m {
                     self.select_byte_range(s, e);
+                }
+            }
+            KeyCode::F(4) => {
+                if let Some((idx, tot, ln)) = self.doc_mut().jump_bookmark(!k.shift) {
+                    self.set_status(format!("◆ Bookmark {}/{} (Ln {})", idx, tot, ln));
+                } else {
+                    self.set_status("Nenhum bookmark (use Alt+B para marcar linha)");
                 }
             }
             KeyCode::Backspace => {
@@ -948,6 +991,33 @@ impl App {
                     self.cfg.save();
                     let st = if self.cfg.center_scroll { "ON (typewriter)" } else { "OFF" };
                     self.set_status(format!("Scroll centralizado: {}", st));
+                }
+                PickerAction::ToggleCursorWord => {
+                    self.cfg.cursorword = !self.cfg.cursorword;
+                    self.cfg.save();
+                    let st = if self.cfg.cursorword { "ON" } else { "OFF" };
+                    self.set_status(format!("Destaque de palavra sob cursor: {}", st));
+                }
+                PickerAction::ToggleIndentGuides => {
+                    self.cfg.indent_guides = !self.cfg.indent_guides;
+                    self.cfg.save();
+                    let st = if self.cfg.indent_guides { "ON" } else { "OFF" };
+                    self.set_status(format!("Guias de indentacao: {}", st));
+                }
+                PickerAction::ToggleTrailingSpaces => {
+                    self.cfg.show_trailing = !self.cfg.show_trailing;
+                    self.cfg.save();
+                    let st = if self.cfg.show_trailing { "ON" } else { "OFF" };
+                    self.set_status(format!("Espacos no fim da linha: {}", st));
+                }
+                PickerAction::CycleColorColumn => {
+                    self.cfg.cycle_color_column();
+                    let lbl = if self.cfg.color_column == 0 {
+                        "OFF".to_string()
+                    } else {
+                        format!("coluna {}", self.cfg.color_column)
+                    };
+                    self.set_status(format!("Regua de coluna: {}", lbl));
                 }
                 PickerAction::ToggleWrap => {
                     self.cfg.wrap = !self.cfg.wrap;
