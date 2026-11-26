@@ -447,9 +447,10 @@ function sysinfo {
     $freeRam  = [Math]::Round($os.FreePhysicalMemory / 1MB, 1)
     $usedRam  = [Math]::Round($totalRam - $freeRam, 1)
     $ramPct   = [int][Math]::Round(($usedRam / $totalRam) * 100)
-    $totalDisk = [Math]::Round($disk.Size / 1GB, 0)
-    $usedDisk  = [Math]::Round(($disk.Size - $disk.FreeSpace) / 1GB, 0)
-    $diskPct   = [int][Math]::Round(($usedDisk / $totalDisk) * 100)
+    $totalDisk = [Math]::Round($disk.Size / 1GB, 1)
+    $usedDisk  = [Math]::Round(($disk.Size - $disk.FreeSpace) / 1GB, 1)
+    $diskPctF  = [Math]::Round(($usedDisk / $totalDisk) * 100, 1)
+    $diskPct   = [int][Math]::Round($diskPctF)
     $upSpan = (Get-Date) - $os.LastBootUpTime
     $upStr  = "$([int]$upSpan.TotalHours)h $($upSpan.Minutes)m"
     $tcpCount = (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue).Count
@@ -471,7 +472,7 @@ function sysinfo {
         "$frm " + (_Nave-Fg $c.git "Shell:   ") + "PowerShell $($PSVersionTable.PSVersion)"
         "$frm " + (_Nave-Fg $c.git "Uptime:  ") + $upStr
         "$frm " + (_Nave-Fg $c.git "Memory:  ") + (_Nave-Bar $ramPct 14) + " ${usedRam}Gi/${totalRam}Gi (${ramPct}%)"
-        "$frm " + (_Nave-Fg $c.git "Disk C:: ") + (_Nave-Bar $diskPct 14) + " ${usedDisk}G/${totalDisk}G (${diskPct}%)"
+        "$frm " + (_Nave-Fg $c.git "Disk C:: ") + (_Nave-Bar $diskPct 14) + " ${usedDisk}G/${totalDisk}G (${diskPctF}%)"
         "$frm " + (_Nave-Fg $c.git "Net:     ") + "$tcpCount portas TCP em escuta"
         (_Nave-Fg $c.dir ("$($script:CH_BL)" + ([string]$script:CH_H * 46)))
     )
@@ -566,8 +567,9 @@ if ((_Nave-LoadSetting "welcome" "1") -eq "1" -and $Host.Name -eq "ConsoleHost")
     $dkW = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction SilentlyContinue
     if ($osW -and $dkW) {
         $ramP = [int][Math]::Round((($osW.TotalVisibleMemorySize - $osW.FreePhysicalMemory) / $osW.TotalVisibleMemorySize) * 100)
-        $dskP = [int][Math]::Round((($dkW.Size - $dkW.FreeSpace) / $dkW.Size) * 100)
+        $dskPF = [Math]::Round((($dkW.Size - $dkW.FreeSpace) / $dkW.Size) * 100, 1)
+        $dskP = [int][Math]::Round($dskPF)
         $c = $script:NaveC
-        Write-Host ((_Nave-Fg $c.frame "$($script:CH_TL)$($script:CH_H) ") + (_Nave-Fg $c.dir "nave" -Bold) + "  RAM " + (_Nave-Bar $ramP 10) + " ${ramP}%  $($script:CH_MID)  SSD " + (_Nave-Bar $dskP 10) + " ${dskP}%  $($script:CH_MID)  " + (_Nave-Fg $c.muted "digite 'nave-help' para atalhos"))
+        Write-Host ((_Nave-Fg $c.frame "$($script:CH_TL)$($script:CH_H) ") + (_Nave-Fg $c.dir "nave" -Bold) + "  RAM " + (_Nave-Bar $ramP 10) + " ${ramP}%  $($script:CH_MID)  SSD " + (_Nave-Bar $dskP 10) + " ${dskPF}%  $($script:CH_MID)  " + (_Nave-Fg $c.muted "digite 'nave-help' para atalhos"))
     }
 }

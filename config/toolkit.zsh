@@ -422,26 +422,44 @@ function _nave_bar {
   echo -n "%F{${color}}${bar_f}%f%F{${_NAVE_C[frame]:-240}}${bar_e}%f"
 }
 
+# Fast live Windows host RAM reader for WSL (~40ms via native GlobalMemoryStatusEx helper)
+function _nave_win_mem {
+  local -a helper=(/mnt/c/Users/*/.config/nave/nave-winmem.exe(N[1]))
+  if [[ -n "${helper[1]}" && -x "${helper[1]}" ]]; then
+    "${helper[1]}" </dev/null 2>/dev/null | tr -d '\r'
+    return 0
+  fi
+  return 1
+}
+
 function sysinfo {
-  local os kernel up mem_used mem_tot mem_pct disk_used disk_tot disk_pct ip_addr open_ports dk_run
+  local os kernel up mem_used mem_tot mem_pct wsl_used wsl_tot wsl_pct disk_used disk_tot disk_pct_f disk_pct_i ip_addr open_ports dk_run
   os=$(grep -m1 PRETTY_NAME /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
   kernel=$(uname -r)
   up=$(uptime -p 2>/dev/null | sed 's/^up //')
 
   local disk_target="/" disk_lbl="Disk /:"
-  if [[ -d /mnt/c ]] && df -h /mnt/c >/dev/null 2>&1; then
+  if [[ -d /mnt/c ]] && df -k /mnt/c >/dev/null 2>&1; then
     disk_target="/mnt/c"
     disk_lbl="SSD C::"
   fi
-  read -r mem_used mem_tot mem_pct <<< "$(free -m | awk '/^Mem:/ {printf "%.1fGi %.1fGi %d", $3/1024, $2/1024, ($3/$2)*100}')"
-  read -r disk_used disk_tot disk_pct <<< "$(df -h "$disk_target" | awk 'NR==2 {gsub(/%/,"",$5); print $3, $2, $5}')"
+  read -r wsl_used wsl_tot wsl_pct <<< "$(free -m | awk '/^Mem:/ {printf "%.1f %.1f %d", $3/1024, $2/1024, int(($3/$2)*100 + 0.5)}')"
+  local win_mem mem_line
+  win_mem=$(_nave_win_mem)
+  if [[ -n "$win_mem" ]]; then
+    read -r mem_used mem_tot mem_pct <<< "$win_mem"
+    mem_line="$(_nave_bar "$mem_pct" 14) ${mem_used}/${mem_tot}Gi (${mem_pct}%%) %F{${_NAVE_C[muted]:-244}}· WSL ${wsl_pct}%%%f"
+  else
+    mem_used="$wsl_used"; mem_tot="$wsl_tot"; mem_pct="$wsl_pct"
+    mem_line="$(_nave_bar "$mem_pct" 14) ${mem_used}/${mem_tot}Gi (${mem_pct}%%)"
+  fi
+  read -r disk_used disk_tot disk_pct_f disk_pct_i <<< "$(df -k "$disk_target" | awk 'NR==2 {u=$3/1048576; t=$2/1048576; p=(u/t)*100; printf "%.1fG %.1fG %.1f %d", u, t, p, int(p+0.5)}')"
   ip_addr=$(hostname -I 2>/dev/null | awk '{print $1}')
   open_ports=$(ss -tlnH 2>/dev/null | wc -l | tr -d ' ')
   dk_run=$(docker ps -q 2>/dev/null | wc -l | tr -d ' ')
 
-  local mem_bar disk_bar
-  mem_bar=$(_nave_bar "$mem_pct" 14)
-  disk_bar=$(_nave_bar "$disk_pct" 14)
+  local disk_bar
+  disk_bar=$(_nave_bar "$disk_pct_i" 14)
 
   local c_dir="${_NAVE_C[dir]:-39}"
   local c_frm="${_NAVE_C[frame]:-240}"
@@ -465,8 +483,8 @@ function sysinfo {
     "%F{${c_frm}}│%f %F{${c_lbl}}OS:%f      ${os:-Linux}"
     "%F{${c_frm}}│%f %F{${c_lbl}}Kernel:%f  ${kernel}"
     "%F{${c_frm}}│%f %F{${c_lbl}}Uptime:%f  ${up:-N/A}"
-    "%F{${c_frm}}│%f %F{${c_lbl}}Memory:%f  ${mem_bar} ${mem_used}/${mem_tot} (${mem_pct}%%)"
-    "%F{${c_frm}}│%f %F{${c_lbl}}${disk_lbl}%f  ${disk_bar} ${disk_used}/${disk_tot} (${disk_pct}%%)"
+    "%F{${c_frm}}│%f %F{${c_lbl}}Memory:%f  ${mem_line}"
+    "%F{${c_frm}}│%f %F{${c_lbl}}${disk_lbl}%f  ${disk_bar} ${disk_used}/${disk_tot} (${disk_pct_f}%%)"
     "%F{${c_frm}}│%f %F{${c_lbl}}Net:%f     WSL ${ip_addr:-N/A} · ${open_ports} TCP · ${dk_run} docker"
     "%F{${c_dir}}╰──────────────────────────────────────────────%f"
   )
@@ -499,14 +517,19 @@ function _nave_show_welcome {
   [[ "$enabled" == "1" ]] || return
   [[ -o interactive && -t 1 ]] || return
 
-  local mem_pct disk_pct mem_bar disk_bar disk_target="/"
-  [[ -d /mnt/c ]] && df -h /mnt/c >/dev/null 2>&1 && disk_target="/mnt/c"
-  mem_pct=$(free -m | awk '/^Mem:/ {printf "%d", ($3/$2)*100}')
-  disk_pct=$(df -h "$disk_target" | awk 'NR==2 {gsub(/%/,"",$5); print $5}')
+  local mem_pct disk_pct_f disk_pct_i mem_bar disk_bar disk_target="/" win_mem _u _t
+  [[ -d /mnt/c ]] && df -k /mnt/c >/dev/null 2>&1 && disk_target="/mnt/c"
+  win_mem=$(_nave_win_mem)
+  if [[ -n "$win_mem" ]]; then
+    read -r _u _t mem_pct <<< "$win_mem"
+  else
+    mem_pct=$(free -m | awk '/^Mem:/ {printf "%d", int(($3/$2)*100 + 0.5)}')
+  fi
+  read -r disk_pct_f disk_pct_i <<< "$(df -k "$disk_target" | awk 'NR==2 {p=($3/$2)*100; printf "%.1f %d", p, int(p+0.5)}')"
   mem_bar=$(_nave_bar "$mem_pct" 10)
-  disk_bar=$(_nave_bar "$disk_pct" 10)
+  disk_bar=$(_nave_bar "$disk_pct_i" 10)
 
-  print -P "%F{${_NAVE_C[frame]:-240}}╭─%f %F{${_NAVE_C[dir]:-39}}%Bnave%b%f  RAM ${mem_bar} ${mem_pct}%%  ·  SSD ${disk_bar} ${disk_pct}%%  ·  %F{${_NAVE_C[muted]:-242}}digite 'nave-help' para atalhos%f"
+  print -P "%F{${_NAVE_C[frame]:-240}}╭─%f %F{${_NAVE_C[dir]:-39}}%Bnave%b%f  RAM ${mem_bar} ${mem_pct}%%  ·  SSD ${disk_bar} ${disk_pct_f}%%  ·  %F{${_NAVE_C[muted]:-242}}digite 'nave-help' para atalhos%f"
 }
 
 function nave-help {

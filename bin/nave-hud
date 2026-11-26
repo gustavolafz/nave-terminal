@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
 nave-hud — Zero-flicker real-time full-screen terminal cockpit for Nave Terminal.
-Uses DEC 2026 Synchronized Output, in-place line redraw (no full-screen clear),
-and background telemetry polling so the clock ticks smoothly with zero flashing.
+Shows live CPU + sparkline, real Windows host RAM (PC), WSL VM RAM, and decimal SSD C:.
+Uses DEC 2026 Synchronized Output, in-place line redraw, and background telemetry polling.
 Controls: [1-5] switch palette live, [q/Esc] quit cleanly.
 Supports --once for a single static frame render.
 """
 import datetime
+import glob
 import os
 import pathlib
 import select
@@ -86,7 +87,7 @@ def read_cpu_times():
     total = sum(parts)
     return idle, total
 
-def read_mem():
+def read_wsl_mem():
     info = {}
     with open("/proc/meminfo") as f:
         for line in f:
@@ -95,15 +96,59 @@ def read_mem():
     tot = info["MemTotal"] / 1048576.0
     avail = info["MemAvailable"] / 1048576.0
     used = tot - avail
-    return used, tot, int(round(used / tot * 100))
+    pct = (used / tot) * 100.0 if tot > 0 else 0.0
+    return used, tot, pct
+
+def find_winmem_helper():
+    matches = sorted(glob.glob("/mnt/c/Users/*/.config/nave/nave-winmem.exe"))
+    for m in matches:
+        if os.access(m, os.X_OK):
+            return m
+    return None
+
+WINMEM_HELPER = find_winmem_helper()
+
+def read_win_mem():
+    """Returns (used_gib, tot_gib, pct_float) for Windows host RAM when in WSL, else None."""
+    if WINMEM_HELPER:
+        try:
+            out = subprocess.check_output(
+                [WINMEM_HELPER], stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True, timeout=1.5
+            ).strip()
+            parts = out.split()
+            if len(parts) >= 2:
+                used, tot = float(parts[0]), float(parts[1])
+                pct = (used / tot) * 100.0 if tot > 0 else 0.0
+                return used, tot, pct
+        except Exception:
+            pass
+    if os.path.isdir("/mnt/c") and shutil.which("powershell.exe"):
+        try:
+            out = subprocess.check_output(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                 "$o=Get-CimInstance Win32_OperatingSystem; \"$($o.TotalVisibleMemorySize) $($o.FreePhysicalMemory)\""],
+                stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True, timeout=3.0
+            ).strip()
+            parts = out.split()
+            if len(parts) >= 2:
+                tot = float(parts[0]) / 1048576.0
+                free = float(parts[1]) / 1048576.0
+                used = tot - free
+                pct = (used / tot) * 100.0 if tot > 0 else 0.0
+                return used, tot, pct
+        except Exception:
+            pass
+    return None
 
 def read_disk():
     target = "/mnt/c" if os.path.isdir("/mnt/c") else "/"
+    label = "SSD C: " if target == "/mnt/c" else "DISK / "
     st = os.statvfs(target)
     tot = (st.f_blocks * st.f_frsize) / (1024 ** 3)
     free = (st.f_bavail * st.f_frsize) / (1024 ** 3)
     used = tot - free
-    return used, tot, int(round(used / tot * 100))
+    pct = (used / tot) * 100.0 if tot > 0 else 0.0
+    return label, used, tot, pct
 
 def read_uptime():
     with open("/proc/uptime") as f:
@@ -115,34 +160,34 @@ def read_uptime():
 def read_net_docker():
     ip = "N/A"
     try:
-        out = subprocess.check_output(["hostname", "-I"], text=True, stderr=subprocess.DEVNULL).strip()
+        out = subprocess.check_output(["hostname", "-I"], stdin=subprocess.DEVNULL, text=True, stderr=subprocess.DEVNULL).strip()
         if out: ip = out.split()[0]
     except Exception:
         pass
     ports = 0
     try:
-        out = subprocess.check_output(["ss", "-tlnH"], text=True, stderr=subprocess.DEVNULL)
+        out = subprocess.check_output(["ss", "-tlnH"], stdin=subprocess.DEVNULL, text=True, stderr=subprocess.DEVNULL)
         ports = len([l for l in out.splitlines() if l.strip()])
     except Exception:
         pass
     dk = 0
     try:
-        out = subprocess.check_output(["docker", "ps", "-q"], text=True, stderr=subprocess.DEVNULL, timeout=1)
+        out = subprocess.check_output(["docker", "ps", "-q"], stdin=subprocess.DEVNULL, text=True, stderr=subprocess.DEVNULL, timeout=1)
         dk = len([l for l in out.splitlines() if l.strip()])
     except Exception:
         pass
     return ip, ports, dk
 
 def bar(pct, width, pal):
-    pct = max(0, min(100, pct))
-    filled = int(round(pct * width / 100))
+    pct = max(0.0, min(100.0, float(pct)))
+    filled = int(round(pct * width / 100.0))
     col = pal["ok"] if pct < 70 else (pal["warn"] if pct < 88 else pal["err"])
     return rgb(col) + ("█" * filled) + rgb(pal["dim"]) + ("░" * (width - filled)) + RST
 
-def render_frame(pal_name, cpu_pct, cpu_hist, net_info, once=False):
+def render_frame(pal_name, cpu_pct, cpu_hist, net_info, win_mem, once=False):
     pal = PALETTES[pal_name]
     cols, rows = shutil.get_terminal_size((96, 28))
-    box_w = min(max(cols - 4, 64), 84)
+    box_w = min(max(cols - 4, 66), 84)
     inner = box_w - 4
 
     now = datetime.datetime.now()
@@ -150,8 +195,8 @@ def render_frame(pal_name, cpu_pct, cpu_hist, net_info, once=False):
     date_str = now.strftime("%A, %d %b %Y").upper()
     host = socket.gethostname()
     user = os.environ.get("USER", "dev")
-    mem_u, mem_t, mem_p = read_mem()
-    dsk_u, dsk_t, dsk_p = read_disk()
+    wsl_u, wsl_t, wsl_p = read_wsl_mem()
+    dsk_lbl, dsk_u, dsk_t, dsk_p = read_disk()
     up = read_uptime()
     ip, ports, dk = net_info
 
@@ -182,22 +227,32 @@ def render_frame(pal_name, cpu_pct, cpu_hist, net_info, once=False):
     lines.append(rgb(pal["dim"]) + "├" + ("─" * (box_w - 2)) + "┤" + RST)
     lines.append(row("", 0))
 
+    bw = 22
     # CPU + Sparkline
     spark_str = "".join(SPARK[min(7, max(0, int(v / 100 * 7)))] for v in cpu_hist[-24:])
     spark_str = spark_str.rjust(24, "▁")
-    bw = 22
-    cpu_txt = f"{rgb(pal['grad'][0], True)}CPU   {RST}{bar(cpu_pct, bw, pal)} {rgb(pal['fg'])}{cpu_pct:3d}%{RST}   {grad_line(spark_str, pal['grad'])}"
-    lines.append(row(cpu_txt, 6 + bw + 5 + 3 + 24))
+    cpu_txt = f"{rgb(pal['grad'][0], True)}CPU     {RST}{bar(cpu_pct, bw, pal)} {rgb(pal['fg'])}{cpu_pct:3d}%{RST}   {grad_line(spark_str, pal['grad'])}"
+    lines.append(row(cpu_txt, 8 + bw + 5 + 3 + 24))
 
-    # Memory
-    mem_stat = f"{mem_u:4.1f}Gi / {mem_t:4.1f}Gi ({mem_p:2d}%)"
-    mem_txt = f"{rgb(pal['grad'][1], True)}RAM   {RST}{bar(mem_p, bw, pal)} {rgb(pal['fg'])}{mem_stat}{RST}"
-    lines.append(row(mem_txt, 6 + bw + 1 + len(mem_stat)))
+    # Windows Host RAM (PC) when in WSL
+    if win_mem is not None:
+        pc_u, pc_t, pc_p = win_mem
+        pc_stat = f"{pc_u:5.1f}Gi / {pc_t:5.1f}Gi ({pc_p:4.1f}%)"
+        pc_txt = f"{rgb(pal['grad'][1], True)}RAM PC  {RST}{bar(pc_p, bw, pal)} {rgb(pal['fg'])}{pc_stat}{RST}"
+        lines.append(row(pc_txt, 8 + bw + 1 + len(pc_stat)))
 
-    # Disk
-    dsk_stat = f"{dsk_u:4.0f}G  / {dsk_t:4.0f}G  ({dsk_p:2d}%)"
-    dsk_txt = f"{rgb(pal['grad'][2], True)}SSD   {RST}{bar(dsk_p, bw, pal)} {rgb(pal['fg'])}{dsk_stat}{RST}"
-    lines.append(row(dsk_txt, 6 + bw + 1 + len(dsk_stat)))
+        wsl_stat = f"{wsl_u:5.1f}Gi / {wsl_t:5.1f}Gi ({wsl_p:4.1f}%)"
+        wsl_txt = f"{rgb(pal['dim'], True)}RAM WSL {RST}{bar(wsl_p, bw, pal)} {rgb(pal['fg'])}{wsl_stat}{RST}"
+        lines.append(row(wsl_txt, 8 + bw + 1 + len(wsl_stat)))
+    else:
+        wsl_stat = f"{wsl_u:5.1f}Gi / {wsl_t:5.1f}Gi ({wsl_p:4.1f}%)"
+        wsl_txt = f"{rgb(pal['grad'][1], True)}RAM     {RST}{bar(wsl_p, bw, pal)} {rgb(pal['fg'])}{wsl_stat}{RST}"
+        lines.append(row(wsl_txt, 8 + bw + 1 + len(wsl_stat)))
+
+    # Disk (1 decimal precision so ~1GB changes show immediately)
+    dsk_stat = f"{dsk_u:5.1f}G  / {dsk_t:5.1f}G  ({dsk_p:4.1f}%)"
+    dsk_txt = f"{rgb(pal['grad'][2], True)}{dsk_lbl} {RST}{bar(dsk_p, bw, pal)} {rgb(pal['fg'])}{dsk_stat}{RST}"
+    lines.append(row(dsk_txt, 8 + bw + 1 + len(dsk_stat)))
 
     lines.append(row("", 0))
     lines.append(rgb(pal["dim"]) + "├" + ("─" * (box_w - 2)) + "┤" + RST)
@@ -251,18 +306,24 @@ def main():
         dt = max(1, t2 - t1)
         cpu = int(round((1.0 - (i2 - i1) / dt) * 100))
         hist = [max(2, min(95, cpu + d)) for d in (-4, -2, 3, 6, 2, -1, 4, 8, 5, 1, -2, 3, 7, 4, 2, 0, -1, 3, 5, 2, 1, 0, -1, 0)]
-        print(render_frame(pal_name, cpu, hist, read_net_docker(), once=True))
+        print(render_frame(pal_name, cpu, hist, read_net_docker(), read_win_mem(), once=True))
         return
 
-    # Background daemon thread refreshes slower subprocess telemetry every 3s without blocking UI
-    net_state = {"val": ("...", 0, 0), "ver": 0}
+    # Background daemon thread refreshes Windows host RAM (~40ms) + net/docker every 2s without blocking UI
+    bg_state = {"net": ("...", 0, 0), "win_mem": read_win_mem(), "ver": 0}
     stop_evt = threading.Event()
-    def _poll_net():
+    def _poll_bg():
+        tick = 0
         while not stop_evt.is_set():
-            net_state["val"] = read_net_docker()
-            net_state["ver"] += 1
-            stop_evt.wait(3.0)
-    threading.Thread(target=_poll_net, daemon=True).start()
+            wm = read_win_mem()
+            if wm is not None:
+                bg_state["win_mem"] = wm
+            if tick % 2 == 0:
+                bg_state["net"] = read_net_docker()
+            bg_state["ver"] += 1
+            tick += 1
+            stop_evt.wait(2.0)
+    threading.Thread(target=_poll_bg, daemon=True).start()
 
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
@@ -278,7 +339,7 @@ def main():
         sys.stdout.flush()
         while True:
             now_sec = int(time.time())
-            cur_ver = net_state["ver"]
+            cur_ver = bg_state["ver"]
             cur_size = shutil.get_terminal_size((96, 28))
             if now_sec != last_sec or cur_ver != last_ver or cur_size != last_size or force_redraw:
                 if now_sec != last_sec or not cpu_hist:
@@ -295,10 +356,9 @@ def main():
                 last_ver = cur_ver
                 last_size = cur_size
                 force_redraw = False
-                sys.stdout.write(render_frame(pal_name, cpu, cpu_hist, net_state["val"], once=False))
+                sys.stdout.write(render_frame(pal_name, cpu, cpu_hist, bg_state["net"], bg_state["win_mem"], once=False))
                 sys.stdout.flush()
 
-            # Sleep cleanly until the next exact second boundary (waking immediately on keypress)
             wait = max(0.05, min(0.25, 1.0 - (time.time() % 1.0) + 0.01))
             r, _, _ = select.select([sys.stdin], [], [], wait)
             if r:
