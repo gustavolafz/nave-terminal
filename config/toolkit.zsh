@@ -19,11 +19,13 @@ if command -v fzf >/dev/null 2>&1; then
   export FZF_ALT_C_OPTS="--preview 'eza --tree --level=2 --color=always {} 2>/dev/null || ls -la {}'"
   export FZF_CTRL_R_OPTS="--preview 'echo {}' --preview-window=down:3:wrap"
 
-  source <(fzf --zsh)
-fi
-
-if command -v zoxide >/dev/null 2>&1; then
-  eval "$(zoxide init zsh)"
+  local fzf_cache="${NAVE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/nave}/fzf-init.zsh"
+  local fzf_bin="${commands[fzf]:-$(command -v fzf)}"
+  if [[ ! -r "$fzf_cache" || "$fzf_bin" -nt "$fzf_cache" ]]; then
+    mkdir -p "${fzf_cache:h}"
+    fzf --zsh >| "$fzf_cache" 2>/dev/null
+  fi
+  [[ -r "$fzf_cache" ]] && source "$fzf_cache"
 fi
 
 if command -v eza >/dev/null 2>&1; then
@@ -524,9 +526,10 @@ function nave-help {
   print -P "%F{${c_frm}}│%f"
   print -P "%F{${c_frm}}│%f %F{${c_lbl}}%BNavegacao & Busca%b%f"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}p [projeto]%f            Pula para \$NAVE_PROJECTS_DIR (fzf + preview)"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}z <termo> / zi%f         Salto inteligente (zoxide)"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}z <termo> / zi / z -l%f  Salto inteligente nativo (nave-z frecency)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}Ctrl+R / Ctrl+T / Alt+C%f Busca fuzzy no historico / arquivos / pastas"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}Esc Esc / ll / lt / b%f  Toggle sudo / eza Git / arvore / bat viewer"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-suggest / highlight%f Liga/desliga sugestoes e cores nativas do Nave"
   print -P "%F{${c_frm}}│%f"
   print -P "%F{${c_frm}}│%f %F{${c_lbl}}%BEdicao Estilo VS Code%b%f"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}Shift+Setas / Ctrl+A/L%f Seleciona texto/linha (digitar/colar substitui)"
@@ -547,7 +550,8 @@ function nave-help {
   print -P "%F{${c_dir}}╰───────────────────────────────────────────────────────────%f"
 }
 
-# Load VS Code-style ZLE keybindings (selection, subword nav, undo/redo, clipboard)
-[[ -r "$HOME/.config/nave/keybindings.zsh" ]] && source "$HOME/.config/nave/keybindings.zsh"
-
-_nave_show_welcome
+# Backward compatibility if toolkit.zsh is sourced standalone without init.zsh
+if (( ! _NAVE_INIT_ACTIVE )); then
+  [[ -r "$HOME/.config/nave/keybindings.zsh" ]] && source "$HOME/.config/nave/keybindings.zsh"
+  _nave_show_welcome
+fi

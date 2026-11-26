@@ -22,7 +22,8 @@
 
 Construído para ser rápido, legível e consistente em qualquer visualizador (Windows Terminal, VS Code, Cursor, Antigravity, ConHost ou SSH), usando apenas Box Drawing (`╭─`, `╰─`, `█`, `░`) e Unicode padrão (`❯`, `±`, `↑`, `↓`, `≡`, `×`):
 
-- **5 paletas + fundo e cursor ao vivo (`OSC 11 / 12`)**: trocar com `nave-theme <nome>` muda instantaneamente o fundo da aba, cursor, prompt, `zsh-syntax-highlighting`, `PSReadLine`, `fzf` e `sysinfo`.
+- **100% Standalone no Zsh (Zero Oh My Zsh, Zero plugins externos)**: inicializador próprio (`init.zsh` com `compinit` em cache diário), motor nativo de autosuggestions (`nave-suggest`), syntax highlighting em tempo real sincronizado com a paleta (`nave-highlight`) e salto inteligente de diretórios por frecency (`nave-z`). Basta ter `zsh` instalado.
+- **5 paletas + fundo e cursor ao vivo (`OSC 11 / 12`)**: trocar com `nave-theme <nome>` muda instantaneamente o fundo da aba, cursor, prompt, `nave-highlight`, `PSReadLine`, `fzf` e `sysinfo`.
 - **4 layouts de prompt (`nave-layout`)**: alterne entre `framed`, `rail` (trilho contínuo até o relógio), `hud` (divisores geométricos `◆ │`) e `compact` (1 linha para split panes).
 - **Transient Prompt**: após pressionar Enter, prompts antigos colapsam para uma única linha minimalista (`HH:MM ❯ comando`).
 - **Arte TrueColor + Cockpit em tempo real**: `sysinfo` com foguete em gradiente dinâmico, régua divisória `hr [titulo]`, dashboard interativo `nave-hud` e starfield 3D `nave-warp`.
@@ -83,16 +84,16 @@ Guia rápido embutido no próprio shell:
 
 ## Instalação rápida
 
-### WSL / Linux (Zsh + Oh My Zsh)
+### WSL / Linux (Zsh 5.9+ — Zero Oh My Zsh)
 
 ```bash
 git clone https://github.com/gustavolafz/nave-terminal.git
 cd nave-terminal
 
-# Instala tema, toolkit, nave-hud, nave-warp e plugins Zsh
+# Instala o Nave Shell Core completo (zero Oh My Zsh, zero plugins externos)
 ./install.sh
 
-# Opcional: também baixa fzf, zoxide, bat, eza, delta, lazygit, btop, fd e rg em ~/.local/bin (sem sudo)
+# Opcional: também baixa fzf, bat, eza, delta, lazygit, btop, fd e rg em ~/.local/bin (sem sudo)
 ./install.sh --with-cli
 ```
 
@@ -102,11 +103,7 @@ Adicione no seu `~/.zshrc` (referência completa em [config/zshrc.example](confi
 export PATH="$HOME/.local/bin:$PATH"
 export NAVE_PROJECTS_DIR="$HOME/projects"   # pasta usada pelo comando `p`
 
-ZSH_THEME="nave"
-plugins=(git zsh-autosuggestions zsh-syntax-highlighting)
-source "$ZSH/oh-my-zsh.sh"
-
-[[ -r "$HOME/.config/nave/toolkit.zsh" ]] && source "$HOME/.config/nave/toolkit.zsh"
+[[ -r "$HOME/.config/nave/init.zsh" ]] && source "$HOME/.config/nave/init.zsh"
 ```
 
 Recarregue o shell:
@@ -214,7 +211,8 @@ Adicione o conteúdo de [config/gitconfig.delta](config/gitconfig.delta) ao seu 
 | **Arte & HUD** | `sysinfo` / `hr [titulo]` | Painel com arte gradiente TrueColor / régua divisória na largura da tela |
 | **Arte & HUD** | `nave-hud` / `nave-warp` | Cockpit em tela cheia em tempo real / starfield 3D interativo |
 | **Sistema** | `ports` / `killport <porta>` | Radar de portas TCP/UDP abertas e encerramento rápido |
-| **Navegação** | `p [projeto]` / `z <termo>` | Hub fuzzy de projetos em `$NAVE_PROJECTS_DIR` e salto inteligente (`zoxide`) |
+| **Navegação** | `p [projeto]` / `z <termo>` / `zi` / `z -l` | Hub fuzzy de projetos em `$NAVE_PROJECTS_DIR` e salto nativo por frecency (`nave-z`) |
+| **Motor Zsh** | `nave-suggest` / `nave-highlight` | Liga/desliga autosuggestions e syntax highlighting nativos do Nave (zero plugins externos) |
 | **Busca** | `Ctrl+R` / `Ctrl+T` / `Alt+C` | Histórico fuzzy, arquivos com preview (`bat`) e diretórios (`eza`) |
 | **Edição** | `Shift+Setas` / `Ctrl+A` / `Ctrl+L` | Seleciona texto ou linha inteira (digitar, colar ou Backspace substitui) |
 | **Edição** | `Ctrl+D` / `Ctrl+Space` / `Shift+Enter` | Seleciona palavra (2x expande argumento; não fecha o shell) / Autocomplete / Quebra de linha |
@@ -234,10 +232,14 @@ Adicione o conteúdo de [config/gitconfig.delta](config/gitconfig.delta) ao seu 
 
 ```text
 nave-terminal/
-├── theme/nave.zsh-theme               # Tema Zsh v3 (paletas OSC 11/12, 4 layouts, transient, toasts)
+├── theme/nave.zsh-theme               # Motor de prompt v4 (paletas OSC 11/12, 4 layouts, transient, toasts)
+├── config/init.zsh                    # Bootstrap standalone do Nave Shell (substitui Oh My Zsh)
+├── config/highlight.zsh               # nave-highlight: syntax highlighting nativo em Zsh 5.9
+├── config/suggest.zsh                 # nave-suggest: autosuggestions nativo em Zsh 5.9 (full + subword)
+├── config/z.zsh                       # nave-z: salto de diretórios por frecency (substitui zoxide)
+├── config/keybindings.zsh             # Edição estilo VS Code no Zsh (seleção, Ctrl+D/L/Space, undo/redo)
 ├── config/toolkit.zsh                 # Arte gradiente, hr, nave-shader, WSL, Git, Docker, projetos
-├── config/keybindings.zsh             # Edição estilo VS Code no Zsh (seleção, undo/redo, clipboard)
-├── config/zshrc.example               # Exemplo limpo de ~/.zshrc
+├── config/zshrc.example               # Exemplo limpo de ~/.zshrc (1 linha de carregamento)
 ├── config/gitconfig.delta             # Configuração recomendada para git-delta
 ├── bin/nave-hud                       # Cockpit interativo em tela cheia (relógio + CPU sparkline)
 ├── bin/nave-warp                      # Starfield 3D interativo sincronizado com a paleta

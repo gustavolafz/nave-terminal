@@ -1,7 +1,8 @@
 # ==============================================================================
-# Nave Zsh Theme v3 - Clean, fast, palette-driven, 100% universal across WSL
+# ~/.config/nave/theme.zsh
+# Nave Zsh Theme v4 — Standalone, palette-driven, 100% universal (zero Nerd Fonts)
 # Features:
-#   - Live palette switcher + live terminal background/cursor sync (OSC 11 / 12)
+#   - 5 Obsidian Vibrant palettes + live terminal background/cursor sync (OSC 11 / 12)
 #   - 4 prompt layouts: framed | rail | hud | compact (nave-layout <mode>)
 #   - Transient prompt (collapses old prompts to 1 compact line after Enter)
 #   - Windows native toast notifications for long commands (>= 15s by default)
@@ -9,6 +10,7 @@
 # ==============================================================================
 
 autoload -Uz add-zsh-hook add-zle-hook-widget
+zmodload zsh/datetime 2>/dev/null
 
 typeset -g NAVE_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/nave"
 [[ -d "$NAVE_CONFIG_DIR" ]] || mkdir -p "$NAVE_CONFIG_DIR"
@@ -98,26 +100,14 @@ function _nave_apply_palette() {
   esac
 
   NAVE_PALETTE="$pal"
+  typeset -g _NAVE_HL_LAST_PAL=""
 
   # Live terminal background & cursor color sync (OSC 11 & OSC 12)
   if (( _NAVE_BG_SYNC )) && [[ -o interactive && -t 1 && "$TERM" != "dumb" ]]; then
     printf '\e]11;%s\a\e]12;%s\a' "${_NAVE_C[bg]}" "${_NAVE_C[cursor]}"
   fi
 
-  # Sync zsh-syntax-highlighting styles if loaded
-  if (( ${+ZSH_HIGHLIGHT_STYLES} )); then
-    ZSH_HIGHLIGHT_STYLES[command]="fg=${_NAVE_C[ok]},bold"
-    ZSH_HIGHLIGHT_STYLES[builtin]="fg=${_NAVE_C[user]},bold"
-    ZSH_HIGHLIGHT_STYLES[alias]="fg=${_NAVE_C[user]},bold"
-    ZSH_HIGHLIGHT_STYLES[function]="fg=${_NAVE_C[user]},bold"
-    ZSH_HIGHLIGHT_STYLES[unknown-token]="fg=${_NAVE_C[err]},bold"
-    ZSH_HIGHLIGHT_STYLES[path]="fg=${_NAVE_C[path]},underline"
-    ZSH_HIGHLIGHT_STYLES[single-quoted-argument]="fg=${_NAVE_C[str]}"
-    ZSH_HIGHLIGHT_STYLES[double-quoted-argument]="fg=${_NAVE_C[str]}"
-    ZSH_HIGHLIGHT_STYLES[dollar-double-quoted-argument]="fg=${_NAVE_C[git]}"
-  fi
-
-  # Sync fzf color palette
+  # Sync optional fzf color palette
   export FZF_DEFAULT_OPTS="--height=60% --layout=reverse --border=rounded --margin=0,1 --info=inline-right --prompt='❯ ' --pointer='›' --marker='*' --color=hl:${_NAVE_C[fzf_hl]},hl+:${_NAVE_C[fzf_hl]},bg+:${_NAVE_C[fzf_bg]},pointer:${_NAVE_C[fzf_ptr]},prompt:${_NAVE_C[fzf_ptr]},info:${_NAVE_C[fzf_info]},border:${_NAVE_C[fzf_border]}"
 }
 
@@ -237,7 +227,7 @@ function _nave_win_toast() {
     \$appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'
     [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier(\$appId).Show(\$toast)
   "
-  (powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command "$ps_script" >/dev/null 2>&1 &)
+  (powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command "$ps_script" </dev/null >/dev/null 2>&1 &)
 }
 
 # ------------------------------------------------------------------------------
@@ -257,7 +247,7 @@ function _nave_format_duration() {
   if (( secs > 0 || ${#out} > 0 )); then
     [[ -n "$out" || $secs -ge 2 ]] && out+="${secs}s"
   fi
-  echo -n "$out"
+  printf '%s' "$out"
 }
 
 function _nave_git_info() {
@@ -314,7 +304,7 @@ function _nave_git_info() {
   [[ -n "$ahead_behind" ]] && out+=" %F{${_NAVE_C[info]}}${ahead_behind}%f"
   [[ -n "$stash_part" ]] && out+=" %F{${_NAVE_C[muted]}}${stash_part}%f"
 
-  echo -n "$out"
+  printf '%s' "$out"
 }
 
 function _nave_context_info() {
@@ -335,15 +325,15 @@ function _nave_context_info() {
     ctx+=" %F{${_NAVE_C[docker]}}[docker]%f"
   fi
 
-  echo -n "${ctx# }"
+  printf '%s' "${ctx# }"
 }
 
 function _nave_visible_len() {
+  setopt LOCAL_OPTIONS EXTENDED_GLOB
   local expanded
   expanded=$(print -P -- "$1")
-  # Strip ANSI escape sequences
   expanded="${expanded//$'\e'\[[0-9;]#m/}"
-  echo -n "${#expanded}"
+  printf '%s' "${#expanded}"
 }
 
 function _nave_precmd() {

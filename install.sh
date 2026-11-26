@@ -2,7 +2,6 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
 NAVE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/nave"
 INSTALL_CLI=false
 
@@ -11,53 +10,47 @@ for arg in "$@"; do
     --with-cli) INSTALL_CLI=true ;;
     -h|--help)
       cat <<'EOF'
-Nave Terminal Installer
+Nave Terminal v4 Installer (100% Standalone — Zero Oh My Zsh, Zero External Zsh Plugins)
 Usage: ./install.sh [--with-cli]
 
-  --with-cli   Also downloads modern CLI binaries (fzf, zoxide, bat, eza, delta,
-               lazygit, btop, fd, rg) into ~/.local/bin (Linux x86_64)
+  --with-cli   Also downloads optional modern CLI enhancers (fzf, bat, eza, delta,
+               lazygit, btop, fd, rg) into ~/.local/bin (Linux x86_64, no sudo)
 EOF
       exit 0
       ;;
   esac
 done
 
-echo "╭─ Nave Terminal Installer ───────────────────────────────"
+echo "╭─ Nave Terminal v4 Installer (Standalone) ───────────────"
 
-if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
-  echo "│ [!] Oh My Zsh nao encontrado em ~/.oh-my-zsh."
-  echo "│     Instale primeiro: https://ohmyz.sh"
+if ! command -v zsh >/dev/null 2>&1; then
+  echo "│ [!] Zsh nao encontrado. Instale o zsh primeiro (ex: sudo apt install zsh)."
   echo "╰─────────────────────────────────────────────────────────"
   exit 1
 fi
 
-mkdir -p "$ZSH_CUSTOM/themes" "$ZSH_CUSTOM/plugins" "$NAVE_DIR" "$HOME/.local/bin"
+mkdir -p "$NAVE_DIR" "$HOME/.local/bin"
 
-# 1. Install theme, toolkit & interactive cockpit apps
-cp "$REPO_DIR/theme/nave.zsh-theme" "$ZSH_CUSTOM/themes/nave.zsh-theme"
-cp "$REPO_DIR/config/toolkit.zsh" "$NAVE_DIR/toolkit.zsh"
+# 1. Install all native Nave modules (100% standalone, zero third-party Zsh plugins)
+cp "$REPO_DIR/config/init.zsh"        "$NAVE_DIR/init.zsh"
+cp "$REPO_DIR/theme/nave.zsh-theme"   "$NAVE_DIR/theme.zsh"
+cp "$REPO_DIR/config/highlight.zsh"   "$NAVE_DIR/highlight.zsh"
+cp "$REPO_DIR/config/suggest.zsh"     "$NAVE_DIR/suggest.zsh"
+cp "$REPO_DIR/config/z.zsh"           "$NAVE_DIR/z.zsh"
 cp "$REPO_DIR/config/keybindings.zsh" "$NAVE_DIR/keybindings.zsh"
-cp "$REPO_DIR/bin/nave-hud" "$HOME/.local/bin/nave-hud"
+cp "$REPO_DIR/config/toolkit.zsh"     "$NAVE_DIR/toolkit.zsh"
+
+cp "$REPO_DIR/bin/nave-hud"  "$HOME/.local/bin/nave-hud"
 cp "$REPO_DIR/bin/nave-warp" "$HOME/.local/bin/nave-warp"
 chmod +x "$HOME/.local/bin/nave-hud" "$HOME/.local/bin/nave-warp"
-echo "│ [ok] Tema instalado em $ZSH_CUSTOM/themes/nave.zsh-theme"
-echo "│ [ok] Toolkit instalado em $NAVE_DIR/toolkit.zsh"
+
+echo "│ [ok] Nave Shell Core instalado em $NAVE_DIR (init, theme, highlight, suggest, z, keybindings, toolkit)"
 echo "│ [ok] Cockpit apps instalados em ~/.local/bin (nave-hud, nave-warp)"
+echo "│ [ok] Zero dependencia de Oh My Zsh ou plugins externos"
 
-# 2. Ensure zsh-autosuggestions & zsh-syntax-highlighting exist
-if [[ ! -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ]]; then
-  echo "│ [..] Clonando zsh-autosuggestions..."
-  git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions "$ZSH_CUSTOM/plugins/zsh-autosuggestions" >/dev/null 2>&1
-fi
-if [[ ! -d "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting" ]]; then
-  echo "│ [..] Clonando zsh-syntax-highlighting..."
-  git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting" >/dev/null 2>&1
-fi
-echo "│ [ok] Plugins zsh-autosuggestions e zsh-syntax-highlighting prontos"
-
-# 3. Optional modern CLI install (x86_64 Linux, no sudo required)
+# 2. Optional modern CLI enhancers (x86_64 Linux, no sudo required)
 if $INSTALL_CLI; then
-  echo "│ [..] Instalando ferramentas CLI modernas em ~/.local/bin..."
+  echo "│ [..] Instalando ferramentas CLI opcionais em ~/.local/bin..."
   python3 - <<'PY'
 import json, os, re, shutil, subprocess, tarfile, tempfile, urllib.request
 
@@ -65,7 +58,6 @@ BIN_DIR = os.path.expanduser("~/.local/bin")
 os.makedirs(BIN_DIR, exist_ok=True)
 TOOLS = [
     ("fzf", "junegunn/fzf", r"linux_amd64\.tar\.gz$", "fzf"),
-    ("zoxide", "ajeetdsouza/zoxide", r"x86_64-unknown-linux-musl\.tar\.gz$", "zoxide"),
     ("bat", "sharkdp/bat", r"x86_64-unknown-linux-musl\.tar\.gz$", "bat"),
     ("eza", "eza-community/eza", r"eza_x86_64-unknown-linux-musl\.tar\.gz$", "eza"),
     ("delta", "dandavison/delta", r"x86_64-unknown-linux-musl\.tar\.gz$", "delta"),
@@ -111,9 +103,10 @@ PY
 fi
 
 echo "│"
-echo "│ Proximos passos no seu ~/.zshrc (veja config/zshrc.example):"
-echo "│   1. Defina ZSH_THEME=\"nave\""
-echo "│   2. Ative plugins=(git zsh-autosuggestions zsh-syntax-highlighting)"
-echo "│   3. Adicione: [[ -r \"\$HOME/.config/nave/toolkit.zsh\" ]] && source \"\$HOME/.config/nave/toolkit.zsh\""
-echo "│   4. Rode: source ~/.zshrc && nave-help"
+echo "│ Proximo passo no seu ~/.zshrc (apenas 1 linha — veja config/zshrc.example):"
+echo "│   export PATH=\"\$HOME/.local/bin:\$PATH\""
+echo "│   export NAVE_PROJECTS_DIR=\"\$HOME/projects\""
+echo "│   [[ -r \"\$HOME/.config/nave/init.zsh\" ]] && source \"\$HOME/.config/nave/init.zsh\""
+echo "│"
+echo "│ Depois rode: source ~/.zshrc && nave-help"
 echo "╰─────────────────────────────────────────────────────────"

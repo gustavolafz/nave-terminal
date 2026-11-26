@@ -1,5 +1,5 @@
 # ==============================================================================
-# ~/.zshrc example for Nave Terminal
+# ~/.zshrc example for Nave Terminal v4 (100% Standalone — Zero Oh My Zsh)
 # ==============================================================================
 
 export PATH="$HOME/.local/bin:$PATH"
@@ -7,61 +7,21 @@ export PATH="$HOME/.local/bin:$PATH"
 # Directory used by the `p` project hub command
 export NAVE_PROJECTS_DIR="$HOME/projects"
 
-# Oh My Zsh
-export ZSH="$HOME/.oh-my-zsh"
-ZSH_THEME="nave"
-
-plugins=(
-  git
-  zsh-autosuggestions
-  zsh-syntax-highlighting
-)
-
-source "$ZSH/oh-my-zsh.sh"
-
-# History & Navigation
-HISTSIZE=50000
-SAVEHIST=50000
-setopt HIST_IGNORE_DUPS HIST_IGNORE_ALL_DUPS HIST_IGNORE_SPACE HIST_REDUCE_BLANKS
-setopt SHARE_HISTORY AUTO_CD AUTO_PUSHD PUSHD_IGNORE_DUPS PUSHD_SILENT
-
-# Interactive colored completion
-zstyle ':completion:*' menu select
-zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' 'r:|=*' 'l:|=* r:|=*'
-command -v dircolors >/dev/null 2>&1 && eval "$(dircolors -b)"
-LS_COLORS="$(printf '%s' "$LS_COLORS" | sed -E 's/(^|:)(ow|tw|st)=[^:]*//g; s/^://'):ow=01;34:tw=01;34:st=01;36"
-export LS_COLORS
-zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}" 'ma=48;5;238;38;5;81;1'
-
-# Autosuggestions style (syntax highlighting is synced automatically by nave-theme)
-ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=244'
-ZSH_AUTOSUGGEST_STRATEGY=(history completion)
-
-# Keybindings
-bindkey "^[[H"    beginning-of-line
-bindkey "^[[F"    end-of-line
-bindkey "^[[1;5D" backward-word
-bindkey "^[[1;5C" forward-word
-bindkey "^[[3~"   delete-char
-bindkey "^H"      backward-kill-word
-
-autoload -Uz up-line-or-beginning-search down-line-or-beginning-search
-zle -N up-line-or-beginning-search
-zle -N down-line-or-beginning-search
-bindkey "^[[A" up-line-or-beginning-search
-bindkey "^[[B" down-line-or-beginning-search
-
-# Esc Esc toggles `sudo ` at the start of the command line
-_nave_sudo_toggle() {
-  [[ -z $BUFFER ]] && LBUFFER="$(fc -ln -1)"
-  if [[ $BUFFER == sudo\ * ]]; then
-    LBUFFER="${LBUFFER#sudo }"
-  else
-    LBUFFER="sudo $LBUFFER"
-  fi
-}
-zle -N _nave_sudo_toggle
-bindkey "\e\e" _nave_sudo_toggle
+# Optional: fast lazy-load NVM (<1ms startup, Node available immediately in PATH)
+# export NVM_DIR="$HOME/.nvm"
+# if [[ -d "$NVM_DIR/versions/node" ]]; then
+#   () {
+#     local ver=""
+#     [[ -r "$NVM_DIR/alias/default" ]] && ver="$(<"$NVM_DIR/alias/default")"
+#     if [[ -n "$ver" && -d "$NVM_DIR/versions/node/v${ver#v}/bin" ]]; then
+#       export PATH="$NVM_DIR/versions/node/v${ver#v}/bin:$PATH"
+#     else
+#       local -a bins=("$NVM_DIR"/versions/node/v*/bin(NOn))
+#       (( ${#bins} )) && export PATH="${bins[1]}:$PATH"
+#     fi
+#   }
+#   nvm() { unfunction nvm; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"; nvm "$@"; }
+# fi
 
 # Handy aliases
 alias ..='cd ..'
@@ -70,5 +30,5 @@ alias d='dirs -v | head -n 15'
 alias glog='git log --graph --oneline --decorate -n 20'
 alias reload="source ~/.zshrc && echo 'zshrc recarregado!'"
 
-# Load Nave Toolkit
-[[ -r "$HOME/.config/nave/toolkit.zsh" ]] && source "$HOME/.config/nave/toolkit.zsh"
+# Load Nave Terminal v4 (theme, nave-z, toolkit, nave-suggest, VS Code keybindings, nave-highlight)
+[[ -r "$HOME/.config/nave/init.zsh" ]] && source "$HOME/.config/nave/init.zsh"

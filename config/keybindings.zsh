@@ -1,6 +1,7 @@
 # ==============================================================================
 # ~/.config/nave/keybindings.zsh
 # VS Code-style text editing in Zsh (selection, subword nav, undo/redo, clipboard)
+# Integrated natively with nave-suggest (Right/End accept, Ctrl+Right word accept)
 # ==============================================================================
 
 # Prevent Ctrl+S / Ctrl+Q from freezing the terminal
@@ -49,11 +50,9 @@ function _nave_get_region {
 }
 
 # ------------------------------------------------------------------------------
-# Ctrl+C smart behavior (CopyOrCancelLine — matches VS Code & PSReadLine Windows):
-#   - With keyboard selection active (Shift+Arrows / Ctrl+A): copies selection
+# Ctrl+C smart behavior (CopyOrCancelLine — matches terminal + VS Code selection):
+#   - With keyboard selection active (Shift+Arrows / Ctrl+A / Ctrl+L / Ctrl+D): copies selection
 #   - Without selection (or while a command runs): cancels / sends SIGINT normally
-# Note: ZLE params (REGION_ACTIVE, BUFFER, MARK, CURSOR) are only readable inside
-# a ZLE widget, so TRAPINT delegates to _nave_copy_if_selected.
 # ------------------------------------------------------------------------------
 function _nave_copy_if_selected {
   if (( REGION_ACTIVE )); then
@@ -114,12 +113,32 @@ function _nave_sel_word_right { _nave_select_motion forward-word; }
 function _nave_sel_home       { _nave_select_motion beginning-of-line; }
 function _nave_sel_end        { _nave_select_motion end-of-line; }
 
-function _nave_move_left       { _nave_deselect_motion backward-char left; }
-function _nave_move_right      { _nave_deselect_motion forward-char right; }
-function _nave_move_word_left  { _nave_deselect_motion backward-word other; }
-function _nave_move_word_right { _nave_deselect_motion forward-word other; }
-function _nave_move_home       { _nave_deselect_motion beginning-of-line other; }
-function _nave_move_end        { _nave_deselect_motion end-of-line other; }
+function _nave_move_left { _nave_deselect_motion backward-char left; }
+
+function _nave_move_right {
+  if (( ! REGION_ACTIVE && CURSOR == $#BUFFER )) && (( ${+functions[_nave_suggest_accept]} )); then
+    _nave_suggest_accept && return
+  fi
+  _nave_deselect_motion forward-char right
+}
+
+function _nave_move_word_left { _nave_deselect_motion backward-word other; }
+
+function _nave_move_word_right {
+  if (( ! REGION_ACTIVE && CURSOR == $#BUFFER )) && (( ${+functions[_nave_suggest_accept_word]} )); then
+    _nave_suggest_accept_word && return
+  fi
+  _nave_deselect_motion forward-word other
+}
+
+function _nave_move_home { _nave_deselect_motion beginning-of-line other; }
+
+function _nave_move_end {
+  if (( ! REGION_ACTIVE && CURSOR == $#BUFFER )) && (( ${+functions[_nave_suggest_accept]} )); then
+    _nave_suggest_accept && return
+  fi
+  _nave_deselect_motion end-of-line other
+}
 
 function _nave_hist_up {
   REGION_ACTIVE=0
@@ -180,6 +199,19 @@ function _nave_select_word {
 function _nave_insert_newline {
   (( REGION_ACTIVE )) && zle kill-region
   LBUFFER+=$'\n'
+}
+
+# Esc Esc: Toggle `sudo ` prefix on current (or previous) command
+function _nave_sudo_toggle {
+  REGION_ACTIVE=0
+  [[ -z "$BUFFER" ]] && LBUFFER="$(fc -ln -1)"
+  if [[ "$BUFFER" == sudo\ * ]]; then
+    BUFFER="${BUFFER#sudo }"
+    (( CURSOR = CURSOR > 5 ? CURSOR - 5 : 0 ))
+  else
+    BUFFER="sudo ${BUFFER}"
+    (( CURSOR += 5 ))
+  fi
 }
 
 # ------------------------------------------------------------------------------
@@ -244,7 +276,7 @@ function _nave_delete_line {
   zle kill-whole-line
 }
 
-# Ctrl+Shift+D: Duplicate selection (or entire line)
+# Shift+Alt+Down / Ctrl+Shift+D: Duplicate selection (or entire line)
 function _nave_duplicate {
   if (( REGION_ACTIVE )); then
     local txt
@@ -259,7 +291,7 @@ function _nave_duplicate {
   fi
 }
 
-# Ctrl+/: Toggle `# ` comment on current line (VS Code comment shortcut!)
+# Ctrl+/ (or Ctrl+; on ABNT2): Toggle `# ` comment on current line
 function _nave_toggle_comment {
   REGION_ACTIVE=0
   if [[ "$BUFFER" == \#\ * ]]; then
@@ -274,37 +306,22 @@ function _nave_toggle_comment {
   fi
 }
 
-# Overwrite selection when typing (avoids double-wrapping zsh-autosuggestions on Zsh 5.9+)
-if [[ "${widgets[self-insert]}" == user:_zsh_highlight_widget_* ]] && (( ! ${+widgets[_nave_orig_self_insert]} )); then
-  zle -A self-insert _nave_orig_self_insert 2>/dev/null
-fi
+# Overwrite selection when typing or pasting (clean, zero plugin conflicts!)
 function _nave_self_insert {
   (( REGION_ACTIVE )) && zle kill-region
-  if (( ${+widgets[_nave_orig_self_insert]} )); then
-    zle _nave_orig_self_insert
-  else
-    zle .self-insert
-  fi
+  zle .self-insert
 }
 
-# Replace selected text when pasting with Ctrl+V (bracketed-paste)
-if [[ "${widgets[bracketed-paste]}" == user:_zsh_highlight_widget_* ]] && (( ! ${+widgets[_nave_orig_bracketed_paste]} )); then
-  zle -A bracketed-paste _nave_orig_bracketed_paste 2>/dev/null
-fi
 function _nave_bracketed_paste {
   (( REGION_ACTIVE )) && zle kill-region
-  if (( ${+widgets[_nave_orig_bracketed_paste]} )); then
-    zle _nave_orig_bracketed_paste
-  else
-    zle .bracketed-paste
-  fi
+  zle .bracketed-paste
 }
 
 # Register all widgets
 for w in \
   _nave_sel_left _nave_sel_right _nave_sel_word_left _nave_sel_word_right _nave_sel_home _nave_sel_end \
   _nave_move_left _nave_move_right _nave_move_word_left _nave_move_word_right _nave_move_home _nave_move_end \
-  _nave_hist_up _nave_hist_down _nave_select_all _nave_select_word _nave_insert_newline \
+  _nave_hist_up _nave_hist_down _nave_select_all _nave_select_word _nave_insert_newline _nave_sudo_toggle \
   _nave_backspace _nave_delete _nave_kill_word_back _nave_kill_word_fwd \
   _nave_cut _nave_copy _nave_copy_if_selected _nave_delete_line _nave_duplicate _nave_toggle_comment
 do
@@ -313,20 +330,11 @@ done
 zle -N self-insert _nave_self_insert
 zle -N bracketed-paste _nave_bracketed_paste
 
-# Clear autosuggestion ghost text during selection / destructive line actions
-if (( ${+ZSH_AUTOSUGGEST_CLEAR_WIDGETS} )); then
-  ZSH_AUTOSUGGEST_CLEAR_WIDGETS+=(
-    _nave_sel_left _nave_sel_right _nave_sel_word_left _nave_sel_word_right
-    _nave_sel_home _nave_sel_end _nave_select_all _nave_select_word
-    _nave_cut _nave_delete_line
-  )
-fi
-
 # ------------------------------------------------------------------------------
 # Keybindings (Windows Terminal + VS Code integrated terminal + XTerm/CSI u codes)
 # ------------------------------------------------------------------------------
 
-# Basic movement (deselects region cleanly)
+# Basic movement (deselects region cleanly; Right/End/Ctrl+Right accept nave-suggest)
 bindkey "^[[D"    _nave_move_left        # Left
 bindkey "^[OD"    _nave_move_left        # Left (app mode)
 bindkey "^[[C"    _nave_move_right       # Right
@@ -376,6 +384,7 @@ else
 fi
 bindkey "\e\r" _nave_insert_newline      # Shift+Enter / Alt+Enter (newline without executing)
 bindkey "\e\n" _nave_insert_newline      # Alt+Ctrl+J fallback
+bindkey "\e\e" _nave_sudo_toggle         # Esc Esc (Toggle sudo prefix)
 
 # Editing & Deletion
 bindkey "^?"        _nave_backspace      # Backspace
