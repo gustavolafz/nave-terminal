@@ -7,6 +7,9 @@
 setopt NO_FLOW_CONTROL
 [[ -t 0 ]] && stty -ixon 2>/dev/null
 
+# Prevent Ctrl+D from closing the WSL tab/shell (Ctrl+D selects word like VS Code!)
+setopt IGNORE_EOF
+
 # Allow `# comments` in interactive commands (makes Ctrl+/ + Enter save to history!)
 setopt INTERACTIVE_COMMENTS
 
@@ -128,12 +131,55 @@ function _nave_hist_down {
   zle down-line-or-beginning-search
 }
 
-# Ctrl+A: Select entire command line (like VS Code!)
+# Ctrl+A / Ctrl+L: Select entire command line (like VS Code!)
 function _nave_select_all {
   [[ -z "$BUFFER" ]] && return
   MARK=0
   CURSOR=$#BUFFER
   REGION_ACTIVE=1
+}
+
+# Ctrl+D: Select word under/before cursor (like VS Code!).
+# Pressing Ctrl+D a second time expands selection to the full path/argument.
+function _nave_select_word {
+  [[ -z "$BUFFER" ]] && return
+  local len=$#BUFFER
+  if (( REGION_ACTIVE )); then
+    local s=$(( MARK < CURSOR ? MARK : CURSOR ))
+    local e=$(( MARK > CURSOR ? MARK : CURSOR ))
+    while (( s > 0 )) && [[ "${BUFFER:$((s-1)):1}" != [[:space:]] ]]; do (( s-- )); done
+    while (( e < len )) && [[ "${BUFFER:$e:1}" != [[:space:]] ]]; do (( e++ )); done
+    MARK=$s
+    CURSOR=$e
+    REGION_ACTIVE=1
+    return
+  fi
+  local pos=$CURSOR
+  if (( pos >= len )) || [[ "${BUFFER:$pos:1}" != [[:alnum:]] ]]; then
+    if (( pos > 0 )) && [[ "${BUFFER:$((pos-1)):1}" == [[:alnum:]] ]]; then
+      (( pos-- ))
+    elif (( pos >= len && pos > 0 )); then
+      (( pos-- ))
+    fi
+  fi
+  local s=$pos e=$pos
+  if [[ "${BUFFER:$pos:1}" == [[:alnum:]] ]]; then
+    while (( s > 0 )) && [[ "${BUFFER:$((s-1)):1}" == [[:alnum:]] ]]; do (( s-- )); done
+    while (( e < len )) && [[ "${BUFFER:$e:1}" == [[:alnum:]] ]]; do (( e++ )); done
+  else
+    while (( s > 0 )) && [[ "${BUFFER:$((s-1)):1}" != [[:space:]] ]]; do (( s-- )); done
+    while (( e < len )) && [[ "${BUFFER:$e:1}" != [[:space:]] ]]; do (( e++ )); done
+  fi
+  (( e > s )) || return
+  MARK=$s
+  CURSOR=$e
+  REGION_ACTIVE=1
+}
+
+# Shift+Enter / Alt+Enter: Insert newline without executing command
+function _nave_insert_newline {
+  (( REGION_ACTIVE )) && zle kill-region
+  LBUFFER+=$'\n'
 }
 
 # ------------------------------------------------------------------------------
@@ -258,9 +304,9 @@ function _nave_bracketed_paste {
 for w in \
   _nave_sel_left _nave_sel_right _nave_sel_word_left _nave_sel_word_right _nave_sel_home _nave_sel_end \
   _nave_move_left _nave_move_right _nave_move_word_left _nave_move_word_right _nave_move_home _nave_move_end \
-  _nave_hist_up _nave_hist_down _nave_select_all _nave_backspace _nave_delete \
-  _nave_kill_word_back _nave_kill_word_fwd _nave_cut _nave_copy _nave_copy_if_selected _nave_delete_line \
-  _nave_duplicate _nave_toggle_comment
+  _nave_hist_up _nave_hist_down _nave_select_all _nave_select_word _nave_insert_newline \
+  _nave_backspace _nave_delete _nave_kill_word_back _nave_kill_word_fwd \
+  _nave_cut _nave_copy _nave_copy_if_selected _nave_delete_line _nave_duplicate _nave_toggle_comment
 do
   zle -N "$w"
 done
@@ -271,7 +317,8 @@ zle -N bracketed-paste _nave_bracketed_paste
 if (( ${+ZSH_AUTOSUGGEST_CLEAR_WIDGETS} )); then
   ZSH_AUTOSUGGEST_CLEAR_WIDGETS+=(
     _nave_sel_left _nave_sel_right _nave_sel_word_left _nave_sel_word_right
-    _nave_sel_home _nave_sel_end _nave_select_all _nave_cut _nave_delete_line
+    _nave_sel_home _nave_sel_end _nave_select_all _nave_select_word
+    _nave_cut _nave_delete_line
   )
 fi
 
@@ -318,6 +365,17 @@ bindkey "^[[1;6H" _nave_sel_home         # Ctrl+Shift+Home
 bindkey "^[[1;2F" _nave_sel_end          # Shift+End
 bindkey "^[[1;6F" _nave_sel_end          # Ctrl+Shift+End
 bindkey "^A"      _nave_select_all       # Ctrl+A (Select All)
+bindkey "^L"      _nave_select_all       # Ctrl+L (Select current line, VS Code)
+bindkey "^D"      _nave_select_word      # Ctrl+D (Select word; 2x expands to full arg; never exits shell)
+
+# Autocomplete (VS Code: Ctrl+Space) & Multiline (Shift+Enter / Alt+Enter)
+if (( ${+widgets[fzf-completion]} )); then
+  bindkey "^@" fzf-completion            # Ctrl+Space (fzf + Zsh completion)
+else
+  bindkey "^@" expand-or-complete        # Ctrl+Space (Zsh completion)
+fi
+bindkey "\e\r" _nave_insert_newline      # Shift+Enter / Alt+Enter (newline without executing)
+bindkey "\e\n" _nave_insert_newline      # Alt+Ctrl+J fallback
 
 # Editing & Deletion
 bindkey "^?"        _nave_backspace      # Backspace
@@ -346,6 +404,9 @@ bindkey "^[w"      _nave_copy            # Alt+W (Copy selection or line -> Wind
 bindkey "^[[2;5~"  _nave_copy            # Ctrl+Insert (Copy selection or line -> Windows clipboard)
 bindkey "^[[75;6u" _nave_delete_line     # Ctrl+Shift+K (Delete whole line)
 bindkey "^[[68;6u" _nave_duplicate       # Ctrl+Shift+D (Duplicate selection or line)
+bindkey "^[[1;4B"  _nave_duplicate       # Shift+Alt+Down (Duplicate line/selection, VS Code native)
+bindkey "^[[1;4A"  _nave_duplicate       # Shift+Alt+Up (Duplicate line/selection, VS Code native)
 bindkey "^_"       _nave_toggle_comment  # Ctrl+/ (Toggle # comment)
-bindkey "^[[47;5u" _nave_toggle_comment  # Ctrl+/ (CSI u)
+bindkey "^[[47;5u" _nave_toggle_comment  # Ctrl+; ABNT2 / Ctrl+/ US (CSI u via WT)
+bindkey "^[l"      clear-screen          # Alt+L (Clear screen since Ctrl+L selects line)
 bindkey "^[e"      edit-command-line     # Alt+E (Open command in $EDITOR)

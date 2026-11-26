@@ -167,6 +167,11 @@ if (Get-Module -ListAvailable -Name PSReadLine) {
     try {
         Set-PSReadLineKeyHandler -Key UpArrow -Function HistorySearchBackward
         Set-PSReadLineKeyHandler -Key DownArrow -Function HistorySearchForward
+        Set-PSReadLineKeyHandler -Chord Shift+Enter -Function AddLine
+        Set-PSReadLineKeyHandler -Chord Alt+Enter -Function AddLine
+        Set-PSReadLineKeyHandler -Chord Ctrl+Spacebar -Function MenuComplete
+        Set-PSReadLineKeyHandler -Chord Ctrl+l -Function SelectAll
+        Set-PSReadLineKeyHandler -Chord Alt+l -Function ClearScreen
     } catch {}
 }
 
