@@ -1,0 +1,23 @@
+{
+  "name": "Nave Cyber",
+  "background": "#0E111A",
+  "foreground": "#E2E8F0",
+  "cursorColor": "#5CE1E6",
+  "selectionBackground": "#283457",
+  "black": "#1A1E2E",
+  "red": "#F7768E",
+  "green": "#50FA7B",
+  "yellow": "#E0AF68",
+  "blue": "#7AA2F7",
+  "purple": "#BB9AF7",
+  "cyan": "#7DCFFF",
+  "white": "#CBD5E1",
+  "brightBlack": "#565F89",
+  "brightRed": "#FF8DA1",
+  "brightGreen": "#73F59F",
+  "brightYellow": "#F1C97E",
+  "brightBlue": "#9AB8FF",
+  "brightPurple": "#D0B4FF",
+  "brightCyan": "#A4E4FF",
+  "brightWhite": "#F8FAFC"
+}

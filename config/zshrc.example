@@ -1,0 +1,72 @@
+# ==============================================================================
+# ~/.zshrc example for Nave Terminal
+# ==============================================================================
+
+export PATH="$HOME/.local/bin:$PATH"
+
+# Directory used by the `p` project hub command
+export NAVE_PROJECTS_DIR="$HOME/projects"
+
+# Oh My Zsh
+export ZSH="$HOME/.oh-my-zsh"
+ZSH_THEME="nave"
+
+plugins=(
+  git
+  zsh-autosuggestions
+  zsh-syntax-highlighting
+)
+
+source "$ZSH/oh-my-zsh.sh"
+
+# History & Navigation
+HISTSIZE=50000
+SAVEHIST=50000
+setopt HIST_IGNORE_DUPS HIST_IGNORE_ALL_DUPS HIST_IGNORE_SPACE HIST_REDUCE_BLANKS
+setopt SHARE_HISTORY AUTO_CD AUTO_PUSHD PUSHD_IGNORE_DUPS PUSHD_SILENT
+
+# Interactive colored completion
+zstyle ':completion:*' menu select
+zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' 'r:|=*' 'l:|=* r:|=*'
+command -v dircolors >/dev/null 2>&1 && eval "$(dircolors -b)"
+zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
+
+# Autosuggestions style (syntax highlighting is synced automatically by nave-theme)
+ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=244'
+ZSH_AUTOSUGGEST_STRATEGY=(history completion)
+
+# Keybindings
+bindkey "^[[H"    beginning-of-line
+bindkey "^[[F"    end-of-line
+bindkey "^[[1;5D" backward-word
+bindkey "^[[1;5C" forward-word
+bindkey "^[[3~"   delete-char
+bindkey "^H"      backward-kill-word
+
+autoload -Uz up-line-or-beginning-search down-line-or-beginning-search
+zle -N up-line-or-beginning-search
+zle -N down-line-or-beginning-search
+bindkey "^[[A" up-line-or-beginning-search
+bindkey "^[[B" down-line-or-beginning-search
+
+# Esc Esc toggles `sudo ` at the start of the command line
+_nave_sudo_toggle() {
+  [[ -z $BUFFER ]] && LBUFFER="$(fc -ln -1)"
+  if [[ $BUFFER == sudo\ * ]]; then
+    LBUFFER="${LBUFFER#sudo }"
+  else
+    LBUFFER="sudo $LBUFFER"
+  fi
+}
+zle -N _nave_sudo_toggle
+bindkey "\e\e" _nave_sudo_toggle
+
+# Handy aliases
+alias ..='cd ..'
+alias ...='cd ../..'
+alias d='dirs -v | head -n 15'
+alias glog='git log --graph --oneline --decorate -n 20'
+alias reload="source ~/.zshrc && echo 'zshrc recarregado!'"
+
+# Load Nave Toolkit
+[[ -r "$HOME/.config/nave/toolkit.zsh" ]] && source "$HOME/.config/nave/toolkit.zsh"

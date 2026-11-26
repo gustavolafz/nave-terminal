@@ -1,0 +1,16 @@
+[core]
+	pager = delta
+[interactive]
+	diffFilter = delta --color-only
+[delta]
+	navigate = true
+	side-by-side = true
+	line-numbers = true
+	syntax-theme = TwoDark
+	hyperlinks = true
+	minus-style = syntax "#3b1d24"
+	plus-style = syntax "#1b3328"
+[merge]
+	conflictstyle = zdiff3
+[diff]
+	colorMoved = default
