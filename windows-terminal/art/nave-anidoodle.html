@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Nave Terminal — Anidoodle Scratchboard &amp; Stipple Masterpiece</title>
+<title>Nave Terminal — Anidoodle Scratchboard + 16_2026 Grainy Flat Illustration</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; overflow: hidden; background: #0C0F18; }
@@ -13,9 +13,15 @@
 <canvas id="c"></canvas>
 <script>
 // =============================================================================
-// Nave Terminal Artwork — Anidoodle Motor 3 (Physical Media in Pure Code)
-// Medium: Scratchboard knife-cut engraving + 0.25mm blue-noise technical stipple
-// on uniform matte obsidian clay (#0C0F18 — zero 8-bit banding!).
+// Nave Terminal Artwork — Hybrid Anidoodle (Scratchboard + 0.25mm Stipple)
+//                       + 16_2026 Grainy Flat Illustration (art-paint-music-video)
+//
+// Weighting per Art Direction:
+//   - Planet:     STRONG 16_2026 grainy flat color planes + directional square grain
+//                 + source-atop texture over crescent terminator
+//   - Atmosphere, Orbital Arcs & Exhaust Cone: MEDIUM directional grainy glow/plume
+//   - Spacecraft: SUBTLE flat under-tones + light source-atop grain preserving crisp
+//                 3D scratchboard knife-cut engraving!
 // =============================================================================
 
 function mulberry32(seed) {
@@ -54,7 +60,34 @@ function makeNoise2D(seed) {
   };
 }
 
-// Physical scratchboard gouge stroke: widens where knife bites, razor-tapers at lift
+// -----------------------------------------------------------------------------
+// 16_2026 Grain Texture Tile (offscreen cached pattern for source-atop overlay)
+// Matches 16_2026.md: dark grain specks + bright highlight specks in crisp 1.5-2px squares
+// -----------------------------------------------------------------------------
+function makeGrainPattern(w, h, darkProb, darkAlpha, lightProb, lightAlpha, seed) {
+  const oc = document.createElement('canvas');
+  oc.width = w; oc.height = h;
+  const octx = oc.getContext('2d');
+  const rng = mulberry32(seed);
+  const step = 1.5;
+  for (let y = 0; y < h; y += step) {
+    for (let x = 0; x < w; x += step) {
+      const r = rng();
+      if (r < darkProb) {
+        octx.fillStyle = `rgba(8, 10, 18, ${darkAlpha * (0.6 + 0.4 * rng())})`;
+        octx.fillRect(x, y, step, step);
+      } else if (r < darkProb + lightProb) {
+        octx.fillStyle = rng() < 0.6
+          ? `rgba(210, 242, 255, ${lightAlpha * (0.55 + 0.45 * rng())})`
+          : `rgba(187, 154, 247, ${lightAlpha * (0.55 + 0.45 * rng())})`;
+        octx.fillRect(x, y, step, step);
+      }
+    }
+  }
+  return oc;
+}
+
+// Physical scratchboard gouge stroke
 function gougeStroke(ctx, pts, opts) {
   const {
     color = '#A4E4FF',
@@ -127,14 +160,40 @@ function fillPoly(ctx, pts, color, alpha = 1.0) {
 }
 
 // -----------------------------------------------------------------------------
-// Layer 1: Uniform Matte Obsidian Clay Board (#0C0F18 — Zero 8-bit Banding!)
-// Shadow edges of the spacecraft & planet dissolve seamlessly into the board.
+// Layer 1: Matte Obsidian Board + Subtle Grainy Atmospheric Halo (Medium Grain)
+// Keeps left terminal reading zone (x < 560) calm & banding-free!
 // -----------------------------------------------------------------------------
-function drawBackdrop(ctx, W, H, rng) {
+function drawBackdrop(ctx, W, H, planet, rng) {
   ctx.fillStyle = '#0C0F18';
   ctx.fillRect(0, 0, W, H);
 
-  // Calm jittered starfield (protects left terminal text zone x=0..600)
+  // Subtle 16_2026 grainy atmospheric nebula wash radiating softly behind the lit planet limb
+  // Built purely from positional-density 1.6px square grain (zero 8-bit gradient banding!)
+  const { cx, cy, R } = planet;
+  ctx.save();
+  for (let i = 0; i < 9500; i++) {
+    // Sample polar band just outside the sunlit upper-left horizon of the planet
+    const deg = 175 + rng() * 112;
+    const rad = (deg * Math.PI) / 180;
+    const u = Math.pow(rng(), 1.65); // denser near the planet limb, fading smoothly into dark space
+    const dist = R + 4 + u * 235;
+    const x = cx + Math.cos(rad) * dist;
+    const y = cy + Math.sin(rad) * dist;
+    if (x < W * 0.42 || x > W || y < 0 || y > H) continue;
+
+    // Fade smoothly toward left/right horizon ends
+    const arcCenter = Math.cos(((deg - 230) * Math.PI) / 115);
+    if (arcCenter <= 0 || rng() > arcCenter) continue;
+
+    const col = u < 0.28 ? '#7DCFFF' : (u < 0.65 ? '#5E82D6' : '#BB9AF7');
+    ctx.fillStyle = col;
+    ctx.globalAlpha = (1 - u) * 0.24 * arcCenter * (0.5 + 0.5 * rng());
+    const sz = u < 0.4 ? 1.5 : 1.8;
+    ctx.fillRect(x, y, sz, sz);
+  }
+  ctx.restore();
+
+  // Calm starfield (denser on right, sparse on left code area)
   const cell = 40;
   ctx.save();
   for (let gx = 0; gx < W; gx += cell) {
@@ -166,119 +225,197 @@ function drawBackdrop(ctx, W, H, rng) {
 }
 
 // -----------------------------------------------------------------------------
-// Layer 2: True Blue-Noise 0.25mm Stipple Planetary Crescent (Passed Craft Bar!)
+// Layer 2: PLANET — STRONG 16_2026 Grainy Flat Illustration + 0.25mm Stipple!
+// Flat borderless tonal crescent bands (Dribbble Flat) sculpted with dense
+// positional-density 1.6-2px square grain stippling + craters + source-atop grain!
 // -----------------------------------------------------------------------------
-function drawStipplePlanet(ctx, W, H, rng, noise) {
-  const cx = W * 0.90;
-  const cy = H * 1.24;
-  const R = H * 0.62;
-
+function drawGrainyFlatPlanet(ctx, W, H, dpr, planet, rng, noise) {
+  const { cx, cy, R } = planet;
   const lLen = Math.hypot(-0.74, -0.64, 0.21);
   const lx = -0.74 / lLen, ly = -0.64 / lLen, lz = 0.21 / lLen;
 
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(cx, cy, R, 0, Math.PI * 2);
-  ctx.fillStyle = '#0C0F18';
-  ctx.fill();
-  ctx.clip();
+  // Render planet on its own offscreen layer so we can apply 16_2026 source-atop grain cleanly!
+  const pc = document.createElement('canvas');
+  pc.width = Math.round(W * dpr);
+  pc.height = Math.round(H * dpr);
+  const pctx = pc.getContext('2d');
+  pctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
+  pctx.save();
+  pctx.beginPath();
+  pctx.arc(cx, cy, R, 0, Math.PI * 2);
+  pctx.fillStyle = '#0D1120'; // Deep obsidian-indigo shadow hemisphere
+  pctx.fill();
+  pctx.clip();
+
+  // ---- A. 16_2026 BORDERLESS FLAT TONAL PLANES (Curved crescent zones) ----
+  // Zone 1: Deep twilight indigo crescent
+  pctx.fillStyle = '#1B2242';
+  pctx.beginPath();
+  pctx.arc(cx - R * 0.22, cy - R * 0.20, R * 0.96, 0, Math.PI * 2);
+  pctx.fill();
+
+  // Re-carve deep night shadow crescent on lower-right using shifted dark disc (pure flat graphic cut!)
+  pctx.fillStyle = '#0D1120';
+  pctx.beginPath();
+  pctx.arc(cx + R * 0.34, cy + R * 0.30, R * 0.94, 0, Math.PI * 2);
+  pctx.fill();
+
+  // Zone 2: Mid-tone slate-violet / cobalt lit crescent
+  pctx.save();
+  pctx.beginPath();
+  pctx.arc(cx - R * 0.14, cy - R * 0.12, R * 0.98, 0, Math.PI * 2);
+  pctx.clip();
+  pctx.fillStyle = '#2B3B70';
+  pctx.beginPath();
+  pctx.arc(cx - R * 0.34, cy - R * 0.30, R * 0.95, 0, Math.PI * 2);
+  pctx.fill();
+  // Carve inner terminator edge
+  pctx.fillStyle = '#1B2242';
+  pctx.beginPath();
+  pctx.arc(cx + R * 0.14, cy + R * 0.13, R * 0.90, 0, Math.PI * 2);
+  pctx.fill();
+  pctx.restore();
+
+  // Zone 3: Bright sunlit cyan-blue rim crescent (upper-left solar key)
+  pctx.save();
+  pctx.beginPath();
+  pctx.arc(cx, cy, R, 0, Math.PI * 2);
+  pctx.clip();
+  pctx.fillStyle = '#4E8FD1';
+  pctx.beginPath();
+  pctx.arc(cx - R * 0.04, cy - R * 0.04, R * 1.0, 0, Math.PI * 2);
+  pctx.fill();
+  pctx.fillStyle = '#2B3B70';
+  pctx.beginPath();
+  pctx.arc(cx + R * 0.055, cy + R * 0.050, R * 0.975, 0, Math.PI * 2);
+  pctx.fill();
+  // Innermost shadow carve back cleanly
+  pctx.fillStyle = '#1B2242';
+  pctx.beginPath();
+  pctx.arc(cx + R * 0.20, cy + R * 0.18, R * 0.94, 0, Math.PI * 2);
+  pctx.fill();
+  pctx.fillStyle = '#0D1120';
+  pctx.beginPath();
+  pctx.arc(cx + R * 0.42, cy + R * 0.38, R * 0.94, 0, Math.PI * 2);
+  pctx.fill();
+  pctx.restore();
+
+  // Flat borderless crater basins (16_2026 style: same-family darker flat crescent inside lighter rim!)
   const craters = [
-    { x: -0.58, y: -0.42, r: 0.17 },
-    { x: -0.34, y: -0.64, r: 0.11 },
-    { x: -0.72, y: -0.14, r: 0.13 },
-    { x: -0.18, y: -0.74, r: 0.085 },
+    { x: -0.56, y: -0.44, rx: 0.145, ry: 0.095, rot: -0.68 },
+    { x: -0.32, y: -0.64, rx: 0.105, ry: 0.068, rot: -0.45 },
+    { x: -0.71, y: -0.15, rx: 0.115, ry: 0.078, rot: -1.12 },
+    { x: -0.17, y: -0.75, rx: 0.078, ry: 0.050, rot: -0.28 },
+    { x: -0.44, y: -0.25, rx: 0.088, ry: 0.062, rot: -0.72 },
   ];
-
-  function planetLight(ux, uy) {
-    const d2 = ux * ux + uy * uy;
-    if (d2 >= 1.0) return 0;
-    const nz = Math.sqrt(1 - d2);
-    let nx = ux, ny = uy;
-    for (const c of craters) {
-      const dx = ux - c.x, dy = uy - c.y;
-      const dist = Math.hypot(dx, dy);
-      if (dist < c.r * 1.35 && dist > 0.001) {
-        const u = dist / c.r;
-        const slope = u < 0.85 ? -0.38 * u : (u < 1.05 ? 0.55 * (1.05 - u) / 0.2 : -0.25 * (1.35 - u) / 0.3);
-        nx += (dx / dist) * slope * 0.35;
-        ny += (dy / dist) * slope * 0.35;
-      }
-    }
-    const nLen = Math.hypot(nx, ny, nz) || 1;
-    nx /= nLen; ny /= nLen;
-    const nzz = nz / nLen;
-
-    const ndotl = Math.max(0, nx * lx + ny * ly + nzz * lz);
-    const rim = Math.pow(1 - nz, 2.8) * Math.pow(Math.max(0, ndotl * 1.65), 0.75);
-    const maria = 0.78 + 0.34 * noise(ux * 3.8 + 4.1, uy * 3.8 + 9.2);
-    return Math.min(1, Math.max(0, (Math.pow(ndotl, 1.35) * 0.95 + rim * 0.72) * maria));
+  for (const cr of craters) {
+    const crx = cx + cr.x * R, cry = cy + cr.y * R;
+    const arx = cr.rx * R, ary = cr.ry * R;
+    pctx.save();
+    pctx.translate(crx, cry);
+    pctx.rotate(cr.rot);
+    // Flat shaded basin (one step darker indigo-violet)
+    pctx.fillStyle = 'rgba(13, 18, 36, 0.56)';
+    pctx.beginPath();
+    pctx.ellipse(0, 0, arx, ary, 0, 0, Math.PI * 2);
+    pctx.fill();
+    // Subtle sunlit inner rim highlight on bottom-right interior slope facing upper-left sun
+    pctx.beginPath();
+    pctx.ellipse(0, 0, arx, ary, 0, 0, Math.PI * 2);
+    pctx.clip();
+    pctx.fillStyle = 'rgba(125, 207, 255, 0.22)';
+    pctx.beginPath();
+    pctx.ellipse(arx * 0.28, ary * 0.28, arx * 0.92, ary * 0.92, 0, 0, Math.PI * 2);
+    pctx.fill();
+    pctx.fillStyle = 'rgba(13, 18, 36, 0.60)';
+    pctx.beginPath();
+    pctx.ellipse(-arx * 0.16, -ary * 0.16, arx * 0.92, ary * 0.92, 0, 0, Math.PI * 2);
+    pctx.fill();
+    pctx.restore();
   }
 
-  const cell = 2.2;
+  // ---- B. 16_2026 POSITIONAL-DENSITY SQUARE GRAIN STIPPLE (Dissolves flat cuts into velvety grain!) ----
   const minX = Math.max(0, Math.floor(cx - R));
   const maxX = Math.min(W, Math.ceil(cx + R));
   const minY = Math.max(0, Math.floor(cy - R));
   const maxY = Math.min(H, Math.ceil(cy + R));
-  const gridW = Math.ceil((maxX - minX) / cell) + 2;
-  const gridH = Math.ceil((maxY - minY) / cell) + 2;
-  const grid = new Float32Array(gridW * gridH * 2);
 
-  function canPlace(px, py, minDist) {
-    const gx = Math.floor((px - minX) / cell);
-    const gy = Math.floor((py - minY) / cell);
-    const span = Math.ceil(minDist / cell);
-    const md2 = minDist * minDist;
-    for (let j = Math.max(0, gy - span); j <= Math.min(gridH - 1, gy + span); j++) {
-      for (let i = Math.max(0, gx - span); i <= Math.min(gridW - 1, gx + span); i++) {
-        const idx = (j * gridW + i) * 2;
-        const ex = grid[idx];
-        if (ex === 0) continue;
-        const dx = px - ex, dy = py - grid[idx + 1];
-        if (dx * dx + dy * dy < md2) return false;
-      }
-    }
-    const idx = (gy * gridW + gx) * 2;
-    grid[idx] = px; grid[idx + 1] = py;
-    return true;
+  function sphereLight(ux, uy) {
+    const d2 = ux * ux + uy * uy;
+    if (d2 >= 1.0) return 0;
+    const nz = Math.sqrt(1 - d2);
+    const ndotl = Math.max(0, ux * lx + uy * ly + nz * lz);
+    const rim = Math.pow(1 - nz, 2.5) * Math.pow(Math.max(0, ndotl * 1.7), 0.7);
+    const maria = 0.80 + 0.30 * noise(ux * 3.8 + 4.1, uy * 3.8 + 9.2);
+    return Math.min(1, Math.max(0, (Math.pow(ndotl, 1.25) * 0.92 + rim * 0.72) * maria));
   }
 
-  for (let k = 0; k < 78000; k++) {
+  // 16_2026-style fine velvety square grain (1.1-1.45px) blending all flat bands organically!
+  for (let i = 0; i < 72000; i++) {
+    const px = minX + rng() * (maxX - minX);
+    const py = minY + rng() * (maxY - minY);
+    const ux = (px - cx) / R, uy = (py - cy) / R;
+    if (ux * ux + uy * uy >= 0.997) continue;
+
+    const L = sphereLight(ux, uy);
+    // 1) Bright cyan/ice fine square grain denser toward sunlit upper-left crescent
+    if (L > 0.08 && rng() < Math.pow(L, 1.2) * 0.72) {
+      pctx.fillStyle = L > 0.65 ? '#CBEFFF' : (L > 0.34 ? '#7DCFFF' : '#BB9AF7');
+      pctx.globalAlpha = 0.14 + L * 0.44;
+      const sz = L > 0.5 ? 1.15 : 1.35;
+      pctx.fillRect(px, py, sz, sz);
+    }
+    // 2) Deep obsidian fine square grain biting upward from the night shadow across the terminator!
+    const shadowDensity = Math.pow(1 - L, 1.30);
+    if (shadowDensity > 0.12 && rng() < shadowDensity * 0.80) {
+      pctx.fillStyle = '#0C0F18';
+      pctx.globalAlpha = 0.28 + shadowDensity * 0.56;
+      pctx.fillRect(px, py, 1.45, 1.45);
+    }
+  }
+
+  // ---- C. Crisp 0.25mm Anidoodle highlight stipple accents along sunlit crescent ----
+  for (let i = 0; i < 8500; i++) {
     const px = minX + rng() * (maxX - minX);
     const py = minY + rng() * (maxY - minY);
     const ux = (px - cx) / R, uy = (py - cy) / R;
     if (ux * ux + uy * uy >= 0.996) continue;
-    const L = planetLight(ux, uy);
-    if (L < 0.035) continue;
-    const minDist = 2.65 + Math.pow(1 - L, 1.85) * 14.5;
-    if (!canPlace(px, py, minDist)) continue;
-
-    const dotR = 0.58 + L * 0.28;
-    const col = L > 0.72 ? '#E2F6FF' : (L > 0.42 ? '#7DCFFF' : (L > 0.22 ? '#7AA2F7' : '#BB9AF7'));
-    ctx.globalAlpha = 0.28 + L * 0.66;
-    ctx.fillStyle = col;
-    ctx.beginPath();
-    ctx.arc(px, py, dotR, 0, Math.PI * 2);
-    ctx.fill();
+    const L = sphereLight(ux, uy);
+    if (L < 0.42 || rng() > Math.pow((L - 0.38) / 0.62, 1.5)) continue;
+    pctx.fillStyle = L > 0.74 ? '#E8F8FF' : '#9BE3FF';
+    pctx.globalAlpha = 0.28 + L * 0.46;
+    pctx.beginPath();
+    pctx.arc(px, py, 0.48 + L * 0.26, 0, Math.PI * 2);
+    pctx.fill();
   }
-  ctx.restore();
 
-  // Tapered sunlit limb highlight flick (dissolves to 0px into shadow side)
+  pctx.restore();
+
+  // ---- D. 16_2026 Static Fine Grain Texture Overlay via source-atop (velvety finish on planet!) ----
+  const planetGrain = makeGrainPattern(256, 256, 0.085, 0.34, 0.045, 0.22, 162026);
+  pctx.save();
+  pctx.globalCompositeOperation = 'source-atop';
+  pctx.fillStyle = pctx.createPattern(planetGrain, 'repeat');
+  pctx.fillRect(minX, minY, maxX - minX, maxY - minY);
+  pctx.restore();
+
+  // Composite planet onto main canvas
+  ctx.drawImage(pc, 0, 0, W, H);
+
+  // Delicate tapered sunlit rim edge (dissolves smoothly into shadow)
   const limbPts = [];
   for (let deg = 186; deg <= 274; deg += 1.5) {
     const a = (deg * Math.PI) / 180;
     limbPts.push([cx + Math.cos(a) * R, cy + Math.sin(a) * R]);
   }
   gougeStroke(ctx, limbPts, {
-    color: '#A4E4FF', maxWidth: 1.5, alpha: 0.76, taperStart: 0.38, taperEnd: 0.42, wobble: 0.16, rng,
+    color: '#C6F0FF', maxWidth: 1.65, alpha: 0.80, taperStart: 0.36, taperEnd: 0.42, wobble: 0.16, rng,
   });
-
-  return { cx, cy, R };
 }
 
 // -----------------------------------------------------------------------------
-// Shared 3D Ship Projection Factory (used by both Orbital Chart & Spacecraft
-// so the ascent trajectory aligns to the EXACT nose & tail coordinates!)
+// Shared 3D Ship Projection Factory
 // -----------------------------------------------------------------------------
 function makeShipProjector(scx, scy) {
   const scale = 1.18;
@@ -302,24 +439,10 @@ function makeShipProjector(scx, scy) {
   return (x, y, z) => { const v = toView(x, y, z); return [v[0], v[1]]; };
 }
 
-// Ray-circle intersection helper to anchor orbital nodes exactly on planet-concentric arcs
-function rayArcPoint(origin, dir, cx, cy, radius) {
-  const ox = origin[0] - cx, oy = origin[1] - cy;
-  const b = 2 * (ox * dir[0] + oy * dir[1]);
-  const c = ox * ox + oy * oy - radius * radius;
-  const disc = b * b - 4 * c;
-  if (disc < 0) return [origin[0] + dir[0] * 120, origin[1] + dir[1] * 120];
-  const sq = Math.sqrt(disc);
-  const t1 = (-b - sq) / 2, t2 = (-b + sq) / 2;
-  const t = t1 > 1 ? t1 : t2;
-  return [origin[0] + dir[0] * t, origin[1] + dir[1] * t];
-}
-
 // -----------------------------------------------------------------------------
-// Layer 3: Planet-Concentric Orbital Arcs + Exact Axis-Aligned Ascent Course
-// Zero dead-end lines! Course flows out of lower node -> tail -> nose -> upper node.
+// Layer 3: Planet-Concentric Orbital Chart (Medium-Light Grainy Accent)
 // -----------------------------------------------------------------------------
-function drawOrbitalChart(ctx, W, H, planet, P, rng) {
+function drawOrbitalChart(ctx, W, H, planet, rng) {
   const { cx, cy, R } = planet;
 
   const drawConcentricArc = (rOff, deg0, deg1, color, w, alpha, dashed = false, ticks = false) => {
@@ -340,6 +463,18 @@ function drawOrbitalChart(ctx, W, H, planet, P, rng) {
       }
     }
 
+    // Subtle 16_2026 grainy dust hugging the orbital arc (medium-low weight)
+    ctx.save();
+    for (let i = 0; i < pts.length; i++) {
+      for (let g = 0; g < 3; g++) {
+        const jx = (rng() - 0.5) * 14, jy = (rng() - 0.5) * 14;
+        ctx.fillStyle = color;
+        ctx.globalAlpha = alpha * 0.42 * rng();
+        ctx.fillRect(pts[i][0] + jx, pts[i][1] + jy, 1.5, 1.5);
+      }
+    }
+    ctx.restore();
+
     if (ticks) {
       for (let d = Math.ceil(deg0 / 2) * 2; d <= deg1; d += 2) {
         const a = (d * Math.PI) / 180;
@@ -348,7 +483,7 @@ function drawOrbitalChart(ctx, W, H, planet, P, rng) {
         const major = d % 10 === 0;
         const tLen = major ? 9 : 4.2;
         gougeStroke(ctx, [[x0, y0], [cx + Math.cos(a) * (r + tLen), cy + Math.sin(a) * (r + tLen)]], {
-          color: major ? '#7DCFFF' : '#7AA2F7', maxWidth: major ? 1.05 : 0.65, alpha: major ? 0.40 : 0.20,
+          color: major ? '#7DCFFF' : '#7AA2F7', maxWidth: major ? 1.05 : 0.65, alpha: major ? 0.42 : 0.22,
           taperStart: 0.1, taperEnd: 0.4, wobble: 0.08, rng,
         });
       }
@@ -363,24 +498,17 @@ function drawOrbitalChart(ctx, W, H, planet, P, rng) {
     }
   };
 
-  drawConcentricArc(34, 194, 276, '#7DCFFF', 0.85, 0.26, true, false);
-  drawConcentricArc(195, 200, 266, '#7AA2F7', 1.0, 0.28, false, true);
-  drawConcentricArc(345, 212, 256, '#BB9AF7', 0.85, 0.24, true, false);
+  drawConcentricArc(34, 194, 276, '#7DCFFF', 0.85, 0.28, true, false);
+  drawConcentricArc(195, 200, 266, '#7AA2F7', 1.0, 0.30, false, true);
+  drawConcentricArc(345, 212, 256, '#BB9AF7', 0.85, 0.26, true, false);
 }
 
 // -----------------------------------------------------------------------------
-// Layer 4: True 3D Aerospace Orbiter — Authentic Scratchboard Plates & Shading
-//   - Fuselage broken into 4 sculpted hull plates with bold closed specular band
-//     on the sunlit port bevel + sparser tapered cross-contour cuts (NO ribcage!)
-//   - Recessed dark cockpit bezel + crisp scraped white specular glass catchlights
-//   - Dorsal vertical fin anchored on x=0 centerline ahead of engine collar
-//     (lit ONLY on leading edge; zero nozzle overlap!)
-//   - Shadow starboard wing dissolves seamlessly into uniform #0C0F18 obsidian!
+// Layer 4: 3D Aerospace Orbiter — Preserves Crisp Scratchboard Engraving
+//          with a SUBTLE touch of 16_2026 flat under-tone + light source-atop grain
+//          and a MEDIUM grainy light-cone exhaust plume!
 // -----------------------------------------------------------------------------
-function drawSpacecraft3D(ctx, P, rng) {
-  const lMag = Math.hypot(-0.78, 0.32, 0.54);
-  const L = [-0.78 / lMag, 0.32 / lMag, 0.54 / lMag];
-
+function drawSpacecraft3D(ctx, W, H, dpr, P, rng) {
   function hullRx(y) {
     if (y >= 132) return 0.5;
     if (y > 40) return 27 * Math.pow((132 - y) / 92, 0.62);
@@ -398,20 +526,37 @@ function drawSpacecraft3D(ctx, P, rng) {
     return [rx * Math.cos(theta), y, zScale * Math.sin(theta)];
   }
 
-  // ---- A. THRUSTER EXHAUST (Scraped thrust flicks + fine 0.25mm stipple) ----
   const nozzles = [
-    { cx: 0, cy: -106, cz: 3.0, r: 10.2, len: 14, plume: 112 },
-    { cx: -15.5, cy: -104, cz: -2.2, r: 7.2, len: 11, plume: 78 },
-    { cx: 15.5, cy: -104, cz: -2.2, r: 7.2, len: 11, plume: 78 },
+    { cx: 0, cy: -106, cz: 3.0, r: 10.2, len: 14, plume: 118 },
+    { cx: -15.5, cy: -104, cz: -2.2, r: 7.2, len: 11, plume: 82 },
+    { cx: 15.5, cy: -104, cz: -2.2, r: 7.2, len: 11, plume: 82 },
   ];
 
+  // ---- A. EXHAUST PLUME (MEDIUM 16_2026 grainy light-cone + Anidoodle thrust flicks!) ----
   for (const nz of nozzles) {
-    const nFlicks = nz.r > 9 ? 16 : 9;
+    // 16_2026-style grainy light cone (denser toward center & throat, widening down!)
+    const nGrain = nz.r > 9 ? 1150 : 480;
+    for (let i = 0; i < nGrain; i++) {
+      const u = Math.pow(rng(), 0.72);
+      const halfW = nz.r * (0.72 + u * 1.45);
+      // Center-biased distribution (like 16_2026 light cone!)
+      const lateral = ((rng() + rng()) - 1.0) * halfW;
+      const depth = ((rng() + rng()) - 1.0) * halfW * 0.5;
+      const [px, py] = P(nz.cx + lateral, nz.cy - nz.len - u * nz.plume * 1.22, nz.cz + depth);
+      ctx.save();
+      ctx.fillStyle = u < 0.25 ? '#E6F8FF' : (u < 0.60 ? '#7DCFFF' : '#BB9AF7');
+      ctx.globalAlpha = (1 - u) * 0.42 * (1 - Math.abs(lateral) / (halfW + 1)) * (0.6 + 0.4 * rng());
+      ctx.fillRect(px, py, 1.5, 1.5);
+      ctx.restore();
+    }
+
+    // Crisp scratchboard thrust flicks bursting out of nozzle throat
+    const nFlicks = nz.r > 9 ? 15 : 8;
     for (let i = 0; i < nFlicks; i++) {
       const ang = (i / nFlicks) * Math.PI * 2 + rng() * 0.35;
-      const rad = nz.r * (0.18 + 0.58 * rng());
+      const rad = nz.r * (0.18 + 0.56 * rng());
       const ox = nz.cx + Math.cos(ang) * rad, oz = nz.cz + Math.sin(ang) * rad;
-      const fLen = nz.plume * (0.28 + 0.65 * Math.pow(rng(), 1.3));
+      const fLen = nz.plume * (0.28 + 0.62 * Math.pow(rng(), 1.3));
       const spread = 1.0 + fLen * 0.004;
       gougeStroke(ctx, [
         P(ox, nz.cy - nz.len, oz),
@@ -419,26 +564,20 @@ function drawSpacecraft3D(ctx, P, rng) {
         P(ox * spread * 1.15, nz.cy - nz.len - fLen, oz * spread),
       ], {
         color: i % 3 === 0 ? '#E2F6FF' : (i % 2 === 0 ? '#7DCFFF' : '#BB9AF7'),
-        maxWidth: i % 3 === 0 ? 1.5 : 1.0,
-        alpha: 0.28 + 0.48 * (1 - fLen / nz.plume),
-        taperStart: 0.08, taperEnd: 0.78, wobble: 0.32, rng,
+        maxWidth: i % 3 === 0 ? 1.45 : 0.95,
+        alpha: 0.28 + 0.46 * (1 - fLen / nz.plume),
+        taperStart: 0.08, taperEnd: 0.78, wobble: 0.30, rng,
       });
     }
-    const nDots = nz.r > 9 ? 185 : 80;
-    for (let i = 0; i < nDots; i++) {
-      const u = Math.pow(rng(), 0.78);
-      const ang = rng() * Math.PI * 2;
-      const rad = nz.r * (0.25 + u * 1.15) * Math.sqrt(rng());
-      const [px, py] = P(nz.cx + Math.cos(ang) * rad, nz.cy - nz.len - u * nz.plume * 1.25, nz.cz + Math.sin(ang) * rad);
-      ctx.save();
-      ctx.globalAlpha = (1 - u) * 0.60 * (0.5 + 0.5 * rng());
-      ctx.fillStyle = u < 0.32 ? '#E2F6FF' : (u < 0.68 ? '#7DCFFF' : '#BB9AF7');
-      ctx.beginPath();
-      ctx.arc(px, py, 0.50 + (1 - u) * 0.35, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
   }
+
+  // Render spacecraft onto an offscreen layer so we can apply a LIGHT 16_2026 source-atop
+  // grain pass exclusively on the craft without touching the crisp outer glow/stars!
+  const sc = document.createElement('canvas');
+  sc.width = Math.round(W * dpr);
+  sc.height = Math.round(H * dpr);
+  const sctx = sc.getContext('2d');
+  sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   // ---- B. SYMMETRIC 3D DELTA WINGS ----
   function drawWing(side) {
@@ -451,13 +590,20 @@ function drawSpacecraft3D(ctx, P, rng) {
       [s * 106, -78, zTip], [s * 96, -86, zTip - 0.5], [s * 30, -82, zRoot],
       [s * 27, -100, zRoot], [s * 24, -100, zRoot],
     ];
-    // Matches exact uniform obsidian board (#0C0F18) so shadow edge truly dissolves!
-    fillPoly(ctx, outline3D.map(q => P(q[0], q[1], q[2])), '#0C0F18');
+    // Subtle flat slate-navy undertone on lit port wing; pure obsidian on shadow starboard wing!
+    fillPoly(sctx, outline3D.map(q => P(q[0], q[1], q[2])), isLit ? '#13203A' : '#0C0F18');
 
     const leTop = [[s * 24, 24, zRoot + 2.2], [s * 42, -4, zRoot + 2.6], [s * 102, -56, zTip + 1.8], [s * 106, -78, zTip + 1.4]];
     const leBot = [[s * 24, 24, zRoot - 2.0], [s * 42, -4, zRoot - 1.6], [s * 102, -56, zTip - 1.2], [s * 106, -78, zTip - 1.0]];
 
     if (isLit) {
+      // Subtle 16_2026 flat sunlit wedge near leading edge (gives gentle planar depth under scratch cuts)
+      const litStrip = [
+        P(s * 25, 22, zRoot + 1.5), P(s * 42, -4, zRoot + 1.8), P(s * 102, -56, zTip + 1.2),
+        P(s * 99, -68, zTip + 0.8), P(s * 42, -24, zRoot + 1.0), P(s * 26, 2, zRoot + 1.0),
+      ];
+      fillPoly(sctx, litStrip, '#244574', 0.34);
+
       for (let i = 0; i <= 18; i++) {
         const u = i / 18;
         const xSpan = 26 + u * 78;
@@ -465,7 +611,7 @@ function drawSpacecraft3D(ctx, P, rng) {
         const yTrail = -81 - u * 4.5;
         const zSpan = zRoot + u * (zTip - zRoot);
         const bright = Math.pow(1 - u * 0.45, 1.1);
-        gougeStroke(ctx, [
+        gougeStroke(sctx, [
           P(s * xSpan, yLead, zSpan + 1.8),
           P(s * xSpan, yLead + (yTrail - yLead) * 0.42, zSpan + 2.4),
           P(s * xSpan, yTrail, zSpan + 0.4),
@@ -477,7 +623,7 @@ function drawSpacecraft3D(ctx, P, rng) {
       }
       for (let k = 1; k <= 3; k++) {
         const off = k * 4.2;
-        gougeStroke(ctx, [
+        gougeStroke(sctx, [
           P(s * 26, 20 - off, zRoot + 2.0),
           P(s * 43, -6 - off, zRoot + 2.2),
           P(s * 101, -58 - off * 0.6, zTip + 1.4),
@@ -487,32 +633,30 @@ function drawSpacecraft3D(ctx, P, rng) {
           taperStart: 0.12, taperEnd: 0.22, wobble: 0.14, rng,
         });
       }
-      gougeStroke(ctx, leTop.map(q => P(q[0], q[1], q[2])), {
+      gougeStroke(sctx, leTop.map(q => P(q[0], q[1], q[2])), {
         color: '#F0FAFF', maxWidth: 2.2, alpha: 0.96, taperStart: 0.08, taperEnd: 0.15, wobble: 0.16, rng
       });
-      gougeStroke(ctx, leBot.map(q => P(q[0], q[1], q[2])), {
+      gougeStroke(sctx, leBot.map(q => P(q[0], q[1], q[2])), {
         color: '#7DCFFF', maxWidth: 1.0, alpha: 0.54, taperStart: 0.15, taperEnd: 0.2, wobble: 0.14, rng
       });
-      gougeStroke(ctx, [P(s * 34, -70, zRoot + 0.5), P(s * 94, -75, zTip + 0.5)], {
+      gougeStroke(sctx, [P(s * 34, -70, zRoot + 0.5), P(s * 94, -75, zTip + 0.5)], {
         color: '#7DCFFF', maxWidth: 1.05, alpha: 0.62, taperStart: 0.15, taperEnd: 0.15, wobble: 0.12, rng
       });
-      gougeStroke(ctx, [P(s * 96, -86, zTip - 0.5), P(s * 30, -82, zRoot)], {
+      gougeStroke(sctx, [P(s * 96, -86, zTip - 0.5), P(s * 30, -82, zRoot)], {
         color: '#7AA2F7', maxWidth: 1.0, alpha: 0.48, taperStart: 0.2, taperEnd: 0.2, wobble: 0.12, rng
       });
     } else {
-      // Shadow starboard wing dissolves seamlessly into uniform #0C0F18 obsidian!
       for (let i = 0; i < 6; i++) {
         const u = 0.08 + (i / 6) * 0.72;
         const yRoot = 18 - u * 92, yTip = -55 - u * 26;
-        gougeStroke(ctx, [P(s * 32, yRoot, zRoot + 1.0), P(s * (72 + rng() * 18), yTip, zTip + 0.6)], {
+        gougeStroke(sctx, [P(s * 32, yRoot, zRoot + 1.0), P(s * (72 + rng() * 18), yTip, zTip + 0.6)], {
           color: '#7AA2F7', maxWidth: 0.7, alpha: 0.15 + (1 - u) * 0.16, taperStart: 0.25, taperEnd: 0.5, wobble: 0.14, rng
         });
       }
-      // Delicate broken catchlight along leading edge + hint of wingtip
-      gougeStroke(ctx, [P(s * 28, 18, zRoot + 2.0), P(s * 44, -6, zRoot + 2.4), P(s * 97, -53, zTip + 1.6)], {
+      gougeStroke(sctx, [P(s * 28, 18, zRoot + 2.0), P(s * 44, -6, zRoot + 2.4), P(s * 97, -53, zTip + 1.6)], {
         color: '#BB9AF7', maxWidth: 1.15, alpha: 0.42, taperStart: 0.18, taperEnd: 0.48, wobble: 0.16, rng
       });
-      gougeStroke(ctx, [P(s * 104, -62, zTip + 1.0), P(s * 105, -76, zTip + 0.6)], {
+      gougeStroke(sctx, [P(s * 104, -62, zTip + 1.0), P(s * 105, -76, zTip + 0.6)], {
         color: '#BB9AF7', maxWidth: 0.85, alpha: 0.30, taperStart: 0.3, taperEnd: 0.5, wobble: 0.10, rng
       });
     }
@@ -521,84 +665,70 @@ function drawSpacecraft3D(ctx, P, rng) {
   drawWing(1);
   drawWing(-1);
 
-  // ---- C. SCULPTED SCRATCHBOARD FUSELAGE PLATES (No Mechanical Ribcage!) ----
-  const portSil = [], starSil = [];
+  // ---- C. SCULPTED SCRATCHBOARD FUSELAGE + SUBTLE FLAT UNDERTONE ----
+  const portSil = [], spineSil = [], starSil = [];
   for (let y = 132; y >= -104; y -= 6) {
     portSil.push(P(...hullPt(y, Math.PI * 1.04)));
+    spineSil.push(P(...hullPt(y, Math.PI * 0.52)));
     starSil.push(P(...hullPt(y, -Math.PI * 0.04)));
   }
-  fillPoly(ctx, [...portSil, ...starSil.reverse()], '#0C0F18');
+  fillPoly(sctx, [...portSil, ...starSil.reverse()], '#0C0F18');
+  // Subtle flat lit-side under-wash on port half of hull (connects craft gently to grainy flat planet!)
+  fillPoly(sctx, [...portSil, ...spineSil.slice().reverse()], '#1A3054', 0.42);
 
-  // 1. Sculpted longitudinal scraped-clay highlight bands across 4 distinct hull sections!
-  // Real scratchboard closes into bold scraped plates on the brightest bevel, separated by dark seams!
   const hullSections = [
-    { y0: 131, y1: 100, dens: 10, colA: '#F4FBFF', colB: '#A4E4FF', thStart: 0.96, thEnd: 0.56 }, // Nose thermal cap
-    { y0: 96,  y1: 35,  dens: 8,  colA: '#E8F7FF', colB: '#7DCFFF', thStart: 0.98, thEnd: 0.64 }, // Forward cockpit section
-    { y0: 31,  y1: -66, dens: 9,  colA: '#E2F5FF', colB: '#7DCFFF', thStart: 0.98, thEnd: 0.58 }, // Mid payload bay plates
-    { y0: -70, y1: -102,dens: 7,  colA: '#D4F0FF', colB: '#7AA2F7', thStart: 0.96, thEnd: 0.60 }, // Aft engine cowling
+    { y0: 131, y1: 100, dens: 10, colA: '#F4FBFF', colB: '#A4E4FF', thStart: 0.96, thEnd: 0.56 },
+    { y0: 96,  y1: 35,  dens: 8,  colA: '#E8F7FF', colB: '#7DCFFF', thStart: 0.98, thEnd: 0.64 },
+    { y0: 31,  y1: -66, dens: 9,  colA: '#E2F5FF', colB: '#7DCFFF', thStart: 0.98, thEnd: 0.58 },
+    { y0: -70, y1: -102,dens: 7,  colA: '#D4F0FF', colB: '#7AA2F7', thStart: 0.96, thEnd: 0.60 },
   ];
 
   for (const sec of hullSections) {
-    // Tightly packed longitudinal knife-strokes closing up into a gleaming scraped specular band on the sunlit bevel
     for (let s = 0; s < sec.dens; s++) {
       const u = s / (sec.dens - 1);
       const th = Math.PI * (sec.thStart + (sec.thEnd - sec.thStart) * u);
-      const peak = Math.exp(-Math.pow((u - 0.32) / 0.34, 2)); // hottest along upper-left shoulder!
+      const peak = Math.exp(-Math.pow((u - 0.32) / 0.34, 2));
       const pts = [];
       for (let y = sec.y0; y >= sec.y1; y -= 5) {
-        // Stop strokes cleanly at the recessed cockpit bezel!
         if (y <= 87 && y >= 37 && th < Math.PI * 0.72) continue;
         pts.push(P(...hullPt(y, th)));
       }
       if (pts.length < 2) continue;
-      gougeStroke(ctx, pts, {
+      gougeStroke(sctx, pts, {
         color: peak > 0.65 ? sec.colA : sec.colB,
-        maxWidth: 0.85 + peak * 1.45,
-        alpha: 0.24 + peak * 0.70,
-        taperStart: 0.14,
-        taperEnd: 0.18,
-        wobble: 0.14,
-        rng,
+        maxWidth: 0.85 + peak * 1.45, alpha: 0.24 + peak * 0.70,
+        taperStart: 0.14, taperEnd: 0.18, wobble: 0.14, rng,
       });
     }
 
-    // Sparser, organic, tapering cross-contour flicks rolling from the bright shoulder into mid-tone shadow
     const nCross = sec.y0 - sec.y1 > 60 ? 11 : 5;
     for (let k = 0; k < nCross; k++) {
       const jitterY = (rng() - 0.5) * 3.5;
       const y = sec.y0 - 4 - (k / Math.max(1, nCross - 1)) * (sec.y0 - sec.y1 - 8) + jitterY;
-      if (y <= 87 && y >= 37) continue; // Keep cockpit collar clean!
+      if (y <= 87 && y >= 37) continue;
       const pts = [];
-      const endDeg = 52 + rng() * 34; // varied organic lift-off lengths into shadow!
-      for (let deg = 148; deg >= endDeg; deg -= 7) {
-        pts.push(P(...hullPt(y, (deg * Math.PI) / 180)));
-      }
+      const endDeg = 52 + rng() * 34;
+      for (let deg = 148; deg >= endDeg; deg -= 7) pts.push(P(...hullPt(y, (deg * Math.PI) / 180)));
       if (pts.length < 3) continue;
-      gougeStroke(ctx, pts, {
+      gougeStroke(sctx, pts, {
         color: k % 3 === 0 ? '#A4E4FF' : '#7DCFFF',
-        maxWidth: 0.75 + rng() * 0.45,
-        alpha: 0.28 + rng() * 0.32,
-        taperStart: 0.15,
-        taperEnd: 0.65,
-        wobble: 0.14,
-        rng,
+        maxWidth: 0.75 + rng() * 0.45, alpha: 0.28 + rng() * 0.32,
+        taperStart: 0.15, taperEnd: 0.65, wobble: 0.14, rng,
       });
     }
   }
 
-  // Crisp dark-separated panel seam highlights at nose cap & payload bulkhead
   for (const seamY of [98, 33, -68]) {
     const seamPts = [];
     for (let deg = 175; deg >= 65; deg -= 8) seamPts.push(P(...hullPt(seamY, (deg * Math.PI) / 180)));
-    gougeStroke(ctx, seamPts, { color: '#A4E4FF', maxWidth: 1.0, alpha: 0.62, taperStart: 0.15, taperEnd: 0.55, wobble: 0.10, rng });
+    gougeStroke(sctx, seamPts, { color: '#A4E4FF', maxWidth: 1.0, alpha: 0.62, taperStart: 0.15, taperEnd: 0.55, wobble: 0.10, rng });
   }
 
-  // Subtle broken starboard rim catchlight on forward nose only (rest dissolves into obsidian)
   const starRim = [];
   for (let y = 130; y >= 46; y -= 6) starRim.push(P(...hullPt(y, Math.PI * 0.08)));
-  gougeStroke(ctx, starRim, { color: '#BB9AF7', maxWidth: 0.9, alpha: 0.34, taperStart: 0.12, taperEnd: 0.65, wobble: 0.14, rng });
+  gougeStroke(sctx, starRim, { color: '#BB9AF7', maxWidth: 0.9, alpha: 0.34, taperStart: 0.12, taperEnd: 0.65, wobble: 0.14, rng });
 
-  // ---- D. RECESSED COCKPIT BEZEL & LUMINOUS SCRAPED GLASS CATCHLIGHTS ----
+  // ---- D. RECESSED COCKPIT BEZEL & SCRAPED GLASS CATCHLIGHTS ----
   function makeCanopyPoly(yTop, yBot, wMax, zLift) {
     const pts = [];
     for (let i = 0; i <= 16; i++) {
@@ -611,41 +741,25 @@ function drawSpacecraft3D(ctx, P, rng) {
     }
     return pts;
   }
-  // Clean matte obsidian bezel collar separating canopy cleanly from hull plates
-  fillPoly(ctx, makeCanopyPoly(87, 37, 15.8, 3.0), '#0C0F18');
+  fillPoly(sctx, makeCanopyPoly(87, 37, 15.8, 3.0), '#0C0F18');
   const canopyGlass = makeCanopyPoly(84, 40, 13.0, 2.8);
-  fillPoly(ctx, canopyGlass, '#0B162B');
+  fillPoly(sctx, canopyGlass, '#102242');
 
-  // Crisp bright scraped specular reflection bands across the upper-left cockpit pane!
-  const glint1 = [
-    P(-10.5, 65, hullRz(65) + 2.8),
-    P(-8.2, 74, hullRz(74) + 2.5),
-    P(-2.5, 81, hullRz(81) + 1.5),
-  ];
-  const glint2 = [
-    P(-7.2, 61, hullRz(61) + 3.0),
-    P(-3.8, 72, hullRz(72) + 2.6),
-    P(-1.5, 76, hullRz(76) + 2.0),
-  ];
-  const glint3 = [
-    P(-9.5, 51, hullRz(51) + 2.6),
-    P(-4.0, 58, hullRz(58) + 3.0),
-  ];
-  gougeStroke(ctx, glint1, { color: '#FFFFFF', maxWidth: 2.6, alpha: 0.96, taperStart: 0.22, taperEnd: 0.25, wobble: 0.08, rng });
-  gougeStroke(ctx, glint2, { color: '#A4E4FF', maxWidth: 1.5, alpha: 0.82, taperStart: 0.25, taperEnd: 0.28, wobble: 0.08, rng });
-  gougeStroke(ctx, glint3, { color: '#7DCFFF', maxWidth: 1.6, alpha: 0.78, taperStart: 0.25, taperEnd: 0.25, wobble: 0.08, rng });
-
-  // Canopy bezel frame (bright sunlit port arch, soft starboard shadow arch) + internal mullions
-  gougeStroke(ctx, canopyGlass.slice(0, 17), { color: '#F0FAFF', maxWidth: 1.7, alpha: 0.95, taperStart: 0.1, taperEnd: 0.1, wobble: 0.1, rng });
-  gougeStroke(ctx, canopyGlass.slice(17), { color: '#7AA2F7', maxWidth: 0.95, alpha: 0.45, taperStart: 0.2, taperEnd: 0.2, wobble: 0.1, rng });
-  gougeStroke(ctx, [P(0, 84, hullRz(84) + 0.5), P(0, 40, hullRz(40) + 0.5)], {
-    color: '#A4E4FF', maxWidth: 0.95, alpha: 0.65, taperStart: 0.1, taperEnd: 0.1, wobble: 0.06, rng
+  gougeStroke(sctx, [P(-10.5, 65, hullRz(65) + 2.8), P(-8.2, 74, hullRz(74) + 2.5), P(-2.5, 81, hullRz(81) + 1.5)], {
+    color: '#FFFFFF', maxWidth: 2.6, alpha: 0.96, taperStart: 0.22, taperEnd: 0.25, wobble: 0.08, rng
   });
-  gougeStroke(ctx, [P(-12.2, 62, hullRz(62) + 2.5), P(0, 64, hullRz(64) + 4.0), P(12.2, 62, hullRz(62) + 2.5)], {
-    color: '#7DCFFF', maxWidth: 0.95, alpha: 0.60, taperStart: 0.1, taperEnd: 0.1, wobble: 0.06, rng
+  gougeStroke(sctx, [P(-7.2, 61, hullRz(61) + 3.0), P(-3.8, 72, hullRz(72) + 2.6), P(-1.5, 76, hullRz(76) + 2.0)], {
+    color: '#A4E4FF', maxWidth: 1.5, alpha: 0.82, taperStart: 0.25, taperEnd: 0.28, wobble: 0.08, rng
   });
+  gougeStroke(sctx, [P(-9.5, 51, hullRz(51) + 2.6), P(-4.0, 58, hullRz(58) + 3.0)], {
+    color: '#7DCFFF', maxWidth: 1.6, alpha: 0.78, taperStart: 0.25, taperEnd: 0.25, wobble: 0.08, rng
+  });
+  gougeStroke(sctx, canopyGlass.slice(0, 17), { color: '#F0FAFF', maxWidth: 1.7, alpha: 0.95, taperStart: 0.1, taperEnd: 0.1, wobble: 0.1, rng });
+  gougeStroke(sctx, canopyGlass.slice(17), { color: '#7AA2F7', maxWidth: 0.95, alpha: 0.45, taperStart: 0.2, taperEnd: 0.2, wobble: 0.1, rng });
+  gougeStroke(sctx, [P(0, 84, hullRz(84) + 0.5), P(0, 40, hullRz(40) + 0.5)], { color: '#A4E4FF', maxWidth: 0.95, alpha: 0.65, taperStart: 0.1, taperEnd: 0.1, wobble: 0.06, rng });
+  gougeStroke(sctx, [P(-12.2, 62, hullRz(62) + 2.5), P(0, 64, hullRz(64) + 4.0), P(12.2, 62, hullRz(62) + 2.5)], { color: '#7DCFFF', maxWidth: 0.95, alpha: 0.60, taperStart: 0.1, taperEnd: 0.1, wobble: 0.06, rng });
 
-  // ---- E. THREE RECESSED 3D ELLIPTICAL ENGINE BELLS (Drawn BEFORE fin, 100% unobstructed!) ----
+  // ---- E. THREE RECESSED 3D ELLIPTICAL ENGINE BELLS ----
   for (const nz of nozzles) {
     const rimFront = [];
     for (let i = 0; i <= 24; i++) {
@@ -658,12 +772,11 @@ function drawSpacecraft3D(ctx, P, rng) {
       ...rimFront.slice(12, 25),
       P(nz.cx + nz.r * 0.78, nz.cy, nz.cz),
     ];
-    fillPoly(ctx, casing, '#0C0F18');
-    fillPoly(ctx, rimFront, '#09101E');
-
+    fillPoly(sctx, casing, '#0C0F18');
+    fillPoly(sctx, rimFront, '#09101E');
     for (let deg = 115; deg <= 235; deg += 24) {
       const a = (deg * Math.PI) / 180;
-      gougeStroke(ctx, [
+      gougeStroke(sctx, [
         P(nz.cx + Math.cos(a) * nz.r * 0.78, nz.cy, nz.cz + Math.sin(a) * nz.r * 0.78),
         P(nz.cx + Math.cos(a) * nz.r, nz.cy - nz.len, nz.cz + Math.sin(a) * nz.r),
       ], { color: '#7DCFFF', maxWidth: 0.85, alpha: 0.65, taperStart: 0.15, taperEnd: 0.15, wobble: 0.08, rng });
@@ -673,58 +786,61 @@ function drawSpacecraft3D(ctx, P, rng) {
       const a = (i / 18) * Math.PI * 2;
       innerGlow.push(P(nz.cx + Math.cos(a) * nz.r * 0.62, nz.cy - nz.len + 1.5, nz.cz + Math.sin(a) * nz.r * 0.62));
     }
-    gougeStroke(ctx, innerGlow, { color: '#E2F6FF', maxWidth: 1.2, alpha: 0.84, taperStart: 0.1, taperEnd: 0.1, wobble: 0.08, rng });
-    gougeStroke(ctx, rimFront.slice(6, 20), { color: '#A4E4FF', maxWidth: 1.35, alpha: 0.88, taperStart: 0.15, taperEnd: 0.15, wobble: 0.08, rng });
-    gougeStroke(ctx, [...rimFront.slice(19, 25), ...rimFront.slice(0, 7)], { color: '#7AA2F7', maxWidth: 0.85, alpha: 0.40, taperStart: 0.2, taperEnd: 0.2, wobble: 0.08, rng });
+    gougeStroke(sctx, innerGlow, { color: '#E2F6FF', maxWidth: 1.2, alpha: 0.84, taperStart: 0.1, taperEnd: 0.1, wobble: 0.08, rng });
+    gougeStroke(sctx, rimFront.slice(6, 20), { color: '#A4E4FF', maxWidth: 1.35, alpha: 0.88, taperStart: 0.15, taperEnd: 0.15, wobble: 0.08, rng });
+    gougeStroke(sctx, [...rimFront.slice(19, 25), ...rimFront.slice(0, 7)], { color: '#7AA2F7', maxWidth: 0.85, alpha: 0.40, taperStart: 0.2, taperEnd: 0.2, wobble: 0.08, rng });
   }
 
-  // ---- F. DORSAL VERTICAL TAIL STABILIZER (Centered on x=0 spine, clears all 3 nozzles,
-  //         lit strictly on upper-left leading edge; shadow trailing edge drops dark!) ----
-  const finRootY0 = -18, finRootY1 = -95; // Stops cleanly ahead of aft engine collar (-104)!
-  const finTopY0  = -58, finTopY1  = -94; // Swept cleanly, NEVER overhangs engine bells!
-  const finH = 38;
-
+  // ---- F. DORSAL VERTICAL TAIL STABILIZER ----
+  const finRootY0 = -18, finRootY1 = -95, finTopY0 = -58, finTopY1 = -94, finH = 38;
   const finPort = [
     P(-1.5, finRootY0, hullRz(finRootY0)),
     P(-0.8, finTopY0,  hullRz(finTopY0) + finH),
     P(-0.8, finTopY1,  hullRz(finTopY1) + finH - 3),
     P(-1.5, finRootY1, hullRz(finRootY1)),
   ];
-  fillPoly(ctx, finPort, '#0C0F18');
-
-  // Swept scratchboard engraving lines on sunlit port face (brightest near leading edge, fading aft!)
+  fillPoly(sctx, finPort, '#121E36');
   for (let i = 0; i <= 11; i++) {
     const u = i / 11;
     const z0 = hullRz(finRootY0) + u * (finH - 4);
     const yLead = finRootY0 + u * (finTopY0 - finRootY0);
     const yTrail = finRootY1 + u * (finTopY1 - finRootY1);
-    const pA = P(-1.4 + u * 0.5, yLead, z0);
-    // Taper off before reaching the shadow trailing edge!
-    const pB = P(-1.4 + u * 0.5, yLead + (yTrail - yLead) * (0.62 + 0.30 * rng()), z0);
-    gougeStroke(ctx, [pA, pB], {
+    gougeStroke(sctx, [
+      P(-1.4 + u * 0.5, yLead, z0),
+      P(-1.4 + u * 0.5, yLead + (yTrail - yLead) * (0.62 + 0.30 * rng()), z0),
+    ], {
       color: u > 0.55 ? '#E2F6FF' : '#7DCFFF',
-      maxWidth: 0.72 + (1 - Math.abs(u - 0.5)) * 0.48,
-      alpha: 0.30 + u * 0.45,
+      maxWidth: 0.72 + (1 - Math.abs(u - 0.5)) * 0.48, alpha: 0.30 + u * 0.45,
       taperStart: 0.10, taperEnd: 0.58, wobble: 0.12, rng,
     });
   }
+  gougeStroke(sctx, [finPort[0], finPort[1]], { color: '#F8FAFC', maxWidth: 2.1, alpha: 0.96, taperStart: 0.08, taperEnd: 0.12, wobble: 0.12, rng });
+  gougeStroke(sctx, [finPort[1], finPort[2]], { color: '#A4E4FF', maxWidth: 1.25, alpha: 0.72, taperStart: 0.10, taperEnd: 0.45, wobble: 0.10, rng });
+  gougeStroke(sctx, [finPort[2], finPort[3]], { color: '#7AA2F7', maxWidth: 0.75, alpha: 0.28, taperStart: 0.25, taperEnd: 0.55, wobble: 0.10, rng });
+  gougeStroke(sctx, [finPort[0], finPort[3]], { color: '#7DCFFF', maxWidth: 1.0, alpha: 0.55, taperStart: 0.12, taperEnd: 0.25, wobble: 0.08, rng });
 
-  // Bright scraped highlight STRICTLY on the upper-left sunlit leading edge + root fillet!
-  gougeStroke(ctx, [finPort[0], finPort[1]], {
-    color: '#F8FAFC', maxWidth: 2.1, alpha: 0.96, taperStart: 0.08, taperEnd: 0.12, wobble: 0.12, rng
-  });
-  // Fin tip top edge catches a tapered medium highlight
-  gougeStroke(ctx, [finPort[1], finPort[2]], {
-    color: '#A4E4FF', maxWidth: 1.25, alpha: 0.72, taperStart: 0.10, taperEnd: 0.45, wobble: 0.10, rng
-  });
-  // Shadow-facing trailing edge: delicate faint broken rim flick (NO thick white bar!)
-  gougeStroke(ctx, [finPort[2], finPort[3]], {
-    color: '#7AA2F7', maxWidth: 0.75, alpha: 0.28, taperStart: 0.25, taperEnd: 0.55, wobble: 0.10, rng
-  });
-  // Clean root fillet along dorsal spine
-  gougeStroke(ctx, [finPort[0], finPort[3]], {
-    color: '#7DCFFF', maxWidth: 1.0, alpha: 0.55, taperStart: 0.12, taperEnd: 0.25, wobble: 0.08, rng
-  });
+  // ---- G. SUBTLE 16_2026 source-atop GRAIN ON LIT PORTIONS OF ROCKET ONLY ----
+  // Dark grain everywhere on ship (keeps shadow starboard wing dissolved in obsidian!)
+  const shipGrainDark = makeGrainPattern(256, 256, 0.042, 0.24, 0.0, 0.0, 991626);
+  sctx.save();
+  sctx.globalCompositeOperation = 'source-atop';
+  sctx.fillStyle = sctx.createPattern(shipGrainDark, 'repeat');
+  sctx.fillRect(0, 0, W, H);
+  // Subtle bright grain clipped strictly to the sunlit port half (zero dots on dark starboard wing!)
+  sctx.beginPath();
+  const nose = P(0, 145, 0), tail = P(0, -130, 0);
+  const portFar1 = P(-140, 145, 0), portFar2 = P(-140, -130, 0);
+  sctx.moveTo(nose[0], nose[1]); sctx.lineTo(tail[0], tail[1]);
+  sctx.lineTo(portFar2[0], portFar2[1]); sctx.lineTo(portFar1[0], portFar1[1]);
+  sctx.closePath();
+  sctx.clip();
+  const shipGrainLight = makeGrainPattern(256, 256, 0.0, 0.0, 0.030, 0.18, 991627);
+  sctx.fillStyle = sctx.createPattern(shipGrainLight, 'repeat');
+  sctx.fillRect(0, 0, W, H);
+  sctx.restore();
+
+  // Composite spacecraft layer onto main canvas
+  ctx.drawImage(sc, 0, 0, W, H);
 }
 
 // -----------------------------------------------------------------------------
@@ -748,14 +864,13 @@ window.render = function (frame, env) {
   const rng = mulberry32(20261126 + (frame || 0));
   const noise = makeNoise2D(7741);
 
-  const scx = W * 0.685;
-  const scy = H * 0.395;
-  const P = makeShipProjector(scx, scy);
+  const planet = { cx: W * 0.90, cy: H * 1.24, R: H * 0.62 };
+  const P = makeShipProjector(W * 0.685, H * 0.395);
 
-  drawBackdrop(ctx, W, H, rng);
-  const planet = drawStipplePlanet(ctx, W, H, rng, noise);
-  drawOrbitalChart(ctx, W, H, planet, P, rng);
-  drawSpacecraft3D(ctx, P, rng);
+  drawBackdrop(ctx, W, H, planet, rng);
+  drawGrainyFlatPlanet(ctx, W, H, dpr, planet, rng, noise);
+  drawOrbitalChart(ctx, W, H, planet, rng);
+  drawSpacecraft3D(ctx, W, H, dpr, P, rng);
 
   window.__ready = true;
 };
