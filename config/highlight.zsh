@@ -35,16 +35,32 @@ function nave-highlight {
   esac
 }
 
+function _nave_hl_apply_selection {
+  # Zsh region_highlight overrides zle_highlight=(region:...), so syntax-colored
+  # tokens (commands, flags, paths, strings) hide native region selection unless
+  # we append an explicit selection overlay AFTER all memo=nave-hl entries.
+  region_highlight=(${region_highlight:#*memo=nave-sel*})
+  if (( REGION_ACTIVE )); then
+    local s=$(( MARK < CURSOR ? MARK : CURSOR ))
+    local e=$(( MARK > CURSOR ? MARK : CURSOR ))
+    if (( e > s )); then
+      region_highlight+=("${s} ${e} bg=238,fg=${_NAVE_C[user]:-51},bold, memo=nave-sel")
+    fi
+  fi
+}
+
 function _nave_hl_redraw {
   setopt LOCAL_OPTIONS EXTENDED_GLOB
-  (( _NAVE_HL_ENABLED )) || {
+  if (( ! _NAVE_HL_ENABLED )); then
     region_highlight=(${region_highlight:#*memo=nave-hl*})
+    _nave_hl_apply_selection
     return
-  }
+  fi
 
   local buf="$BUFFER"
   local pal="${NAVE_PALETTE:-cyber}"
   if [[ "$buf" == "$_NAVE_HL_LAST_BUF" && "$pal" == "$_NAVE_HL_LAST_PAL" ]]; then
+    _nave_hl_apply_selection
     return
   fi
   _NAVE_HL_LAST_BUF="$buf"
@@ -53,6 +69,7 @@ function _nave_hl_redraw {
   # Preserve other highlights (e.g. nave-suggest POSTDISPLAY memo=nave-sg)
   # Note: Zsh normalizes ", memo=..." internally to " memo=...", so match *memo=nave-hl*!
   local -a kept=(${region_highlight:#*memo=nave-hl*})
+  kept=(${kept:#*memo=nave-sel*})
   if [[ -z "$buf" ]]; then
     region_highlight=("${kept[@]}")
     return
@@ -177,10 +194,12 @@ function _nave_hl_redraw {
   done
 
   region_highlight=("${kept[@]}" "${hl[@]}")
+  _nave_hl_apply_selection
 }
 
 function _nave_hl_finish {
   _NAVE_HL_LAST_BUF=""
+  region_highlight=(${region_highlight:#*memo=nave-sel*})
 }
 
 add-zle-hook-widget zle-line-pre-redraw _nave_hl_redraw

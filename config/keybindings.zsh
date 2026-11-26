@@ -58,6 +58,7 @@ function _nave_copy_if_selected {
   if (( REGION_ACTIVE )); then
     _nave_copy_text "$(_nave_get_region)"
     REGION_ACTIVE=0
+    region_highlight=(${region_highlight:#*memo=nave-sel*})
     _NAVE_INT_COPIED=1
   else
     _NAVE_INT_COPIED=0
@@ -86,6 +87,7 @@ function _nave_select_motion {
     REGION_ACTIVE=1
   fi
   zle "$motion"
+  (( CURSOR == MARK )) && REGION_ACTIVE=0
 }
 
 function _nave_deselect_motion {
@@ -108,6 +110,8 @@ function _nave_deselect_motion {
 
 function _nave_sel_left       { _nave_select_motion backward-char; }
 function _nave_sel_right      { _nave_select_motion forward-char; }
+function _nave_sel_up         { _nave_select_motion up-line; }
+function _nave_sel_down       { _nave_select_motion down-line; }
 function _nave_sel_word_left  { _nave_select_motion backward-word; }
 function _nave_sel_word_right { _nave_select_motion forward-word; }
 function _nave_sel_home       { _nave_select_motion beginning-of-line; }
@@ -265,6 +269,7 @@ function _nave_copy {
   if (( REGION_ACTIVE )); then
     _nave_copy_text "$(_nave_get_region)"
     REGION_ACTIVE=0
+    region_highlight=(${region_highlight:#*memo=nave-sel*})
   elif [[ -n "$BUFFER" ]]; then
     _nave_copy_text "$BUFFER"
   fi
@@ -319,7 +324,7 @@ function _nave_bracketed_paste {
 
 # Register all widgets
 for w in \
-  _nave_sel_left _nave_sel_right _nave_sel_word_left _nave_sel_word_right _nave_sel_home _nave_sel_end \
+  _nave_sel_left _nave_sel_right _nave_sel_up _nave_sel_down _nave_sel_word_left _nave_sel_word_right _nave_sel_home _nave_sel_end \
   _nave_move_left _nave_move_right _nave_move_word_left _nave_move_word_right _nave_move_home _nave_move_end \
   _nave_hist_up _nave_hist_down _nave_select_all _nave_select_word _nave_insert_newline _nave_sudo_toggle \
   _nave_backspace _nave_delete _nave_kill_word_back _nave_kill_word_fwd \
@@ -353,21 +358,39 @@ bindkey "^[[4~"   _nave_move_end         # End (rxvt/tmux)
 bindkey "^[[1;5F" _nave_move_end         # Ctrl+End
 bindkey "^E"      _nave_move_end         # Ctrl+E (End of line)
 bindkey "^[[1;5D" _nave_move_word_left   # Ctrl+Left
+bindkey "^[[5D"   _nave_move_word_left   # Ctrl+Left (short CSI)
+bindkey "^[O1;5D" _nave_move_word_left   # Ctrl+Left (app mode)
 bindkey "^[[1;3D" _nave_move_word_left   # Alt+Left
 bindkey "^[Od"    _nave_move_word_left   # Ctrl+Left (rxvt)
 bindkey "^[b"     _nave_move_word_left   # Alt+B
 bindkey "^[[1;5C" _nave_move_word_right  # Ctrl+Right
+bindkey "^[[5C"   _nave_move_word_right  # Ctrl+Right (short CSI)
+bindkey "^[O1;5C" _nave_move_word_right  # Ctrl+Right (app mode)
 bindkey "^[[1;3C" _nave_move_word_right  # Alt+Right
 bindkey "^[Oc"    _nave_move_word_right  # Ctrl+Right (rxvt)
 bindkey "^[f"     _nave_move_word_right  # Alt+F
 
-# Selection (VS Code / Windows standard)
+# Selection (VS Code / Windows standard — XTerm, short CSI, and app-mode variants)
 bindkey "^[[1;2D" _nave_sel_left         # Shift+Left
+bindkey "^[[2D"   _nave_sel_left         # Shift+Left (short CSI)
+bindkey "^[O1;2D" _nave_sel_left         # Shift+Left (app mode)
 bindkey "^[[1;2C" _nave_sel_right        # Shift+Right
+bindkey "^[[2C"   _nave_sel_right        # Shift+Right (short CSI)
+bindkey "^[O1;2C" _nave_sel_right        # Shift+Right (app mode)
+bindkey "^[[1;2A" _nave_sel_up           # Shift+Up (multiline)
+bindkey "^[[1;2B" _nave_sel_down         # Shift+Down (multiline)
 bindkey "^[[1;6D" _nave_sel_word_left    # Ctrl+Shift+Left
+bindkey "^[[6D"   _nave_sel_word_left    # Ctrl+Shift+Left (short CSI)
+bindkey "^[O1;6D" _nave_sel_word_left    # Ctrl+Shift+Left (app mode)
+bindkey "^[O6D"   _nave_sel_word_left    # Ctrl+Shift+Left (app short)
 bindkey "^[[1;4D" _nave_sel_word_left    # Alt+Shift+Left
 bindkey "^[[1;6C" _nave_sel_word_right   # Ctrl+Shift+Right
+bindkey "^[[6C"   _nave_sel_word_right   # Ctrl+Shift+Right (short CSI)
+bindkey "^[O1;6C" _nave_sel_word_right   # Ctrl+Shift+Right (app mode)
+bindkey "^[O6C"   _nave_sel_word_right   # Ctrl+Shift+Right (app short)
 bindkey "^[[1;4C" _nave_sel_word_right   # Alt+Shift+Right
+bindkey "^[[1;6A" _nave_sel_up           # Ctrl+Shift+Up (multiline)
+bindkey "^[[1;6B" _nave_sel_down         # Ctrl+Shift+Down (multiline)
 bindkey "^[[1;2H" _nave_sel_home         # Shift+Home
 bindkey "^[[1;6H" _nave_sel_home         # Ctrl+Shift+Home
 bindkey "^[[1;2F" _nave_sel_end          # Shift+End
