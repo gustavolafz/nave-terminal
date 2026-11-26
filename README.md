@@ -129,6 +129,22 @@ Adicione o conteúdo de [config/gitconfig.delta](config/gitconfig.delta) ao seu 
 </details>
 
 <details>
+<summary><strong>PowerShell (Windows 5.1 &amp; PowerShell 7+)</strong></summary>
+
+O mesmo visual (2 linhas, 5 paletas com `nave-theme`, Git, `sysinfo`, `ginfo`, `ports`, `killport` e `PSReadLine` colorido) também funciona nativamente no PowerShell:
+
+```powershell
+# 1. Copie powershell/nave.ps1 para %USERPROFILE%\.config\nave\nave.ps1
+New-Item -ItemType Directory -Path "$env:USERPROFILE\.config\nave" -Force | Out-Null
+Copy-Item .\powershell\nave.ps1 "$env:USERPROFILE\.config\nave\nave.ps1"
+
+# 2. Adicione ao seu $PROFILE
+New-Item -ItemType File -Path $PROFILE -Force | Out-Null
+Add-Content -Path $PROFILE -Value "`n. `"$env:USERPROFILE\.config\nave\nave.ps1`""
+```
+</details>
+
+<details>
 <summary><strong>Windows Terminal — Esquema "Nave Cyber"</strong></summary>
 
 Copie o esquema de [windows-terminal/nave-cyber.json](windows-terminal/nave-cyber.json) para o array `"schemes"` no `settings.json` do Windows Terminal e aplique no seu perfil WSL:
