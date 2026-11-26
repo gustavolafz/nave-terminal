@@ -147,8 +147,8 @@ Add-Content -Path $PROFILE -Value "`n. `"$env:USERPROFILE\.config\nave\nave.ps1`
   "useAcrylic": true,
   "bellStyle": "none",
   "backgroundImage": "C:\\Users\\SEU_USUARIO\\.config\\nave\\nave-wallpaper.png",
-  "backgroundImageOpacity": 0.48,
-  "backgroundImageStretchMode": "uniformToFill",
+  "backgroundImageOpacity": 0.68,
+  "backgroundImageStretchMode": "uniform",
   "backgroundImageAlignment": "bottomRight",
   "experimental.pixelShaderPath": "C:\\Users\\SEU_USUARIO\\.config\\nave\\shaders\\nave-glow.hlsl"
 }

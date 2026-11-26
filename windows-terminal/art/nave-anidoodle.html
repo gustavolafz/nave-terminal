@@ -5,7 +5,7 @@
 <title>Nave Terminal — Anidoodle Scratchboard + 16_2026 Grainy Flat Illustration</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: #0C0F18; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
   canvas { display: block; width: 100vw; height: 100vh; }
 </style>
 </head>
@@ -159,13 +159,28 @@ function fillPoly(ctx, pts, color, alpha = 1.0) {
   ctx.restore();
 }
 
+function erasePoly(ctx, pts) {
+  if (pts.length < 3) return;
+  ctx.save();
+  ctx.globalCompositeOperation = 'destination-out';
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
 // -----------------------------------------------------------------------------
-// Layer 1: Matte Obsidian Board + Subtle Grainy Atmospheric Halo (Medium Grain)
-// Keeps left terminal reading zone (x < 560) calm & banding-free!
+// Layer 1: Backdrop (Transparent RGBA for Windows Terminal, or #0C0F18 opaque)
 // -----------------------------------------------------------------------------
-function drawBackdrop(ctx, W, H, planet, rng) {
-  ctx.fillStyle = '#0C0F18';
-  ctx.fillRect(0, 0, W, H);
+function drawBackdrop(ctx, W, H, planet, rng, transparentBg) {
+  ctx.clearRect(0, 0, W, H);
+  if (!transparentBg) {
+    ctx.fillStyle = '#0C0F18';
+    ctx.fillRect(0, 0, W, H);
+  }
 
   // Subtle 16_2026 grainy atmospheric nebula wash radiating softly behind the lit planet limb
   // Built purely from positional-density 1.6px square grain (zero 8-bit gradient banding!)
@@ -227,10 +242,20 @@ function drawBackdrop(ctx, W, H, planet, rng) {
 // Flat borderless tonal crescent bands (Dribbble Flat) sculpted with dense
 // positional-density 1.6-2px square grain stippling + craters + source-atop grain!
 // -----------------------------------------------------------------------------
-function drawGrainyFlatPlanet(ctx, W, H, dpr, planet, rng, noise) {
+function drawGrainyFlatPlanet(ctx, W, H, dpr, planet, rng, noise, transparentBg) {
   const { cx, cy, R } = planet;
   const lLen = Math.hypot(-0.74, -0.64, 0.21);
   const lx = -0.74 / lLen, ly = -0.64 / lLen, lz = 0.21 / lLen;
+
+  // Erase background stars/halo cleanly inside the sphere silhouette (preserves transparency!)
+  if (transparentBg) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
 
   // Render planet on its own offscreen layer so we can apply 16_2026 source-atop grain cleanly!
   const pc = document.createElement('canvas');
@@ -242,7 +267,7 @@ function drawGrainyFlatPlanet(ctx, W, H, dpr, planet, rng, noise) {
   pctx.save();
   pctx.beginPath();
   pctx.arc(cx, cy, R, 0, Math.PI * 2);
-  pctx.fillStyle = '#0D1120'; // Deep obsidian-indigo shadow hemisphere
+  pctx.fillStyle = transparentBg ? 'rgba(13, 17, 32, 0.55)' : '#0D1120';
   pctx.fill();
   pctx.clip();
 
@@ -506,7 +531,7 @@ function drawOrbitalChart(ctx, W, H, planet, rng) {
 //          with a SUBTLE touch of 16_2026 flat under-tone + light source-atop grain
 //          and a MEDIUM grainy light-cone exhaust plume!
 // -----------------------------------------------------------------------------
-function drawSpacecraft3D(ctx, W, H, dpr, P, rng) {
+function drawSpacecraft3D(ctx, W, H, dpr, P, rng, transparentBg) {
   function hullRx(y) {
     if (y >= 132) return 0.5;
     if (y > 40) return 27 * Math.pow((132 - y) / 92, 0.62);
@@ -588,8 +613,14 @@ function drawSpacecraft3D(ctx, W, H, dpr, P, rng) {
       [s * 106, -78, zTip], [s * 96, -86, zTip - 0.5], [s * 30, -82, zRoot],
       [s * 27, -100, zRoot], [s * 24, -100, zRoot],
     ];
-    // Subtle flat slate-navy undertone on lit port wing; pure obsidian on shadow starboard wing!
-    fillPoly(sctx, outline3D.map(q => P(q[0], q[1], q[2])), isLit ? '#13203A' : '#0C0F18');
+    // In transparent mode, erase arcs/stars behind wings and leave shadow starboard wing transparent
+    const wPts = outline3D.map(q => P(q[0], q[1], q[2]));
+    if (transparentBg) {
+      erasePoly(ctx, wPts);
+      if (isLit) fillPoly(sctx, wPts, '#13203A', 0.85);
+    } else {
+      fillPoly(sctx, wPts, isLit ? '#13203A' : '#0C0F18');
+    }
 
     const leTop = [[s * 24, 24, zRoot + 2.2], [s * 42, -4, zRoot + 2.6], [s * 102, -56, zTip + 1.8], [s * 106, -78, zTip + 1.4]];
     const leBot = [[s * 24, 24, zRoot - 2.0], [s * 42, -4, zRoot - 1.6], [s * 102, -56, zTip - 1.2], [s * 106, -78, zTip - 1.0]];
@@ -670,7 +701,13 @@ function drawSpacecraft3D(ctx, W, H, dpr, P, rng) {
     spineSil.push(P(...hullPt(y, Math.PI * 0.52)));
     starSil.push(P(...hullPt(y, -Math.PI * 0.04)));
   }
-  fillPoly(sctx, [...portSil, ...starSil.reverse()], '#0C0F18');
+  const hullMaskPts = [...portSil, ...starSil.reverse()];
+  if (transparentBg) {
+    erasePoly(ctx, hullMaskPts);
+    fillPoly(sctx, hullMaskPts, '#0C0F18', 0.78);
+  } else {
+    fillPoly(sctx, hullMaskPts, '#0C0F18');
+  }
   // Subtle flat lit-side under-wash on port half of hull (connects craft gently to grainy flat planet!)
   fillPoly(sctx, [...portSil, ...spineSil.slice().reverse()], '#1A3054', 0.42);
 
@@ -850,6 +887,7 @@ window.render = function (frame, env) {
   const dpr = (env && env.scale) || window.devicePixelRatio || 1;
   const W = (env && env.width) || 1280;
   const H = (env && env.height) || 720;
+  const transparentBg = !!(env && env.transparent);
 
   canvas.width = Math.round(W * dpr);
   canvas.height = Math.round(H * dpr);
@@ -865,17 +903,18 @@ window.render = function (frame, env) {
   const planet = { cx: W * 0.968, cy: H * 1.155, R: H * 0.35 };
   const P = makeShipProjector(W * 0.858, H * 0.640);
 
-  drawBackdrop(ctx, W, H, planet, rng);
-  drawGrainyFlatPlanet(ctx, W, H, dpr, planet, rng, noise);
+  drawBackdrop(ctx, W, H, planet, rng, transparentBg);
+  drawGrainyFlatPlanet(ctx, W, H, dpr, planet, rng, noise, transparentBg);
   drawOrbitalChart(ctx, W, H, planet, rng);
-  drawSpacecraft3D(ctx, W, H, dpr, P, rng);
+  drawSpacecraft3D(ctx, W, H, dpr, P, rng, transparentBg);
 
   window.__ready = true;
 };
 
 const params = new URLSearchParams(location.search);
 const sc = parseFloat(params.get('scale') || '1');
-window.render(0, { width: 1280, height: 720, scale: sc });
+const tr = params.get('transparent') === '1';
+window.render(0, { width: 1280, height: 720, scale: sc, transparent: tr });
 </script>
 </body>
 </html>
