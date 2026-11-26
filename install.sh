@@ -31,13 +31,17 @@ if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
   exit 1
 fi
 
-mkdir -p "$ZSH_CUSTOM/themes" "$ZSH_CUSTOM/plugins" "$NAVE_DIR"
+mkdir -p "$ZSH_CUSTOM/themes" "$ZSH_CUSTOM/plugins" "$NAVE_DIR" "$HOME/.local/bin"
 
-# 1. Install theme & toolkit
+# 1. Install theme, toolkit & interactive cockpit apps
 cp "$REPO_DIR/theme/nave.zsh-theme" "$ZSH_CUSTOM/themes/nave.zsh-theme"
 cp "$REPO_DIR/config/toolkit.zsh" "$NAVE_DIR/toolkit.zsh"
+cp "$REPO_DIR/bin/nave-hud" "$HOME/.local/bin/nave-hud"
+cp "$REPO_DIR/bin/nave-warp" "$HOME/.local/bin/nave-warp"
+chmod +x "$HOME/.local/bin/nave-hud" "$HOME/.local/bin/nave-warp"
 echo "│ [ok] Tema instalado em $ZSH_CUSTOM/themes/nave.zsh-theme"
 echo "│ [ok] Toolkit instalado em $NAVE_DIR/toolkit.zsh"
+echo "│ [ok] Cockpit apps instalados em ~/.local/bin (nave-hud, nave-warp)"
 
 # 2. Ensure zsh-autosuggestions & zsh-syntax-highlighting exist
 if [[ ! -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ]]; then

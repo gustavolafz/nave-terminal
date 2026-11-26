@@ -1,16 +1,13 @@
 # ==============================================================================
 # ~/.config/nave/toolkit.zsh
-# Modular WSL + Dev + Modern CLI toolkit (zero broken Nerd Fonts / emojis)
+# Modular WSL + Dev + Modern CLI + Art/Cockpit toolkit
 # ==============================================================================
 
-# Configurable projects directory for the `p` hub command
 : "${NAVE_PROJECTS_DIR:=$HOME/projects}"
 
 # ------------------------------------------------------------------------------
 # Modern CLI integrations (fzf, zoxide, eza, bat, fd, rg, lazygit, btop)
 # ------------------------------------------------------------------------------
-
-# fzf + fd + bat + eza previews
 if command -v fzf >/dev/null 2>&1; then
   if command -v fd >/dev/null 2>&1; then
     export FZF_DEFAULT_COMMAND='fd --type f --hidden --follow --exclude .git --exclude node_modules'
@@ -25,12 +22,10 @@ if command -v fzf >/dev/null 2>&1; then
   source <(fzf --zsh)
 fi
 
-# zoxide (smart cd: z <dir>, zi interactive)
 if command -v zoxide >/dev/null 2>&1; then
   eval "$(zoxide init zsh)"
 fi
 
-# eza (modern ls WITHOUT Nerd Font icons so it never breaks in any viewer)
 if command -v eza >/dev/null 2>&1; then
   alias ls='eza --color=auto --group-directories-first'
   alias ll='eza -la --git --header --time-style=relative --group-directories-first'
@@ -53,7 +48,6 @@ else
   }
 fi
 
-# bat (syntax-highlighted viewer + colored man pages)
 if command -v bat >/dev/null 2>&1; then
   export BAT_THEME="TwoDark"
   alias b='bat --style=numbers,changes'
@@ -66,9 +60,110 @@ command -v lazygit >/dev/null 2>&1 && alias lg='lazygit'
 command -v btop >/dev/null 2>&1 && alias mon='btop'
 
 # ------------------------------------------------------------------------------
+# Visual Art Helpers: TrueColor gradient, hr divider, Windows Terminal shaders
+# ------------------------------------------------------------------------------
+function _nave_grad_line {
+  local text="$1"
+  local c1="${_NAVE_C[grad1]:-125;207;255}"
+  local c2="${_NAVE_C[grad2]:-122;162;247}"
+  local c3="${_NAVE_C[grad3]:-187;154;247}"
+  local bold="${2:-0}"
+
+  local -a a1=(${(s:;:)c1}) a2=(${(s:;:)c2}) a3=(${(s:;:)c3})
+  local r1=${a1[1]} g1=${a1[2]} b1=${a1[3]}
+  local r2=${a2[1]} g2=${a2[2]} b2=${a2[3]}
+  local r3=${a3[1]} g3=${a3[2]} b3=${a3[3]}
+
+  local len=${#text}
+  local denom=$(( len > 1 ? len - 1 : 1 ))
+  local out="" i ch t r g b bpre=""
+  (( bold )) && bpre="1;"
+
+  for (( i = 1; i <= len; i++ )); do
+    ch="${text[$i]}"
+    if [[ "$ch" == " " ]]; then
+      out+=" "
+      continue
+    fi
+    # Integer interpolation 0..1000
+    t=$(( (i - 1) * 1000 / denom ))
+    if (( t <= 500 )); then
+      r=$(( r1 + (r2 - r1) * t / 500 ))
+      g=$(( g1 + (g2 - g1) * t / 500 ))
+      b=$(( b1 + (b2 - b1) * t / 500 ))
+    else
+      local u=$(( t - 500 ))
+      r=$(( r2 + (r3 - r2) * u / 500 ))
+      g=$(( g2 + (g3 - g2) * u / 500 ))
+      b=$(( b2 + (b3 - b2) * u / 500 ))
+    fi
+    out+=$'\e['"${bpre}38;2;${r};${g};${b}m${ch}"
+  done
+  printf '%s\e[0m' "$out"
+}
+
+# Full-width styled session divider: hr [label]
+function hr {
+  local label="$*"
+  local w="${COLUMNS:-80}"
+  local ts
+  ts=$(date +%H:%M)
+  if [[ -n "$label" ]]; then
+    local prefix="─── ${label} "
+    local suffix=" ${ts} ───"
+    local fill=$(( w - ${#prefix} - ${#suffix} ))
+    (( fill < 3 )) && fill=3
+    local bar="${(l:${fill}::─:)}"
+    _nave_grad_line "${prefix}${bar}${suffix}" 1
+    printf '\n'
+  else
+    local bar="${(l:${w}::─:)}"
+    _nave_grad_line "$bar" 0
+    printf '\n'
+  fi
+}
+
+# Switch Windows Terminal HLSL GPU pixel shader live: nave-shader [glow|crt|off|status]
+function nave-shader {
+  local mode="${1:-status}"
+  local wt_json
+  wt_json=$(ls /mnt/c/Users/*/AppData/Local/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json 2>/dev/null | head -n 1)
+  if [[ -z "$wt_json" || ! -f "$wt_json" ]]; then
+    print -P "%F{${_NAVE_C[warn]:-215}}settings.json do Windows Terminal nao encontrado.%f"
+    return 1
+  fi
+  local win_user
+  win_user=$(basename "$(dirname "$(dirname "$(dirname "$(dirname "$(dirname "$wt_json")")")")")")
+  local shader_dir="C:\\Users\\${win_user}\\.config\\nave\\shaders"
+
+  python3 - "$wt_json" "$mode" "$shader_dir" <<'PY'
+import json, pathlib, sys
+wt_path, mode, sdir = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+data = json.loads(wt_path.read_text(encoding="utf-8"))
+targets = ("Ubuntu", "Windows PowerShell", "PowerShell")
+if mode == "status":
+    for p in data.get("profiles", {}).get("list", []):
+        if p.get("name") in targets:
+            print(f"  {p.get('name'):20s} -> {p.get('experimental.pixelShaderPath', 'off')}")
+    sys.exit(0)
+if mode not in ("glow", "crt", "off"):
+    print("Uso: nave-shader <glow|crt|off|status>")
+    sys.exit(1)
+val = None if mode == "off" else f"{sdir}\\nave-{mode}.hlsl"
+for p in data.get("profiles", {}).get("list", []):
+    if p.get("name") in targets or p.get("source") in ("Microsoft.WSL", "Windows.Terminal.PowershellCore"):
+        if val is None:
+            p.pop("experimental.pixelShaderPath", None)
+        else:
+            p["experimental.pixelShaderPath"] = val
+wt_path.write_text(json.dumps(data, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
+print(f"✓ Windows Terminal shader alterado para: {mode}")
+PY
+}
+
+# ------------------------------------------------------------------------------
 # WSL <-> Windows Bridge
 # ------------------------------------------------------------------------------
-
 function clip {
   if [[ -n "$1" && -f "$1" ]]; then
     clip.exe < "$1"
@@ -168,7 +263,7 @@ function killport {
 }
 
 # ------------------------------------------------------------------------------
-# Project Hub: p [projeto] (jumps into $NAVE_PROJECTS_DIR with fzf or Tab)
+# Project Hub: p [projeto]
 # ------------------------------------------------------------------------------
 function p {
   local base="$NAVE_PROJECTS_DIR"
@@ -307,7 +402,7 @@ function dksh {
 }
 
 # ------------------------------------------------------------------------------
-# Visual Cockpit / sysinfo v2 (with Block-Element progress bars) + welcome
+# Visual Cockpit / sysinfo v3 (TrueColor Gradient Space Art + Progress Bars)
 # ------------------------------------------------------------------------------
 function _nave_bar {
   local pct="${1:-0}"
@@ -338,21 +433,45 @@ function sysinfo {
   dk_run=$(docker ps -q 2>/dev/null | wc -l | tr -d ' ')
 
   local mem_bar disk_bar
-  mem_bar=$(_nave_bar "$mem_pct" 16)
-  disk_bar=$(_nave_bar "$disk_pct" 16)
+  mem_bar=$(_nave_bar "$mem_pct" 14)
+  disk_bar=$(_nave_bar "$disk_pct" 14)
 
   local c_dir="${_NAVE_C[dir]:-39}"
   local c_frm="${_NAVE_C[frame]:-240}"
   local c_lbl="${_NAVE_C[git]:-141}"
 
-  print -P "%F{${c_dir}}╭─ %B${USER}@${HOST}%b %F{${c_frm}}[paleta: ${NAVE_PALETTE}]%f %F{${c_dir}}─────────────────────%f"
-  print -P "%F{${c_frm}}│%f %F{${c_lbl}}OS:%f       ${os:-Linux}"
-  print -P "%F{${c_frm}}│%f %F{${c_lbl}}Kernel:%f   ${kernel}"
-  print -P "%F{${c_frm}}│%f %F{${c_lbl}}Uptime:%f   ${up:-N/A}"
-  print -P "%F{${c_frm}}│%f %F{${c_lbl}}Memory:%f   ${mem_bar}  ${mem_used} / ${mem_tot} (${mem_pct}%%)"
-  print -P "%F{${c_frm}}│%f %F{${c_lbl}}Disk /:%f   ${disk_bar}  ${disk_used} / ${disk_tot} (${disk_pct}%%)"
-  print -P "%F{${c_frm}}│%f %F{${c_lbl}}Network:%f  WSL ${ip_addr:-N/A}  ·  ${open_ports} portas TCP  ·  ${dk_run} docker"
-  print -P "%F{${c_dir}}╰─────────────────────────────────────────────────────%f"
+  local -a art
+  art=(
+    "         ▲         "
+    "        ╱█╲        "
+    "       ╱███╲       "
+    "      ╱█ ◆ █╲      "
+    "     ╱███████╲     "
+    "    ╱██ ▀█▀ ██╲    "
+    "   ╰──╯  ║  ╰──╯   "
+    "    N · A · V · E  "
+  )
+
+  local -a info
+  info=(
+    "%F{${c_dir}}╭─ %B${USER}@${HOST}%b %F{${c_frm}}[${NAVE_PALETTE} · ${NAVE_LAYOUT}]%f"
+    "%F{${c_frm}}│%f %F{${c_lbl}}OS:%f      ${os:-Linux}"
+    "%F{${c_frm}}│%f %F{${c_lbl}}Kernel:%f  ${kernel}"
+    "%F{${c_frm}}│%f %F{${c_lbl}}Uptime:%f  ${up:-N/A}"
+    "%F{${c_frm}}│%f %F{${c_lbl}}Memory:%f  ${mem_bar} ${mem_used}/${mem_tot} (${mem_pct}%%)"
+    "%F{${c_frm}}│%f %F{${c_lbl}}Disk /:%f  ${disk_bar} ${disk_used}/${disk_tot} (${disk_pct}%%)"
+    "%F{${c_frm}}│%f %F{${c_lbl}}Net:%f     WSL ${ip_addr:-N/A} · ${open_ports} TCP · ${dk_run} docker"
+    "%F{${c_dir}}╰──────────────────────────────────────────────%f"
+  )
+
+  local i
+  for (( i = 1; i <= ${#info}; i++ )); do
+    if (( ${COLUMNS:-100} >= 76 )); then
+      _nave_grad_line "${art[$i]}" 1
+      printf "  "
+    fi
+    print -P "${info[$i]}"
+  done
 }
 
 function nave-welcome {
@@ -389,19 +508,19 @@ function nave-help {
   local c_lbl="${_NAVE_C[git]:-141}"
 
   print -P "%F{${c_dir}}╭─ Nave Terminal — Guia Rapido ─────────────────────────────%f"
-  print -P "%F{${c_frm}}│%f %F{${c_lbl}}%BEstilo & Tema%b%f"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-theme <nome>%f      Troca paleta (cyber|emerald|sunset|nord|stealth)"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-transient on|off%f  Colapsa prompts antigos apos Enter"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-notify <seg|off>%f  Toast do Windows para comandos longos"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-welcome on|off%f    Barra compacta ao abrir terminal"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}sysinfo%f                Painel completo com barras de RAM/Disco"
+  print -P "%F{${c_frm}}│%f %F{${c_lbl}}%BEstilo, Arte & Cockpit%b%f"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-theme <nome>%f      Paleta + fundo ao vivo (cyber|emerald|sunset|nord|stealth)"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-layout <modo>%f     Layout do prompt (framed|rail|hud|compact)"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-shader <modo>%f     Shader GPU Windows Terminal (glow|crt|off)"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-bg / transient%f    Liga/desliga fundo OSC 11 ou transient prompt"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}sysinfo / hr [titulo]%f  Arte + barras de sistema / regua divisoria"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-hud / nave-warp%f   Cockpit em tempo real / starfield 3D"
   print -P "%F{${c_frm}}│%f"
   print -P "%F{${c_frm}}│%f %F{${c_lbl}}%BNavegacao & Busca%b%f"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}p [projeto]%f            Pula para \$NAVE_PROJECTS_DIR (com fzf + preview)"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}p [projeto]%f            Pula para \$NAVE_PROJECTS_DIR (fzf + preview)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}z <termo> / zi%f         Salto inteligente (zoxide)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}Ctrl+R / Ctrl+T / Alt+C%f Busca fuzzy no historico / arquivos / pastas"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}Esc Esc%f                Adiciona/remove 'sudo ' na linha atual"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}ll / lt [nivel] / b%f    Listagem Git (eza), arvore e viewer (bat)"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}Esc Esc / ll / lt / b%f  Toggle sudo / eza Git / arvore / bat viewer"
   print -P "%F{${c_frm}}│%f"
   print -P "%F{${c_frm}}│%f %F{${c_lbl}}%BGit, Docker, Portas & WSL%b%f"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}lg / ginfo / gbf%f       Lazygit, painel do repo, trocar branch fuzzy"

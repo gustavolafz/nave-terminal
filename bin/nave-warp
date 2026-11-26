@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""
+nave-warp — 3D starfield warp screensaver synced with your Nave palette.
+Controls: [+/-] speed, [1-5] palette, [q/Esc/Space] exit cleanly.
+"""
+import math
+import os
+import pathlib
+import random
+import select
+import shutil
+import sys
+import termios
+import time
+import tty
+
+PALETTES = {
+    "cyber":   [(86, 95, 137),  (122, 162, 247), (125, 207, 255), (187, 154, 247), (248, 250, 252)],
+    "emerald": [(40, 80, 60),   (46, 229, 157),  (80, 250, 123),  (134, 239, 172), (240, 253, 244)],
+    "sunset":  [(122, 82, 104), (247, 118, 142), (255, 158, 100), (255, 215, 95),  (255, 245, 245)],
+    "nord":    [(76, 86, 106),  (129, 161, 193), (136, 192, 208), (180, 142, 173), (236, 239, 244)],
+    "stealth": [(63, 63, 70),   (113, 113, 122), (161, 161, 170), (212, 212, 216), (250, 250, 250)],
+}
+PAL_ORDER = ["cyber", "emerald", "sunset", "nord", "stealth"]
+GLYPHS = ["·", "•", "+", "*", "✦"]
+
+def read_palette():
+    p = pathlib.Path(os.path.expanduser("~/.config/nave/palette"))
+    if p.exists():
+        n = p.read_text().strip()
+        if n in PALETTES:
+            return n
+    return "cyber"
+
+def main():
+    pal_name = read_palette()
+    speed = 0.032
+    once = "--once" in sys.argv
+    cols, rows = shutil.get_terminal_size((96, 28))
+    n_stars = max(70, min(180, (cols * rows) // 18))
+
+    def spawn():
+        return [random.uniform(-1.2, 1.2), random.uniform(-1.0, 1.0), random.uniform(0.08, 1.0)]
+
+    stars = [spawn() for _ in range(n_stars)]
+
+    def render_str():
+        nonlocal cols, rows
+        cols, rows = shutil.get_terminal_size((96, 28))
+        cx, cy = cols / 2.0, rows / 2.0
+        colors = PALETTES[pal_name]
+        buf = {}
+        for s in stars:
+            z = s[2]
+            sx = int(cx + (s[0] / z) * (cols * 0.42))
+            sy = int(cy + (s[1] / z) * (rows * 0.45))
+            if 0 <= sx < cols and 0 <= sy < rows - 1:
+                depth = max(0.0, min(0.999, 1.0 - z))
+                idx = int(depth * len(GLYPHS))
+                c = colors[idx]
+                buf[(sy, sx)] = f"\033[38;2;{c[0]};{c[1]};{c[2]}m{GLYPHS[idx]}\033[0m"
+        out = []
+        for y in range(rows - 1):
+            line = []
+            for x in range(cols):
+                line.append(buf.get((y, x), " "))
+            out.append("".join(line))
+        c_dim = colors[1]
+        footer = f" NAVE WARP · paleta: {pal_name} · velocidade: {int(speed*1000)} · [+/-] vel · [1-5] paleta · [q] sair "
+        out.append(f"\033[38;2;{c_dim[0]};{c_dim[1]};{c_dim[2]}m{footer.center(cols)}\033[0m")
+        return "\n".join(out)
+
+    if once:
+        print(render_str())
+        return
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        sys.stdout.write("\033[?1049h\033[?25l")
+        sys.stdout.flush()
+        while True:
+            for s in stars:
+                s[2] -= speed
+                if s[2] <= 0.04:
+                    s[:] = [random.uniform(-1.2, 1.2), random.uniform(-1.0, 1.0), 1.0]
+            sys.stdout.write("\033[H" + render_str())
+            sys.stdout.flush()
+            r, _, _ = select.select([sys.stdin], [], [], 0.033)
+            if r:
+                ch = sys.stdin.read(1)
+                if ch in ("q", "Q", " ", "\x1b", "\x03"):
+                    break
+                elif ch in ("+", "="):
+                    speed = min(0.12, speed + 0.008)
+                elif ch in ("-", "_"):
+                    speed = max(0.008, speed - 0.008)
+                elif ch in "12345":
+                    pal_name = PAL_ORDER[int(ch) - 1]
+    except KeyboardInterrupt:
+        pass
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        sys.stdout.write("\033[?25h\033[?1049l")
+        sys.stdout.flush()
+
+if __name__ == "__main__":
+    main()

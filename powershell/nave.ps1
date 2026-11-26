@@ -1,17 +1,20 @@
 ﻿# ==============================================================================
-# Nave Terminal for PowerShell (5.1 & 7+)
-# Clean, fast, palette-driven, 100% universal (zero Nerd Fonts / broken emojis)
+# Nave Terminal v3 for PowerShell (5.1 & 7+)
+# Features: 5 live palettes + OSC 11/12 bg/cursor sync, 4 layouts, TrueColor
+# gradient art sysinfo, hr divider, GPU shader toggle, nave-hud & nave-warp
 # ==============================================================================
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::InputEncoding  = [System.Text.Encoding]::UTF8
 $script:ESC = [char]27
+$script:BEL = [char]7
+
 $script:NaveConfigDir = Join-Path $env:USERPROFILE ".config\nave"
 if (-not (Test-Path $script:NaveConfigDir)) {
     New-Item -ItemType Directory -Path $script:NaveConfigDir -Force | Out-Null
 }
 
-# Unicode constants (safe across all fonts)
+# Universal Unicode constants
 $script:CH_TL   = [char]0x256D  # ╭
 $script:CH_BL   = [char]0x2570  # ╰
 $script:CH_H    = [char]0x2500  # ─
@@ -28,46 +31,69 @@ $script:CH_MID  = [char]0x00B7  # ·
 $script:CH_BLK  = [char]0x2588  # █
 $script:CH_SHD  = [char]0x2591  # ░
 $script:CH_CHK  = [char]0x2713  # ✓
+$script:CH_DIA  = [char]0x25C6  # ◆
+$script:CH_TRI  = [char]0x25B2  # ▲
+$script:CH_SL   = [char]0x2571  # ╱
+$script:CH_BSL  = [char]0x2572  # ╲
+$script:CH_TOP  = [char]0x2580  # ▀
+$script:CH_DV   = [char]0x2551  # ║
+$script:CH_BR   = [char]0x256F  # ╯
 
 $script:NaveFirstPrompt = $true
 $script:NaveLastHistId = -1
 
-$script:NavePalette = "cyber"
-$palFile = Join-Path $script:NaveConfigDir "palette"
-if (Test-Path $palFile) {
-    $savedPal = (Get-Content $palFile -Raw).Trim()
-    if ($savedPal) { $script:NavePalette = $savedPal }
+function _Nave-LoadSetting([string]$name, [string]$defaultVal) {
+    $f = Join-Path $script:NaveConfigDir $name
+    if (Test-Path $f) {
+        $v = (Get-Content $f -Raw).Trim()
+        if ($v) { return $v }
+    }
+    return $defaultVal
 }
+
+$script:NavePalette = _Nave-LoadSetting "palette" "cyber"
+$script:NaveLayout  = _Nave-LoadSetting "layout"  "framed"
+$script:NaveBgSync  = (_Nave-LoadSetting "bg_sync" "1") -eq "1"
 
 $script:NavePalettes = @{
     cyber = @{
         frame="240"; user="81"; host="111"; dir="39"; git="141"
         warn="215"; info="81"; ok="78"; err="203"; dur="221"
-        muted="242"; node="114"; docker="75"; path="117"; str="221"
+        muted="242"; node="114"; docker="75"
+        bg="#0E111A"; cursor="#5CE1E6"
+        g1=@(125,207,255); g2=@(122,162,247); g3=@(187,154,247)
         ps_cmd="#50FA7B"; ps_param="#7DCFFF"; ps_str="#E0AF68"; ps_var="#BB9AF7"; ps_err="#F7768E"
     }
     emerald = @{
         frame="239"; user="48"; host="79"; dir="42"; git="114"
         warn="221"; info="50"; ok="82"; err="203"; dur="185"
-        muted="242"; node="119"; docker="44"; path="85"; str="192"
+        muted="242"; node="119"; docker="44"
+        bg="#0B1510"; cursor="#50FA7B"
+        g1=@(80,250,123); g2=@(46,229,157); g3=@(56,189,248)
         ps_cmd="#5FFF00"; ps_param="#00FF87"; ps_str="#FFD75F"; ps_var="#87D787"; ps_err="#FF5F5F"
     }
     sunset = @{
         frame="240"; user="215"; host="209"; dir="204"; git="177"
         warn="221"; info="216"; ok="114"; err="196"; dur="228"
-        muted="243"; node="150"; docker="111"; path="217"; str="222"
+        muted="243"; node="150"; docker="111"
+        bg="#181016"; cursor="#FF9E64"
+        g1=@(255,215,95); g2=@(255,158,100); g3=@(247,118,142)
         ps_cmd="#87D787"; ps_param="#FFAF5F"; ps_str="#FFD75F"; ps_var="#D787FF"; ps_err="#FF5F5F"
     }
     nord = @{
         frame="240"; user="110"; host="109"; dir="116"; git="146"
         warn="222"; info="110"; ok="108"; err="174"; dur="223"
-        muted="243"; node="108"; docker="110"; path="152"; str="223"
+        muted="243"; node="108"; docker="110"
+        bg="#232934"; cursor="#88C0D0"
+        g1=@(136,192,208); g2=@(129,161,193); g3=@(180,142,173)
         ps_cmd="#A3BE8C"; ps_param="#88C0D0"; ps_str="#EBCB8B"; ps_var="#B48EAD"; ps_err="#BF616A"
     }
     stealth = @{
         frame="238"; user="250"; host="245"; dir="255"; git="248"
         warn="221"; info="250"; ok="252"; err="203"; dur="246"
-        muted="240"; node="247"; docker="247"; path="252"; str="249"
+        muted="240"; node="247"; docker="247"
+        bg="#101012"; cursor="#F4F4F5"
+        g1=@(248,250,252); g2=@(180,188,200); g3=@(113,113,122)
         ps_cmd="#E5E9F0"; ps_param="#D8DEE9"; ps_str="#BCBCBC"; ps_var="#A8A8A8"; ps_err="#FF5F5F"
     }
 }
@@ -79,6 +105,34 @@ function _Nave-Fg([string]$code, [string]$text, [switch]$Bold) {
     return "$($script:ESC)[38;5;${code}${b}m${text}$($script:ESC)[0m"
 }
 
+function _Nave-GradLine([string]$text, [switch]$Bold) {
+    $c = $script:NaveC
+    $g1 = $c.g1; $g2 = $c.g2; $g3 = $c.g3
+    $bpre = if ($Bold) { "1;" } else { "" }
+    $len = $text.Length
+    $denom = if ($len -gt 1) { $len - 1 } else { 1 }
+    $sb = New-Object System.Text.StringBuilder
+    for ($i = 0; $i -lt $len; $i++) {
+        $ch = $text[$i]
+        if ($ch -eq ' ') { [void]$sb.Append(' '); continue }
+        $t = $i / [double]$denom
+        if ($t -le 0.5) {
+            $u = $t * 2.0
+            $r = [int]($g1[0] + ($g2[0] - $g1[0]) * $u)
+            $g = [int]($g1[1] + ($g2[1] - $g1[1]) * $u)
+            $b = [int]($g1[2] + ($g2[2] - $g1[2]) * $u)
+        } else {
+            $u = ($t - 0.5) * 2.0
+            $r = [int]($g2[0] + ($g3[0] - $g2[0]) * $u)
+            $g = [int]($g2[1] + ($g3[1] - $g2[1]) * $u)
+            $b = [int]($g2[2] + ($g3[2] - $g2[2]) * $u)
+        }
+        [void]$sb.Append("$($script:ESC)[${bpre}38;2;${r};${g};${b}m${ch}")
+    }
+    [void]$sb.Append("$($script:ESC)[0m")
+    return $sb.ToString()
+}
+
 function _Nave-ApplyPalette([string]$pal) {
     if (-not $script:NavePalettes.ContainsKey($pal)) {
         Write-Host (_Nave-Fg "203" "Paleta desconhecida: $pal (opcoes: cyber, emerald, sunset, nord, stealth)")
@@ -86,6 +140,10 @@ function _Nave-ApplyPalette([string]$pal) {
     }
     $script:NavePalette = $pal
     $script:NaveC = $script:NavePalettes[$pal]
+
+    if ($script:NaveBgSync -and $Host.Name -eq "ConsoleHost" -and -not [Console]::IsOutputRedirected) {
+        [Console]::Write("$($script:ESC)]11;$($script:NaveC.bg)$($script:BEL)$($script:ESC)]12;$($script:NaveC.cursor)$($script:BEL)")
+    }
 
     if (Get-Module -Name PSReadLine) {
         try {
@@ -102,7 +160,6 @@ function _Nave-ApplyPalette([string]$pal) {
     return $true
 }
 
-# Configure PSReadLine (autosuggestions + history prefix search + no bell)
 if (Get-Module -ListAvailable -Name PSReadLine) {
     Import-Module PSReadLine -ErrorAction SilentlyContinue
     try { Set-PSReadLineOption -BellStyle None -ErrorAction SilentlyContinue } catch {}
@@ -129,7 +186,83 @@ function nave-theme {
     }
     if (_Nave-ApplyPalette $Name) {
         Set-Content -Path (Join-Path $script:NaveConfigDir "palette") -Value $Name -NoNewline
-        Write-Host (_Nave-Fg $script:NaveC.ok "$($script:CH_CHK) Paleta alterada para $Name" -Bold)
+        Write-Host ((_Nave-Fg $script:NaveC.ok "$($script:CH_CHK) Paleta alterada para $Name " -Bold) + (_Nave-Fg $script:NaveC.muted "(bg $($script:NaveC.bg))"))
+    }
+}
+
+function nave-layout {
+    param([string]$Mode)
+    if ([string]::IsNullOrWhiteSpace($Mode) -or $Mode -eq "list") {
+        $c = $script:NaveC
+        Write-Host (_Nave-Fg $c.dir "$($script:CH_TL)$($script:CH_H) Layouts disponiveis (atual: $($script:NaveLayout))")
+        foreach ($l in @("framed", "rail", "hud", "compact")) {
+            $mark = if ($l -eq $script:NaveLayout) { "$($script:CH_ARR) " } else { "  " }
+            Write-Host ((_Nave-Fg $c.frame "$($script:CH_V) ") + $mark + (_Nave-Fg $c.ok $l -Bold))
+        }
+        Write-Host (_Nave-Fg $c.dir "$($script:CH_BL)$($script:CH_H) Uso: nave-layout <framed|rail|hud|compact>")
+        return
+    }
+    if ($Mode -in @("framed", "rail", "hud", "compact")) {
+        $script:NaveLayout = $Mode
+        Set-Content -Path (Join-Path $script:NaveConfigDir "layout") -Value $Mode -NoNewline
+        Write-Host (_Nave-Fg $script:NaveC.ok "$($script:CH_CHK) Layout alterado para $Mode" -Bold)
+    } else {
+        Write-Host (_Nave-Fg "203" "Layout desconhecido: $Mode (opcoes: framed, rail, hud, compact)")
+    }
+}
+
+function nave-bg {
+    param([string]$Mode)
+    switch ($Mode) {
+        "on"  { $script:NaveBgSync = $true;  Set-Content (Join-Path $script:NaveConfigDir "bg_sync") "1" -NoNewline; [void](_Nave-ApplyPalette $script:NavePalette); Write-Host (_Nave-Fg $script:NaveC.ok "Background sync (OSC 11/12) ativado.") }
+        "off" { $script:NaveBgSync = $false; Set-Content (Join-Path $script:NaveConfigDir "bg_sync") "0" -NoNewline; if (-not [Console]::IsOutputRedirected) { [Console]::Write("$($script:ESC)]111$($script:BEL)$($script:ESC)]112$($script:BEL)") }; Write-Host (_Nave-Fg $script:NaveC.warn "Background sync desativado.") }
+        default { Write-Host "Background sync: $(if ($script:NaveBgSync) {'on'} else {'off'}) (uso: nave-bg on|off)" }
+    }
+}
+
+function nave-shader {
+    param([string]$Mode = "status")
+    $wtPath = Join-Path $env:LOCALAPPDATA "Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
+    if (-not (Test-Path $wtPath)) { Write-Host "settings.json do Windows Terminal nao encontrado."; return }
+    $data = Get-Content $wtPath -Raw | ConvertFrom-Json
+    $targets = @("Ubuntu", "Windows PowerShell", "PowerShell")
+    if ($Mode -eq "status") {
+        foreach ($p in $data.profiles.list) {
+            if ($p.name -in $targets) {
+                $cur = if ($p.PSObject.Properties['experimental.pixelShaderPath']) { $p.'experimental.pixelShaderPath' } else { "off" }
+                Write-Host ("  {0,-20} -> {1}" -f $p.name, $cur)
+            }
+        }
+        return
+    }
+    if ($Mode -notin @("glow", "crt", "off")) { Write-Host "Uso: nave-shader <glow|crt|off|status>"; return }
+    $shaderPath = Join-Path $script:NaveConfigDir "shaders\nave-$Mode.hlsl"
+    foreach ($p in $data.profiles.list) {
+        if ($p.name -in $targets) {
+            if ($Mode -eq "off") {
+                $p.PSObject.Properties.Remove('experimental.pixelShaderPath')
+            } else {
+                $p | Add-Member -NotePropertyName 'experimental.pixelShaderPath' -NotePropertyValue $shaderPath -Force
+            }
+        }
+    }
+    $data | ConvertTo-Json -Depth 12 | Set-Content -Path $wtPath -Encoding UTF8
+    Write-Host (_Nave-Fg $script:NaveC.ok "$($script:CH_CHK) Windows Terminal shader alterado para: $Mode" -Bold)
+}
+
+function hr {
+    param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Title)
+    $w = 80
+    try { if ([Console]::WindowWidth -gt 20) { $w = [Console]::WindowWidth } } catch {}
+    $label = ($Title -join " ").Trim()
+    $ts = Get-Date -Format "HH:mm"
+    if ($label) {
+        $prefix = "$([string]$script:CH_H * 3) $label "
+        $suffix = " $ts $([string]$script:CH_H * 3)"
+        $fill = [Math]::Max(3, $w - $prefix.Length - $suffix.Length)
+        Write-Host (_Nave-GradLine ($prefix + ([string]$script:CH_H * $fill) + $suffix) -Bold)
+    } else {
+        Write-Host (_Nave-GradLine ([string]$script:CH_H * $w))
     }
 }
 
@@ -163,22 +296,14 @@ function _Nave-GitInfo {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return $null }
     $gitDir = (& git rev-parse --git-dir 2>$null)
     if ($LASTEXITCODE -ne 0 -or -not $gitDir) { return $null }
-
     $branch = (& git symbolic-ref --short HEAD 2>$null)
-    if (-not $branch) {
-        $branch = (& git rev-parse --short HEAD 2>$null)
-        if ($branch) { $branch = "@$branch" }
-    }
+    if (-not $branch) { $branch = (& git rev-parse --short HEAD 2>$null); if ($branch) { $branch = "@$branch" } }
     if (-not $branch) { return $null }
 
     $action = ""
-    if ((Test-Path (Join-Path $gitDir "rebase-merge")) -or (Test-Path (Join-Path $gitDir "rebase-apply"))) {
-        $action = "REBASE"
-    } elseif (Test-Path (Join-Path $gitDir "MERGE_HEAD")) {
-        $action = "MERGE"
-    } elseif (Test-Path (Join-Path $gitDir "CHERRY_PICK_HEAD")) {
-        $action = "CHERRY-PICK"
-    }
+    if ((Test-Path (Join-Path $gitDir "rebase-merge")) -or (Test-Path (Join-Path $gitDir "rebase-apply"))) { $action = "REBASE" }
+    elseif (Test-Path (Join-Path $gitDir "MERGE_HEAD")) { $action = "MERGE" }
+    elseif (Test-Path (Join-Path $gitDir "CHERRY_PICK_HEAD")) { $action = "CHERRY-PICK" }
 
     $statusLines = @(& git status --porcelain=v1 --branch 2>$null)
     $aheadBehind = ""
@@ -186,21 +311,14 @@ function _Nave-GitInfo {
         if ($statusLines[0] -match 'ahead (\d+)')  { $aheadBehind += "$($script:CH_UP)$($Matches[1])" }
         if ($statusLines[0] -match 'behind (\d+)') { $aheadBehind += "$($script:CH_DN)$($Matches[1])" }
     }
-
     $staged = ""; $dirty = ""; $untracked = ""
     foreach ($line in $statusLines) {
-        if ($line.StartsWith("## ")) { continue }
-        if ($line.Length -lt 2) { continue }
+        if ($line.StartsWith("## ") -or $line.Length -lt 2) { continue }
         $x = $line[0]; $y = $line[1]
-        if ($x -eq '?') {
-            $untracked = "?"
-        } else {
-            if ($x -ne ' ') { $staged = "+" }
-            if ($y -ne ' ') { $dirty = "*" }
-        }
+        if ($x -eq '?') { $untracked = "?" }
+        else { if ($x -ne ' ') { $staged = "+" }; if ($y -ne ' ') { $dirty = "*" } }
         if ($staged -and $dirty -and $untracked) { break }
     }
-
     $stashCount = (& git rev-list --walk-reflogs --count refs/stash 2>$null)
     $c = $script:NaveC
     $out = _Nave-Fg $c.git "$($script:CH_PM) $branch"
@@ -215,19 +333,19 @@ function _Nave-GitInfo {
 function _Nave-ContextInfo {
     $c = $script:NaveC
     $parts = @()
-    if ($env:VIRTUAL_ENV) {
-        $parts += _Nave-Fg $c.ok ("venv:" + (Split-Path $env:VIRTUAL_ENV -Leaf))
-    } elseif ($env:CONDA_DEFAULT_ENV) {
-        $parts += _Nave-Fg $c.ok ("conda:" + $env:CONDA_DEFAULT_ENV)
-    }
+    if ($env:VIRTUAL_ENV) { $parts += _Nave-Fg $c.ok ("venv:" + (Split-Path $env:VIRTUAL_ENV -Leaf)) }
+    elseif ($env:CONDA_DEFAULT_ENV) { $parts += _Nave-Fg $c.ok ("conda:" + $env:CONDA_DEFAULT_ENV) }
     if ((Test-Path "package.json") -and (Get-Command node -ErrorAction SilentlyContinue)) {
-        $nver = (& node -v 2>$null)
-        if ($nver) { $parts += _Nave-Fg $c.node "node:$nver" }
+        $nver = (& node -v 2>$null); if ($nver) { $parts += _Nave-Fg $c.node "node:$nver" }
     }
     if ((Test-Path "Dockerfile") -or (Test-Path "docker-compose.yml") -or (Test-Path "docker-compose.yaml") -or (Test-Path "compose.yaml")) {
         $parts += _Nave-Fg $c.docker "[docker]"
     }
     return ($parts -join "  ")
+}
+
+function _Nave-VisLen([string]$s) {
+    return ([regex]::Replace($s, "\x1b\[[0-9;]*m", "")).Length
 }
 
 function prompt {
@@ -236,17 +354,15 @@ function prompt {
 
     if ($script:NaveFirstPrompt) {
         $script:NaveFirstPrompt = $false
-    } else {
+    } elseif ($script:NaveLayout -ne "compact") {
         Write-Host ""
     }
 
-    # Duration from last executed PowerShell history item
     $durStr = ""
     $hist = Get-History -Count 1 -ErrorAction SilentlyContinue
     if ($hist -and $hist.Id -ne $script:NaveLastHistId) {
         $script:NaveLastHistId = $hist.Id
-        $elapsed = ($hist.EndExecutionTime - $hist.StartExecutionTime).TotalSeconds
-        $durStr = _Nave-FormatDuration $elapsed
+        $durStr = _Nave-FormatDuration (($hist.EndExecutionTime - $hist.StartExecutionTime).TotalSeconds)
     }
 
     $c = $script:NaveC
@@ -256,58 +372,57 @@ function prompt {
     $userHost = (_Nave-Fg $uColor $env:USERNAME.ToLower()) + (_Nave-Fg $c.muted "@") + (_Nave-Fg $c.host $env:COMPUTERNAME.ToLower())
     $dirShort = _Nave-ShortPath (Get-Location).Path
     $dirPart  = _Nave-Fg $c.dir $dirShort -Bold
-
-    $line1 = (_Nave-Fg $c.frame "$($script:CH_TL)$($script:CH_H)") + " $userHost  $dirPart"
-    $plainLen = 3 + $env:USERNAME.Length + 1 + $env:COMPUTERNAME.Length + 2 + $dirShort.Length
-
-    $gitPart = _Nave-GitInfo
-    if ($gitPart) {
-        $line1 += "  $gitPart"
-        $plainLen += 14
-    }
-
-    $ctxPart = _Nave-ContextInfo
-    if ($ctxPart) {
-        $line1 += "  $ctxPart"
-        $plainLen += 14
-    }
-
-    if ($durStr) {
-        $line1 += "  " + (_Nave-Fg $c.dur $durStr)
-        $plainLen += 2 + $durStr.Length
-    }
+    $gitPart  = _Nave-GitInfo
+    $ctxPart  = _Nave-ContextInfo
 
     $hasErr = (-not $lastOk) -or ($lastCode -and $lastCode -ne 0)
-    if ($hasErr) {
-        $codeDisp = if ($lastCode -and $lastCode -ne 0) { $lastCode } else { 1 }
-        $line1 += "  " + (_Nave-Fg $c.err "$($script:CH_MUL)$codeDisp" -Bold)
-        $plainLen += 4
+    $errPart = if ($hasErr) { $cd = if ($lastCode -and $lastCode -ne 0) { $lastCode } else { 1 }; _Nave-Fg $c.err "$($script:CH_MUL)$cd" -Bold } else { "" }
+    $durPart = if ($durStr) { _Nave-Fg $c.dur $durStr } else { "" }
+    $arrColor = if ($hasErr) { $c.err } else { $c.ok }
+    $timeText = "[" + (Get-Date -Format "HH:mm:ss") + "]"
+
+    $Host.UI.RawUI.WindowTitle = "$($env:USERNAME)@$($env:COMPUTERNAME): $dirShort"
+
+    if ($script:NaveLayout -eq "compact") {
+        $segs = "$userHost $dirPart"
+        if ($gitPart) { $segs += " $gitPart" }
+        if ($errPart) { $segs += " $errPart" }
+        return "$segs " + (_Nave-Fg $arrColor $script:CH_ARR -Bold) + " "
     }
 
-    # Right-aligned timestamp on line 1 when terminal is wide enough
-    $timeText = "[" + (Get-Date -Format "HH:mm:ss") + "]"
+    if ($script:NaveLayout -eq "hud") {
+        $sep = " " + (_Nave-Fg $c.frame $script:CH_V) + " "
+        $line1 = (_Nave-Fg $c.frame "$($script:CH_TL)$($script:CH_H)") + " " + (_Nave-Fg $c.dir $script:CH_DIA) + " $userHost$sep$dirPart"
+        if ($gitPart) { $line1 += "$sep$gitPart" }
+        if ($ctxPart) { $line1 += "$sep$ctxPart" }
+        if ($durPart) { $line1 += "$sep$durPart" }
+        if ($errPart) { $line1 += "$sep$errPart" }
+    } else {
+        $line1 = (_Nave-Fg $c.frame "$($script:CH_TL)$($script:CH_H)") + " $userHost  $dirPart"
+        if ($gitPart) { $line1 += "  $gitPart" }
+        if ($ctxPart) { $line1 += "  $ctxPart" }
+        if ($durPart) { $line1 += "  $durPart" }
+        if ($errPart) { $line1 += "  $errPart" }
+    }
+
     $winW = 0
     try { $winW = [Console]::WindowWidth } catch {}
-    if ($winW -gt ($plainLen + $timeText.Length + 6)) {
-        $gap = $winW - $plainLen - $timeText.Length - 2
-        if ($gap -gt 2) {
+    $vis = _Nave-VisLen $line1
+    if ($winW -gt ($vis + $timeText.Length + 5)) {
+        $gap = $winW - $vis - $timeText.Length - 2
+        if ($script:NaveLayout -eq "rail" -and $gap -ge 3) {
+            $line1 += " " + (_Nave-Fg $c.frame ([string]$script:CH_H * ($gap - 1))) + " " + (_Nave-Fg $c.muted $timeText)
+        } elseif ($gap -gt 2) {
             $line1 += (" " * $gap) + (_Nave-Fg $c.muted $timeText)
         }
     }
 
-    $arrColor = if ($hasErr) { $c.err } else { $c.ok }
     $line2 = (_Nave-Fg $c.frame "$($script:CH_BL)$($script:CH_H)") + " " + (_Nave-Fg $arrColor $script:CH_ARR -Bold) + " "
-
-    $Host.UI.RawUI.WindowTitle = "$($env:USERNAME)@$($env:COMPUTERNAME): $dirShort"
     return "$line1`n$line2"
 }
 
-# ------------------------------------------------------------------------------
-# Toolkit Commands (sysinfo, ginfo, ports, killport, mkcd, nave-welcome, nave-help)
-# ------------------------------------------------------------------------------
-function _Nave-Bar([int]$pct, [int]$width = 16) {
-    if ($pct -lt 0) { $pct = 0 }
-    if ($pct -gt 100) { $pct = 100 }
+function _Nave-Bar([int]$pct, [int]$width = 14) {
+    if ($pct -lt 0) { $pct = 0 }; if ($pct -gt 100) { $pct = 100 }
     $filled = [int][Math]::Round(($pct * $width) / 100)
     $empty = $width - $filled
     $c = $script:NaveC
@@ -327,25 +442,45 @@ function sysinfo {
     $freeRam  = [Math]::Round($os.FreePhysicalMemory / 1MB, 1)
     $usedRam  = [Math]::Round($totalRam - $freeRam, 1)
     $ramPct   = [int][Math]::Round(($usedRam / $totalRam) * 100)
-
     $totalDisk = [Math]::Round($disk.Size / 1GB, 0)
     $usedDisk  = [Math]::Round(($disk.Size - $disk.FreeSpace) / 1GB, 0)
     $diskPct   = [int][Math]::Round(($usedDisk / $totalDisk) * 100)
-
     $upSpan = (Get-Date) - $os.LastBootUpTime
     $upStr  = "$([int]$upSpan.TotalHours)h $($upSpan.Minutes)m"
     $tcpCount = (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue).Count
 
+    $art = @(
+        "         $($script:CH_TRI)         "
+        "        $($script:CH_SL)$($script:CH_BLK)$($script:CH_BSL)        "
+        "       $($script:CH_SL)$([string]$script:CH_BLK * 3)$($script:CH_BSL)       "
+        "      $($script:CH_SL)$($script:CH_BLK) $($script:CH_DIA) $($script:CH_BLK)$($script:CH_BSL)      "
+        "     $($script:CH_SL)$([string]$script:CH_BLK * 7)$($script:CH_BSL)     "
+        "    $($script:CH_SL)$([string]$script:CH_BLK * 2) $($script:CH_TOP)$($script:CH_BLK)$($script:CH_TOP) $([string]$script:CH_BLK * 2)$($script:CH_BSL)    "
+        "   $($script:CH_BL)$([string]$script:CH_H * 2)$($script:CH_BR)  $($script:CH_DV)  $($script:CH_BL)$([string]$script:CH_H * 2)$($script:CH_BR)   "
+        "    N $($script:CH_MID) A $($script:CH_MID) V $($script:CH_MID) E  "
+    )
     $frm = _Nave-Fg $c.frame $script:CH_V
-    Write-Host ((_Nave-Fg $c.dir "$($script:CH_TL)$($script:CH_H) $($env:USERNAME)@$($env:COMPUTERNAME) ") + (_Nave-Fg $c.frame "[paleta: $($script:NavePalette)]") + (_Nave-Fg $c.dir (" " + ([string]$script:CH_H * 18))))
-    Write-Host "$frm " (_Nave-Fg $c.git "OS:      ") $os.Caption
-    Write-Host "$frm " (_Nave-Fg $c.git "Shell:   ") "PowerShell $($PSVersionTable.PSVersion)"
-    Write-Host "$frm " (_Nave-Fg $c.git "Uptime:  ") $upStr
-    Write-Host "$frm " (_Nave-Fg $c.git "Memory:  ") (_Nave-Bar $ramPct 16) " ${usedRam}Gi / ${totalRam}Gi (${ramPct}%)"
-    Write-Host "$frm " (_Nave-Fg $c.git "Disk C:: ") (_Nave-Bar $diskPct 16) " ${usedDisk}G / ${totalDisk}G (${diskPct}%)"
-    Write-Host "$frm " (_Nave-Fg $c.git "Network: ") "$tcpCount portas TCP em escuta"
-    Write-Host (_Nave-Fg $c.dir ("$($script:CH_BL)" + ([string]$script:CH_H * 52)))
+    $info = @(
+        ((_Nave-Fg $c.dir "$($script:CH_TL)$($script:CH_H) $($env:USERNAME)@$($env:COMPUTERNAME) " -Bold) + (_Nave-Fg $c.frame "[$($script:NavePalette) $($script:CH_MID) $($script:NaveLayout)]"))
+        "$frm " + (_Nave-Fg $c.git "OS:      ") + $os.Caption
+        "$frm " + (_Nave-Fg $c.git "Shell:   ") + "PowerShell $($PSVersionTable.PSVersion)"
+        "$frm " + (_Nave-Fg $c.git "Uptime:  ") + $upStr
+        "$frm " + (_Nave-Fg $c.git "Memory:  ") + (_Nave-Bar $ramPct 14) + " ${usedRam}Gi/${totalRam}Gi (${ramPct}%)"
+        "$frm " + (_Nave-Fg $c.git "Disk C:: ") + (_Nave-Bar $diskPct 14) + " ${usedDisk}G/${totalDisk}G (${diskPct}%)"
+        "$frm " + (_Nave-Fg $c.git "Net:     ") + "$tcpCount portas TCP em escuta"
+        (_Nave-Fg $c.dir ("$($script:CH_BL)" + ([string]$script:CH_H * 46)))
+    )
+
+    $showArt = $true
+    try { if ([Console]::WindowWidth -gt 0 -and [Console]::WindowWidth -lt 76) { $showArt = $false } } catch {}
+    for ($i = 0; $i -lt $info.Count; $i++) {
+        if ($showArt) { Write-Host ((_Nave-GradLine $art[$i] -Bold) + "  " + $info[$i]) }
+        else { Write-Host $info[$i] }
+    }
 }
+
+function nave-hud  { if (Get-Command wsl.exe -ErrorAction SilentlyContinue) { & wsl.exe -e bash -lc "~/.local/bin/nave-hud $($script:NavePalette)" } else { sysinfo } }
+function nave-warp { if (Get-Command wsl.exe -ErrorAction SilentlyContinue) { & wsl.exe -e bash -lc "~/.local/bin/nave-warp" } else { Write-Host "Requer WSL/Python instalado." } }
 
 function ginfo {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Write-Host "Git nao encontrado."; return }
@@ -353,17 +488,14 @@ function ginfo {
     if ($LASTEXITCODE -ne 0 -or -not $top) { Write-Host "Nao e um repositorio Git."; return }
     $c = $script:NaveC
     $repo = Split-Path $top -Leaf
-    $br = (& git symbolic-ref --short HEAD 2>$null)
-    if (-not $br) { $br = (& git rev-parse --short HEAD 2>$null) }
-    $remote = (& git remote get-url origin 2>$null)
-    if (-not $remote) { $remote = "sem remote" }
+    $br = (& git symbolic-ref --short HEAD 2>$null); if (-not $br) { $br = (& git rev-parse --short HEAD 2>$null) }
+    $remote = (& git remote get-url origin 2>$null); if (-not $remote) { $remote = "sem remote" }
     $stashes = @(& git stash list 2>$null).Count
     $changed = @(& git status --porcelain 2>$null).Count
-
     $frm = _Nave-Fg $c.frame $script:CH_V
     Write-Host (_Nave-Fg $c.dir ("$($script:CH_TL)$($script:CH_H) Git: $repo " + ([string]$script:CH_H * 34)))
-    Write-Host "$frm " (_Nave-Fg $c.git "Branch: ") "$br  " (_Nave-Fg $c.muted "(alterados: $changed, stashes: $stashes)")
-    Write-Host "$frm " (_Nave-Fg $c.git "Remote: ") $remote
+    Write-Host ("$frm " + (_Nave-Fg $c.git "Branch: ") + "$br  " + (_Nave-Fg $c.muted "(alterados: $changed, stashes: $stashes)"))
+    Write-Host ("$frm " + (_Nave-Fg $c.git "Remote: ") + $remote)
     Write-Host (_Nave-Fg $c.frame ("$($script:CH_LTEE)" + ([string]$script:CH_H * 50)))
     & git log --color=always --pretty="format:  %C(yellow)%h%C(reset) %s %C(dim)(%cr, %an)%C(reset)" -n 6
     Write-Host ""
@@ -379,44 +511,26 @@ function ports {
     Write-Host (_Nave-Fg $c.dir ("$($script:CH_TL)$($script:CH_H) Portas TCP em escuta " + ([string]$script:CH_H * 36)))
     Write-Host ("  {0,-20} {1,-8} {2}" -f "ENDERECO:PORTA", "PID", "PROCESSO")
     Write-Host (_Nave-Fg $c.frame ("$($script:CH_LTEE)" + ([string]$script:CH_H * 57)))
-    Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-        Sort-Object LocalPort -Unique |
-        ForEach-Object {
-            $proc = (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName
-            if (-not $proc) { $proc = "-" }
-            Write-Host ("  {0,-20} {1,-8} {2}" -f "$($_.LocalAddress):$($_.LocalPort)", $_.OwningProcess, $proc)
-        }
+    Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Sort-Object LocalPort -Unique | ForEach-Object {
+        $proc = (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName; if (-not $proc) { $proc = "-" }
+        Write-Host ("  {0,-20} {1,-8} {2}" -f "$($_.LocalAddress):$($_.LocalPort)", $_.OwningProcess, $proc)
+    }
     Write-Host (_Nave-Fg $c.dir ("$($script:CH_BL)" + ([string]$script:CH_H * 57)))
 }
 
 function killport {
     param([Parameter(Mandatory=$true)][int]$Port)
     $conns = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-    if (-not $conns) {
-        Write-Host (_Nave-Fg $script:NaveC.warn "Nenhum processo encontrado na porta $Port.")
-        return
-    }
+    if (-not $conns) { Write-Host (_Nave-Fg $script:NaveC.warn "Nenhum processo encontrado na porta $Port."); return }
     foreach ($pidVal in ($conns.OwningProcess | Select-Object -Unique)) {
         $pname = (Get-Process -Id $pidVal -ErrorAction SilentlyContinue).ProcessName
-        try {
-            Stop-Process -Id $pidVal -Force -ErrorAction Stop
-            Write-Host (_Nave-Fg $script:NaveC.ok "$($script:CH_CHK) Finalizado PID $pidVal ($pname) na porta $Port.")
-        } catch {
-            Write-Host (_Nave-Fg $script:NaveC.err "$($script:CH_MUL) Erro ao finalizar PID $pidVal ($pname).")
-        }
+        try { Stop-Process -Id $pidVal -Force -ErrorAction Stop; Write-Host (_Nave-Fg $script:NaveC.ok "$($script:CH_CHK) Finalizado PID $pidVal ($pname) na porta $Port.") }
+        catch { Write-Host (_Nave-Fg $script:NaveC.err "$($script:CH_MUL) Erro ao finalizar PID $pidVal ($pname).") }
     }
 }
 
-function mkcd {
-    param([Parameter(Mandatory=$true)][string]$Path)
-    New-Item -ItemType Directory -Path $Path -Force | Out-Null
-    Set-Location $Path
-}
-
-function which {
-    param([Parameter(Mandatory=$true)][string]$Name)
-    (Get-Command $Name -ErrorAction SilentlyContinue).Source
-}
+function mkcd { param([Parameter(Mandatory=$true)][string]$Path) New-Item -ItemType Directory -Path $Path -Force | Out-Null; Set-Location $Path }
+function which { param([Parameter(Mandatory=$true)][string]$Name) (Get-Command $Name -ErrorAction SilentlyContinue).Source }
 
 function nave-welcome {
     param([string]$Mode)
@@ -424,10 +538,7 @@ function nave-welcome {
     switch ($Mode) {
         "on"  { Set-Content $f "1" -NoNewline; Write-Host (_Nave-Fg $script:NaveC.ok "Welcome banner ativado.") }
         "off" { Set-Content $f "0" -NoNewline; Write-Host (_Nave-Fg $script:NaveC.warn "Welcome banner desativado.") }
-        default {
-            $st = if ((Test-Path $f) -and ((Get-Content $f -Raw).Trim() -eq "0")) { "off" } else { "on" }
-            Write-Host "Welcome banner: $st (uso: nave-welcome on|off)"
-        }
+        default { Write-Host "Welcome banner: $(if ((_Nave-LoadSetting 'welcome' '1') -eq '1') {'on'} else {'off'}) (uso: nave-welcome on|off)" }
     }
 }
 
@@ -435,18 +546,17 @@ function nave-help {
     $c = $script:NaveC
     $frm = _Nave-Fg $c.frame $script:CH_V
     Write-Host (_Nave-Fg $c.dir ("$($script:CH_TL)$($script:CH_H) Nave Terminal (PowerShell) — Guia Rapido " + ([string]$script:CH_H * 14)))
-    Write-Host "$frm " (_Nave-Fg $c.ok "nave-theme <nome>    ") "Troca paleta (cyber|emerald|sunset|nord|stealth)"
-    Write-Host "$frm " (_Nave-Fg $c.ok "nave-welcome on|off  ") "Barra compacta de RAM/SSD ao abrir"
-    Write-Host "$frm " (_Nave-Fg $c.ok "sysinfo / ginfo      ") "Painel do sistema / painel do repositorio Git"
-    Write-Host "$frm " (_Nave-Fg $c.ok "ports / killport <p> ") "Lista portas TCP abertas e encerra processo"
-    Write-Host "$frm " (_Nave-Fg $c.ok "mkcd <dir> / which   ") "Cria e entra na pasta / localiza executavel"
+    Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-theme <nome>    ") + "Paleta + fundo ao vivo (cyber|emerald|sunset|nord|stealth)")
+    Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-layout <modo>   ") + "Layout do prompt (framed|rail|hud|compact)")
+    Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-shader <modo>   ") + "Shader GPU Windows Terminal (glow|crt|off)")
+    Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-bg / welcome    ") + "Liga/desliga fundo OSC 11 ou welcome bar")
+    Write-Host ("$frm " + (_Nave-Fg $c.ok "sysinfo / hr [tit]   ") + "Arte gradiente + sistema / regua divisoria")
+    Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-hud / nave-warp ") + "Cockpit em tempo real / starfield 3D")
+    Write-Host ("$frm " + (_Nave-Fg $c.ok "ginfo / ports / mkcd ") + "Git painel / portas TCP (+ killport) / mkcd")
     Write-Host (_Nave-Fg $c.dir ("$($script:CH_BL)" + ([string]$script:CH_H * 57)))
 }
 
-# Compact greeting on startup
-$welcomeFile = Join-Path $script:NaveConfigDir "welcome"
-$showWelcome = -not ((Test-Path $welcomeFile) -and ((Get-Content $welcomeFile -Raw).Trim() -eq "0"))
-if ($showWelcome -and $Host.Name -eq "ConsoleHost") {
+if ((_Nave-LoadSetting "welcome" "1") -eq "1" -and $Host.Name -eq "ConsoleHost") {
     $osW = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
     $dkW = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction SilentlyContinue
     if ($osW -and $dkW) {

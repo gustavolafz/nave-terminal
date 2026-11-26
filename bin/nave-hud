@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""
+nave-hud — Real-time full-screen terminal cockpit for Nave Terminal.
+Controls: [1-5] switch palette live, [q/Esc] quit cleanly.
+Supports --once for a single static frame render.
+"""
+import datetime
+import os
+import pathlib
+import select
+import shutil
+import socket
+import subprocess
+import sys
+import termios
+import time
+import tty
+
+PALETTES = {
+    "cyber":   {"grad": [(125, 207, 255), (122, 162, 247), (187, 154, 247)], "ok": (80, 250, 123),  "warn": (224, 175, 104), "err": (247, 118, 142), "dim": (86, 95, 137),   "fg": (226, 232, 240)},
+    "emerald": {"grad": [(80, 250, 123),  (46, 229, 157),  (56, 189, 248)],  "ok": (95, 255, 0),    "warn": (233, 217, 108), "err": (247, 118, 142), "dim": (75, 115, 91),   "fg": (220, 252, 231)},
+    "sunset":  {"grad": [(255, 215, 95),  (255, 158, 100), (247, 118, 142)], "ok": (135, 215, 135), "warn": (224, 175, 104), "err": (255, 85, 85),   "dim": (122, 82, 104),  "fg": (253, 232, 232)},
+    "nord":    {"grad": [(136, 192, 208), (129, 161, 193), (180, 142, 173)], "ok": (163, 190, 140), "warn": (235, 203, 139), "err": (191, 97, 106),  "dim": (76, 86, 106),   "fg": (229, 233, 240)},
+    "stealth": {"grad": [(248, 250, 252), (180, 188, 200), (113, 113, 122)], "ok": (228, 228, 231), "warn": (250, 204, 21),  "err": (248, 113, 113), "dim": (82, 82, 91),    "fg": (228, 228, 231)},
+}
+PAL_ORDER = ["cyber", "emerald", "sunset", "nord", "stealth"]
+
+DIGITS = {
+    "0": ["█████", "█   █", "█   █", "█   █", "█████"],
+    "1": ["  ██ ", " ███ ", "  ██ ", "  ██ ", "█████"],
+    "2": ["█████", "    █", "█████", "█    ", "█████"],
+    "3": ["█████", "    █", "█████", "    █", "█████"],
+    "4": ["█   █", "█   █", "█████", "    █", "    █"],
+    "5": ["█████", "█    ", "█████", "    █", "█████"],
+    "6": ["█████", "█    ", "█████", "█   █", "█████"],
+    "7": ["█████", "    █", "   █ ", "  █  ", "  █  "],
+    "8": ["█████", "█   █", "█████", "█   █", "█████"],
+    "9": ["█████", "█   █", "█████", "    █", "█████"],
+    ":": ["     ", "  █  ", "     ", "  █  ", "     "],
+}
+SPARK = "▁▂▃▄▅▆▇█"
+
+def rgb(c, bold=False):
+    return f"\033[{'1;' if bold else ''}38;2;{c[0]};{c[1]};{c[2]}m"
+
+RST = "\033[0m"
+
+def lerp_grad(stops, t):
+    if t <= 0: return stops[0]
+    if t >= 1: return stops[-1]
+    if t < 0.5:
+        u = t * 2
+        a, b = stops[0], stops[1]
+    else:
+        u = (t - 0.5) * 2
+        a, b = stops[1], stops[2]
+    return (int(a[0] + (b[0] - a[0]) * u), int(a[1] + (b[1] - a[1]) * u), int(a[2] + (b[2] - a[2]) * u))
+
+def grad_line(text, stops, bold=False):
+    n = max(len(text) - 1, 1)
+    out = []
+    for i, ch in enumerate(text):
+        if ch == " ":
+            out.append(" ")
+        else:
+            out.append(rgb(lerp_grad(stops, i / n), bold) + ch)
+    return "".join(out) + RST
+
+def read_palette():
+    p = pathlib.Path(os.path.expanduser("~/.config/nave/palette"))
+    if p.exists():
+        name = p.read_text().strip()
+        if name in PALETTES:
+            return name
+    return "cyber"
+
+def read_cpu_times():
+    with open("/proc/stat") as f:
+        parts = [int(x) for x in f.readline().split()[1:8]]
+    idle = parts[3] + parts[4]
+    total = sum(parts)
+    return idle, total
+
+def read_mem():
+    info = {}
+    with open("/proc/meminfo") as f:
+        for line in f:
+            k, v = line.split(":", 1)
+            info[k] = int(v.strip().split()[0])
+    tot = info["MemTotal"] / 1048576.0
+    avail = info["MemAvailable"] / 1048576.0
+    used = tot - avail
+    return used, tot, int(round(used / tot * 100))
+
+def read_disk():
+    st = os.statvfs("/")
+    tot = (st.f_blocks * st.f_frsize) / (1024 ** 3)
+    free = (st.f_bavail * st.f_frsize) / (1024 ** 3)
+    used = tot - free
+    return used, tot, int(round(used / tot * 100))
+
+def read_uptime():
+    with open("/proc/uptime") as f:
+        secs = int(float(f.read().split()[0]))
+    h, r = divmod(secs, 3600)
+    m = r // 60
+    return f"{h}h {m:02d}m"
+
+def read_net_docker():
+    ip = "N/A"
+    try:
+        out = subprocess.check_output(["hostname", "-I"], text=True, stderr=subprocess.DEVNULL).strip()
+        if out: ip = out.split()[0]
+    except Exception:
+        pass
+    ports = 0
+    try:
+        out = subprocess.check_output(["ss", "-tlnH"], text=True, stderr=subprocess.DEVNULL)
+        ports = len([l for l in out.splitlines() if l.strip()])
+    except Exception:
+        pass
+    dk = 0
+    try:
+        out = subprocess.check_output(["docker", "ps", "-q"], text=True, stderr=subprocess.DEVNULL, timeout=1)
+        dk = len([l for l in out.splitlines() if l.strip()])
+    except Exception:
+        pass
+    return ip, ports, dk
+
+def bar(pct, width, pal):
+    pct = max(0, min(100, pct))
+    filled = int(round(pct * width / 100))
+    col = pal["ok"] if pct < 70 else (pal["warn"] if pct < 88 else pal["err"])
+    return rgb(col) + ("█" * filled) + rgb(pal["dim"]) + ("░" * (width - filled)) + RST
+
+def render_frame(pal_name, cpu_pct, cpu_hist, once=False):
+    pal = PALETTES[pal_name]
+    cols, rows = shutil.get_terminal_size((96, 28))
+    box_w = min(max(cols - 4, 64), 84)
+    inner = box_w - 4
+
+    now = datetime.datetime.now()
+    clock_str = now.strftime("%H:%M:%S")
+    date_str = now.strftime("%A, %d %b %Y").upper()
+    host = socket.gethostname()
+    user = os.environ.get("USER", "dev")
+    mem_u, mem_t, mem_p = read_mem()
+    dsk_u, dsk_t, dsk_p = read_disk()
+    up = read_uptime()
+    ip, ports, dk = read_net_docker()
+
+    lines = []
+    # Top header
+    title = f" NAVE COCKPIT · {user}@{host} "
+    tag = f" [paleta: {pal_name}] "
+    fill_len = max(1, box_w - len(title) - len(tag) - 2)
+    top_border = "╭" + title + ("─" * fill_len) + tag + "╮"
+    lines.append(grad_line(top_border, pal["grad"], bold=True))
+
+    def row(content, vis_len):
+        pad = max(0, inner - vis_len)
+        return rgb(pal["dim"]) + "│ " + RST + content + (" " * pad) + rgb(pal["dim"]) + " │" + RST
+
+    lines.append(row("", 0))
+
+    # Giant gradient clock
+    clock_rows = ["  ".join(DIGITS[ch][r] for ch in clock_str) for r in range(5)]
+    c_len = len(clock_rows[0])
+    left_pad = max(0, (inner - c_len) // 2)
+    for cr in clock_rows:
+        lines.append(row((" " * left_pad) + grad_line(cr, pal["grad"], bold=True), left_pad + c_len))
+
+    d_pad = max(0, (inner - len(date_str)) // 2)
+    lines.append(row((" " * d_pad) + rgb(pal["dim"]) + date_str + RST, d_pad + len(date_str)))
+    lines.append(row("", 0))
+    lines.append(rgb(pal["dim"]) + "├" + ("─" * (box_w - 2)) + "┤" + RST)
+    lines.append(row("", 0))
+
+    # CPU + Sparkline
+    spark_str = "".join(SPARK[min(7, max(0, int(v / 100 * 7)))] for v in cpu_hist[-24:])
+    spark_str = spark_str.rjust(24, "▁")
+    bw = 22
+    cpu_txt = f"{rgb(pal['grad'][0], True)}CPU   {RST}{bar(cpu_pct, bw, pal)} {rgb(pal['fg'])}{cpu_pct:3d}%{RST}   {grad_line(spark_str, pal['grad'])}"
+    lines.append(row(cpu_txt, 6 + bw + 5 + 3 + 24))
+
+    # Memory
+    mem_stat = f"{mem_u:4.1f}Gi / {mem_t:4.1f}Gi ({mem_p:2d}%)"
+    mem_txt = f"{rgb(pal['grad'][1], True)}RAM   {RST}{bar(mem_p, bw, pal)} {rgb(pal['fg'])}{mem_stat}{RST}"
+    lines.append(row(mem_txt, 6 + bw + 1 + len(mem_stat)))
+
+    # Disk
+    dsk_stat = f"{dsk_u:4.0f}G  / {dsk_t:4.0f}G  ({dsk_p:2d}%)"
+    dsk_txt = f"{rgb(pal['grad'][2], True)}SSD   {RST}{bar(dsk_p, bw, pal)} {rgb(pal['fg'])}{dsk_stat}{RST}"
+    lines.append(row(dsk_txt, 6 + bw + 1 + len(dsk_stat)))
+
+    lines.append(row("", 0))
+    lines.append(rgb(pal["dim"]) + "├" + ("─" * (box_w - 2)) + "┤" + RST)
+
+    # Telemetry footer inside panel
+    tele_plain = f"WSL {ip}  ·  UPTIME {up}  ·  {ports} PORTAS TCP  ·  {dk} DOCKER"
+    tele_col = (
+        f"{rgb(pal['grad'][0])}WSL{RST} {rgb(pal['fg'])}{ip}{RST}  {rgb(pal['dim'])}·{RST}  "
+        f"{rgb(pal['grad'][1])}UPTIME{RST} {rgb(pal['fg'])}{up}{RST}  {rgb(pal['dim'])}·{RST}  "
+        f"{rgb(pal['ok'])}{ports}{RST} {rgb(pal['fg'])}PORTAS TCP{RST}  {rgb(pal['dim'])}·{RST}  "
+        f"{rgb(pal['grad'][2])}{dk}{RST} {rgb(pal['fg'])}DOCKER{RST}"
+    )
+    t_pad = max(0, (inner - len(tele_plain)) // 2)
+    lines.append(row((" " * t_pad) + tele_col, t_pad + len(tele_plain)))
+
+    hint = " [1-5] paleta  ·  [q] sair "
+    b_fill = max(1, box_w - len(hint) - 2)
+    bot = "╰" + ("─" * (b_fill // 2)) + hint + ("─" * (b_fill - b_fill // 2)) + "╯"
+    lines.append(grad_line(bot, pal["grad"]))
+
+    if once:
+        return "\n".join(lines)
+
+    # Center vertically and horizontally
+    h_pad = max(0, (cols - box_w) // 2)
+    v_pad = max(0, (rows - len(lines)) // 2)
+    out = ["\033[H\033[2J"]
+    out.append("\n" * v_pad)
+    for l in lines:
+        out.append((" " * h_pad) + l + "\n")
+    return "".join(out)
+
+def main():
+    pal_name = read_palette()
+    once = "--once" in sys.argv
+    for arg in sys.argv[1:]:
+        if arg in PALETTES:
+            pal_name = arg
+
+    if once:
+        # Sample real CPU briefly over 120ms for accurate reading
+        i1, t1 = read_cpu_times()
+        time.sleep(0.12)
+        i2, t2 = read_cpu_times()
+        dt = max(1, t2 - t1)
+        cpu = int(round((1.0 - (i2 - i1) / dt) * 100))
+        hist = [max(2, min(95, cpu + d)) for d in (-4, -2, 3, 6, 2, -1, 4, 8, 5, 1, -2, 3, 7, 4, 2, 0, -1, 3, 5, 2, 1, 0, -1, 0)]
+        print(render_frame(pal_name, cpu, hist, once=True))
+        return
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    cpu_hist = []
+    prev_idle, prev_total = read_cpu_times()
+    try:
+        tty.setcbreak(fd)
+        sys.stdout.write("\033[?1049h\033[?25l")
+        sys.stdout.flush()
+        while True:
+            cur_idle, cur_total = read_cpu_times()
+            dt = max(1, cur_total - prev_total)
+            cpu = int(round((1.0 - (cur_idle - prev_idle) / dt) * 100))
+            prev_idle, prev_total = cur_idle, cur_total
+            cpu_hist.append(cpu)
+            if len(cpu_hist) > 40:
+                cpu_hist = cpu_hist[-40:]
+
+            sys.stdout.write(render_frame(pal_name, cpu, cpu_hist, once=False))
+            sys.stdout.flush()
+
+            r, _, _ = select.select([sys.stdin], [], [], 0.5)
+            if r:
+                ch = sys.stdin.read(1)
+                if ch in ("q", "Q", "\x1b", "\x03"):
+                    break
+                if ch in "12345":
+                    pal_name = PAL_ORDER[int(ch) - 1]
+    except KeyboardInterrupt:
+        pass
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        sys.stdout.write("\033[?25h\033[?1049l")
+        sys.stdout.flush()
+
+if __name__ == "__main__":
+    main()
