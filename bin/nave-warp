@@ -85,7 +85,7 @@ def main():
                 s[2] -= speed
                 if s[2] <= 0.04:
                     s[:] = [random.uniform(-1.2, 1.2), random.uniform(-1.0, 1.0), 1.0]
-            sys.stdout.write("\033[H" + render_str())
+            sys.stdout.write("\033[?2026h\033[H" + render_str() + "\033[J\033[?2026l")
             sys.stdout.flush()
             r, _, _ = select.select([sys.stdin], [], [], 0.033)
             if r:

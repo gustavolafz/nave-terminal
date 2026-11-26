@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-nave-hud — Real-time full-screen terminal cockpit for Nave Terminal.
+nave-hud — Zero-flicker real-time full-screen terminal cockpit for Nave Terminal.
+Uses DEC 2026 Synchronized Output, in-place line redraw (no full-screen clear),
+and background telemetry polling so the clock ticks smoothly with zero flashing.
 Controls: [1-5] switch palette live, [q/Esc] quit cleanly.
 Supports --once for a single static frame render.
 """
@@ -13,6 +15,7 @@ import socket
 import subprocess
 import sys
 import termios
+import threading
 import time
 import tty
 
@@ -40,10 +43,12 @@ DIGITS = {
 }
 SPARK = "▁▂▃▄▅▆▇█"
 
+RST = "\033[0m"
+SYNC_START = "\033[?2026h"
+SYNC_END   = "\033[?2026l"
+
 def rgb(c, bold=False):
     return f"\033[{'1;' if bold else ''}38;2;{c[0]};{c[1]};{c[2]}m"
-
-RST = "\033[0m"
 
 def lerp_grad(stops, t):
     if t <= 0: return stops[0]
@@ -134,7 +139,7 @@ def bar(pct, width, pal):
     col = pal["ok"] if pct < 70 else (pal["warn"] if pct < 88 else pal["err"])
     return rgb(col) + ("█" * filled) + rgb(pal["dim"]) + ("░" * (width - filled)) + RST
 
-def render_frame(pal_name, cpu_pct, cpu_hist, once=False):
+def render_frame(pal_name, cpu_pct, cpu_hist, net_info, once=False):
     pal = PALETTES[pal_name]
     cols, rows = shutil.get_terminal_size((96, 28))
     box_w = min(max(cols - 4, 64), 84)
@@ -148,7 +153,7 @@ def render_frame(pal_name, cpu_pct, cpu_hist, once=False):
     mem_u, mem_t, mem_p = read_mem()
     dsk_u, dsk_t, dsk_p = read_disk()
     up = read_uptime()
-    ip, ports, dk = read_net_docker()
+    ip, ports, dk = net_info
 
     lines = []
     # Top header
@@ -216,13 +221,20 @@ def render_frame(pal_name, cpu_pct, cpu_hist, once=False):
     if once:
         return "\n".join(lines)
 
-    # Center vertically and horizontally
+    # In-place flicker-free frame using DEC 2026 Synchronized Output (NEVER clears full screen!)
     h_pad = max(0, (cols - box_w) // 2)
     v_pad = max(0, (rows - len(lines)) // 2)
-    out = ["\033[H\033[2J"]
-    out.append("\n" * v_pad)
-    for l in lines:
-        out.append((" " * h_pad) + l + "\n")
+    out = [SYNC_START, "\033[H"]
+    for _ in range(v_pad):
+        out.append("\033[2K\n")
+    pad_str = " " * h_pad
+    for idx, l in enumerate(lines):
+        if idx < len(lines) - 1:
+            out.append(f"{pad_str}{l}\033[K\n")
+        else:
+            out.append(f"{pad_str}{l}\033[K")
+    out.append("\033[J")
+    out.append(SYNC_END)
     return "".join(out)
 
 def main():
@@ -233,48 +245,75 @@ def main():
             pal_name = arg
 
     if once:
-        # Sample real CPU briefly over 120ms for accurate reading
         i1, t1 = read_cpu_times()
         time.sleep(0.12)
         i2, t2 = read_cpu_times()
         dt = max(1, t2 - t1)
         cpu = int(round((1.0 - (i2 - i1) / dt) * 100))
         hist = [max(2, min(95, cpu + d)) for d in (-4, -2, 3, 6, 2, -1, 4, 8, 5, 1, -2, 3, 7, 4, 2, 0, -1, 3, 5, 2, 1, 0, -1, 0)]
-        print(render_frame(pal_name, cpu, hist, once=True))
+        print(render_frame(pal_name, cpu, hist, read_net_docker(), once=True))
         return
+
+    # Background daemon thread refreshes slower subprocess telemetry every 3s without blocking UI
+    net_state = {"val": ("...", 0, 0), "ver": 0}
+    stop_evt = threading.Event()
+    def _poll_net():
+        while not stop_evt.is_set():
+            net_state["val"] = read_net_docker()
+            net_state["ver"] += 1
+            stop_evt.wait(3.0)
+    threading.Thread(target=_poll_net, daemon=True).start()
 
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
     cpu_hist = []
     prev_idle, prev_total = read_cpu_times()
+    last_sec = -1
+    last_ver = -1
+    last_size = (0, 0)
+    force_redraw = True
     try:
         tty.setcbreak(fd)
-        sys.stdout.write("\033[?1049h\033[?25l")
+        sys.stdout.write("\033[?1049h\033[?25l\033[2J\033[H")
         sys.stdout.flush()
         while True:
-            cur_idle, cur_total = read_cpu_times()
-            dt = max(1, cur_total - prev_total)
-            cpu = int(round((1.0 - (cur_idle - prev_idle) / dt) * 100))
-            prev_idle, prev_total = cur_idle, cur_total
-            cpu_hist.append(cpu)
-            if len(cpu_hist) > 40:
-                cpu_hist = cpu_hist[-40:]
+            now_sec = int(time.time())
+            cur_ver = net_state["ver"]
+            cur_size = shutil.get_terminal_size((96, 28))
+            if now_sec != last_sec or cur_ver != last_ver or cur_size != last_size or force_redraw:
+                if now_sec != last_sec or not cpu_hist:
+                    cur_idle, cur_total = read_cpu_times()
+                    dt = max(1, cur_total - prev_total)
+                    cpu = int(round((1.0 - (cur_idle - prev_idle) / dt) * 100))
+                    prev_idle, prev_total = cur_idle, cur_total
+                    cpu_hist.append(cpu)
+                    if len(cpu_hist) > 40:
+                        cpu_hist = cpu_hist[-40:]
+                    last_sec = now_sec
+                else:
+                    cpu = cpu_hist[-1]
+                last_ver = cur_ver
+                last_size = cur_size
+                force_redraw = False
+                sys.stdout.write(render_frame(pal_name, cpu, cpu_hist, net_state["val"], once=False))
+                sys.stdout.flush()
 
-            sys.stdout.write(render_frame(pal_name, cpu, cpu_hist, once=False))
-            sys.stdout.flush()
-
-            r, _, _ = select.select([sys.stdin], [], [], 0.5)
+            # Sleep cleanly until the next exact second boundary (waking immediately on keypress)
+            wait = max(0.05, min(0.25, 1.0 - (time.time() % 1.0) + 0.01))
+            r, _, _ = select.select([sys.stdin], [], [], wait)
             if r:
                 ch = sys.stdin.read(1)
                 if ch in ("q", "Q", "\x1b", "\x03"):
                     break
                 if ch in "12345":
                     pal_name = PAL_ORDER[int(ch) - 1]
+                    force_redraw = True
     except KeyboardInterrupt:
         pass
     finally:
+        stop_evt.set()
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-        sys.stdout.write("\033[?25h\033[?1049l")
+        sys.stdout.write(f"{SYNC_END}\033[?25h\033[?1049l")
         sys.stdout.flush()
 
 if __name__ == "__main__":
