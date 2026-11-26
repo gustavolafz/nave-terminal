@@ -1,8 +1,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct EditorConfig {
+    pub palette: String,
     pub vim_visual: bool,
     pub relative_numbers: bool,
     pub block_cursor: bool,
@@ -21,6 +22,7 @@ pub struct EditorConfig {
 impl Default for EditorConfig {
     fn default() -> Self {
         Self {
+            palette: "dracula".into(),
             vim_visual: false,
             relative_numbers: false,
             block_cursor: false,
@@ -33,7 +35,7 @@ impl Default for EditorConfig {
             cursorword: true,
             indent_guides: true,
             show_trailing: true,
-            color_column: 100,
+            color_column: 120,
         }
     }
 }
@@ -65,6 +67,11 @@ impl EditorConfig {
             let v = v.trim();
             let parse_bool = |s: &str| matches!(s, "1" | "true" | "on" | "yes");
             match k {
+                "palette" => {
+                    if !v.is_empty() {
+                        cfg.palette = v.to_string();
+                    }
+                }
                 "vim_visual" => cfg.vim_visual = parse_bool(v),
                 "relative_numbers" => cfg.relative_numbers = parse_bool(v),
                 "block_cursor" => cfg.block_cursor = parse_bool(v),
@@ -99,6 +106,7 @@ impl EditorConfig {
         }
         let body = format!(
             "# Nave Edit configuration (persisted automatically)\n\
+             palette={}\n\
              vim_visual={}\n\
              relative_numbers={}\n\
              block_cursor={}\n\
@@ -112,6 +120,7 @@ impl EditorConfig {
              indent_guides={}\n\
              show_trailing={}\n\
              color_column={}\n",
+            self.palette,
             self.vim_visual,
             self.relative_numbers,
             self.block_cursor,

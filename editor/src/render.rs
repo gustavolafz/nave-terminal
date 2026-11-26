@@ -1,7 +1,7 @@
 use crate::config::EditorConfig;
 use crate::document::Document;
 use crate::git::GutterMark;
-use crate::palette::{lerp_grad, push_bg, push_fg, push_grad_text, Palette, TokenKind};
+use crate::palette::{lerp_grad, push_bg, push_fg, push_fg_styled, push_grad_text, Palette, TokenKind};
 use crate::picker::Picker;
 use crate::syntax::{find_matching_bracket, Span};
 use std::collections::HashMap;
@@ -385,23 +385,23 @@ pub fn render_editor(
             }
             if seg_idx == 0 {
                 if is_bookmarked {
-                    push_fg(&mut out, pal.grad[2], true);
+                    push_fg(&mut out, pal.grad[0], true);
                     out.push('◆');
                 } else if is_cur_line {
-                    push_fg(&mut out, pal.grad[0], true);
+                    push_fg(&mut out, pal.active_line_num, true);
                     out.push('▸');
                 } else {
                     out.push(' ');
                 }
                 if is_cur_line {
-                    push_fg(&mut out, pal.grad[0], true);
+                    push_fg(&mut out, pal.active_line_num, true);
                     let _ = write!(out, " {:>width$} ", doc_row + 1, width = num_digits);
                 } else if cfg.relative_numbers {
                     let dist = doc_row.abs_diff(primary_row);
-                    push_fg(&mut out, pal.dim, false);
+                    push_fg(&mut out, pal.line_num, false);
                     let _ = write!(out, " {:>width$} ", dist, width = num_digits);
                 } else {
-                    push_fg(&mut out, pal.dim, false);
+                    push_fg(&mut out, pal.line_num, false);
                     let _ = write!(out, " {:>width$} ", doc_row + 1, width = num_digits);
                 }
             } else {
@@ -514,13 +514,17 @@ pub fn render_editor(
                         .any(|&(s, e)| byte_abs >= s && byte_abs < e);
                 let is_ruler = ruler_col == Some(cur_vis);
 
-                let (mut fg_c, mut bold) = pal.token_color(cell.kind);
+                let style = pal.token_style(cell.kind);
+                let mut fg_c = style.fg;
+                let mut bold = style.bold;
+                let mut italic = style.italic;
                 let mut underline = false;
                 let mut glyph_override: Option<char> = None;
 
                 let bg_c = if is_sec_caret {
                     fg_c = pal.bar_bg;
                     bold = true;
+                    italic = false;
                     Some(pal.grad[0])
                 } else if is_selected {
                     Some(pal.sel_bg)
@@ -530,14 +534,15 @@ pub fn render_editor(
                 } else if is_match {
                     Some(pal.match_bg)
                 } else if is_bracket {
-                    // Vibrant Vim MatchParen highlight on both opening & matching closing bracket
-                    fg_c = pal.bar_bg;
+                    // VS Code + Vim MatchParen highlight on both opening & closing bracket
+                    fg_c = pal.bracket_fg;
                     bold = true;
+                    italic = false;
                     underline = true;
-                    Some(pal.grad[0])
+                    Some(pal.bracket_bg)
                 } else if is_cursorword {
                     underline = true;
-                    Some(pal.match_bg)
+                    Some(pal.word_hl_bg)
                 } else if is_cur_line {
                     Some(pal.cur_line_bg)
                 } else if is_ruler {
@@ -550,6 +555,7 @@ pub fn render_editor(
                 if !is_sec_caret && !is_selected && !is_match && !is_active_match {
                     if char_idx >= trail_start_idx && (cell.ch == ' ' || cell.ch == '\t') {
                         fg_c = pal.err;
+                        italic = false;
                         glyph_override = Some('·');
                     } else if cfg.indent_guides
                         && cell.ch == ' '
@@ -560,7 +566,8 @@ pub fn render_editor(
                         let in_active_scope = active_scope.is_some_and(|(s_r, e_r, a_col)| {
                             doc_row >= s_r && doc_row <= e_r && cur_vis == a_col
                         });
-                        fg_c = if in_active_scope { pal.grad[1] } else { pal.border };
+                        fg_c = if in_active_scope { pal.indent_active } else { pal.indent_guide };
+                        italic = false;
                         glyph_override = Some('▏');
                     }
                 }
@@ -570,7 +577,7 @@ pub fn render_editor(
                 } else {
                     out.push_str("\x1b[49m");
                 }
-                push_fg(&mut out, fg_c, bold);
+                push_fg_styled(&mut out, fg_c, bold, italic);
                 if underline {
                     out.push_str("\x1b[4m");
                 }
@@ -629,7 +636,7 @@ pub fn render_editor(
                     let in_active_scope = active_scope.is_some_and(|(s_r, e_r, a_col)| {
                         doc_row >= s_r && doc_row <= e_r && vis_x == a_col
                     });
-                    push_fg(&mut out, if in_active_scope { pal.grad[1] } else { pal.border }, false);
+                    push_fg(&mut out, if in_active_scope { pal.indent_active } else { pal.indent_guide }, false);
                     out.push('▏');
                 } else {
                     out.push(' ');

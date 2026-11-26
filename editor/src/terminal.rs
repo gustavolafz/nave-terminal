@@ -16,7 +16,7 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    pub fn enter(mouse_enabled: bool, block_cursor: bool) -> io::Result<Self> {
+    pub fn enter(mouse_enabled: bool, block_cursor: bool, cursor_hex: &str) -> io::Result<Self> {
         let fd = libc::STDIN_FILENO;
         let mut orig: libc::termios = unsafe { std::mem::zeroed() };
         if unsafe { libc::tcgetattr(fd, &mut orig) } != 0 {
@@ -50,6 +50,9 @@ impl Terminal {
             stdout.write_all(b"\x1b[?1000h\x1b[?1002h\x1b[?1006h")?;
         }
         stdout.write_all(if block_cursor { b"\x1b[2 q" } else { b"\x1b[6 q" })?;
+        if !cursor_hex.is_empty() {
+            let _ = write!(stdout, "\x1b]12;{}\x07", cursor_hex);
+        }
         stdout.write_all(b"\x1b[2J\x1b[H")?;
         stdout.flush()?;
 
@@ -58,6 +61,15 @@ impl Terminal {
             fd,
             active: true,
         })
+    }
+
+    pub fn set_cursor_color(&self, cursor_hex: &str) {
+        if cursor_hex.is_empty() {
+            return;
+        }
+        let mut stdout = io::stdout().lock();
+        let _ = write!(stdout, "\x1b]12;{}\x07", cursor_hex);
+        let _ = stdout.flush();
     }
 
     pub fn set_mouse(&self, enabled: bool) {
@@ -129,7 +141,7 @@ impl Drop for Terminal {
             self.active = false;
             let mut stdout = io::stdout().lock();
             let _ = stdout.write_all(
-                b"\x1b[?2026l\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[0 q\x1b[?25h\x1b[?1049l",
+                b"\x1b[?2026l\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b]112\x07\x1b[0 q\x1b[?25h\x1b[?1049l",
             );
             let _ = stdout.flush();
             unsafe {

@@ -277,12 +277,11 @@ impl App {
     }
 
     fn handle_key(&mut self, k: KeyEvent, _cols: usize, rows: usize) {
-        // Global Alt+1..5 live palette switch
+        // Global Alt+1..6 live palette switch (persisted in edit.conf)
         if k.alt && !k.ctrl {
-            if let KeyCode::Char(c @ '1'..='5') = k.code {
+            if let KeyCode::Char(c @ '1'..='6') = k.code {
                 let idx = (c as u8 - b'1') as usize;
-                self.palette = Palette::by_index(idx);
-                self.set_status(format!("Paleta: {}", self.palette.name));
+                self.set_palette_index(idx);
                 return;
             }
         }
@@ -681,8 +680,7 @@ impl App {
                     .position(|p| p.name == self.palette.name)
                     .map(|i| (i + 1) % palette::PALETTES.len())
                     .unwrap_or(0);
-                self.palette = Palette::by_index(next_idx);
-                self.set_status(format!("Paleta: {}", self.palette.name));
+                self.set_palette_index(next_idx);
             }
             KeyCode::F(3) => {
                 let m = if k.shift {
@@ -1066,11 +1064,18 @@ impl App {
                     self.active_tab = self.tabs.len() - 1;
                 }
                 PickerAction::SetPalette(idx) => {
-                    self.palette = Palette::by_index(idx);
-                    self.set_status(format!("Paleta: {}", self.palette.name));
+                    self.set_palette_index(idx);
                 }
             }
         }
+    }
+
+    fn set_palette_index(&mut self, idx: usize) {
+        self.palette = Palette::by_index(idx);
+        self.cfg.palette = self.palette.name.to_string();
+        self.cfg.save();
+        self.term_sync_needed = true;
+        self.set_status(format!("Paleta: {}", self.palette.name));
     }
 
     fn try_save_active(&mut self) -> bool {
@@ -1122,7 +1127,7 @@ impl App {
 
     fn render(&mut self, cols: usize, rows: usize, synced: bool) -> String {
         let has_prompt = !matches!(self.mode, Mode::Edit | Mode::Picker(_));
-        let cfg = self.cfg;
+        let cfg = self.cfg.clone();
         ensure_cursor_visible(self.doc_mut(), cols, rows, &cfg, has_prompt);
 
         let status = self.active_status().map(str::to_string);
@@ -1251,8 +1256,8 @@ fn main() {
         }
     }
 
-    let pal = Palette::load_active();
     let cfg = EditorConfig::load();
+    let pal = Palette::load_for_editor(&cfg.palette);
     let mut app = App::new(docs, pal, cfg);
 
     if render_once {
@@ -1262,7 +1267,7 @@ fn main() {
         return;
     }
 
-    let term = match Terminal::enter(app.cfg.mouse, app.cfg.block_cursor) {
+    let term = match Terminal::enter(app.cfg.mouse, app.cfg.block_cursor, app.palette.cursor_hex) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("nave-edit: requer um terminal interativo (TTY): {}", e);
@@ -1282,6 +1287,7 @@ fn main() {
         if app.term_sync_needed {
             term.set_mouse(app.cfg.mouse);
             term.set_cursor_style(app.cfg.block_cursor, standby_blink);
+            term.set_cursor_color(app.palette.cursor_hex);
             app.term_sync_needed = false;
             needs_redraw = true;
         }

@@ -173,6 +173,11 @@ impl Picker {
                 action: PickerAction::ReloadFromDisk,
             },
             PickerItem {
+                label: "Paleta: Dracula Redefined (VS Code)".into(),
+                detail: "Alt+6".into(),
+                action: PickerAction::SetPalette(5),
+            },
+            PickerItem {
                 label: "Paleta: Cyber (Obsidian Ciano/Violeta)".into(),
                 detail: "Alt+1".into(),
                 action: PickerAction::SetPalette(0),
