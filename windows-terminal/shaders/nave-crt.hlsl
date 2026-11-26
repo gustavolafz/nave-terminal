@@ -5,7 +5,7 @@
 Texture2D shaderTexture : register(t0);
 SamplerState samplerState : register(s0);
 
-cbuffer PixelShaderSettings {
+cbuffer PixelShaderSettings : register(b0) {
     float  Time;
     float  Scale;
     float2 Resolution;
