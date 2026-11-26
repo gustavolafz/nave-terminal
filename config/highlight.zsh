@@ -38,7 +38,7 @@ function nave-highlight {
 function _nave_hl_redraw {
   setopt LOCAL_OPTIONS EXTENDED_GLOB
   (( _NAVE_HL_ENABLED )) || {
-    region_highlight=(${region_highlight:#*, memo=nave-hl})
+    region_highlight=(${region_highlight:#*memo=nave-hl*})
     return
   }
 
@@ -51,7 +51,8 @@ function _nave_hl_redraw {
   _NAVE_HL_LAST_PAL="$pal"
 
   # Preserve other highlights (e.g. nave-suggest POSTDISPLAY memo=nave-sg)
-  local -a kept=(${region_highlight:#*, memo=nave-hl})
+  # Note: Zsh normalizes ", memo=..." internally to " memo=...", so match *memo=nave-hl*!
+  local -a kept=(${region_highlight:#*memo=nave-hl*})
   if [[ -z "$buf" ]]; then
     region_highlight=("${kept[@]}")
     return

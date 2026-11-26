@@ -63,7 +63,7 @@ function _nave_suggest_find {
 }
 
 function _nave_suggest_redraw {
-  region_highlight=(${region_highlight:#*, memo=nave-sg})
+  region_highlight=(${region_highlight:#*memo=nave-sg*})
 
   if (( ! _NAVE_SG_ENABLED || REGION_ACTIVE )) || [[ -z "$BUFFER" || "$BUFFER" == *$'\n'* ]]; then
     POSTDISPLAY=""
@@ -96,7 +96,7 @@ function _nave_suggest_clear {
   POSTDISPLAY=""
   _NAVE_SG_LAST_BUF=""
   _NAVE_SG_LAST_MATCH=""
-  region_highlight=(${region_highlight:#*, memo=nave-sg})
+  region_highlight=(${region_highlight:#*memo=nave-sg*})
 }
 
 # Accept entire suggestion (called by Right arrow / End when at end of line)
