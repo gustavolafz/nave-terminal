@@ -271,54 +271,50 @@ function drawGrainyFlatPlanet(ctx, W, H, dpr, planet, rng, noise, transparentBg)
   pctx.fill();
   pctx.clip();
 
-  // ---- A. 16_2026 BORDERLESS FLAT TONAL PLANES (Curved crescent zones) ----
-  // Zone 1: Deep twilight indigo crescent
-  pctx.fillStyle = '#1B2242';
+  // ---- A. 16_2026 BORDERLESS FLAT TONAL PLANES (Obsidian Vibrant: Electric Cyan + Amethyst Violet!) ----
+  pctx.fillStyle = '#1E1542';
   pctx.beginPath();
   pctx.arc(cx - R * 0.22, cy - R * 0.20, R * 0.96, 0, Math.PI * 2);
   pctx.fill();
 
-  // Re-carve deep night shadow crescent on lower-right using shifted dark disc (pure flat graphic cut!)
-  pctx.fillStyle = '#0D1120';
+  pctx.fillStyle = '#090A14';
   pctx.beginPath();
   pctx.arc(cx + R * 0.34, cy + R * 0.30, R * 0.94, 0, Math.PI * 2);
   pctx.fill();
 
-  // Zone 2: Mid-tone slate-violet / cobalt lit crescent
+  // Zone 2: Vivid cobalt-amethyst mid crescent
   pctx.save();
   pctx.beginPath();
   pctx.arc(cx - R * 0.14, cy - R * 0.12, R * 0.98, 0, Math.PI * 2);
   pctx.clip();
-  pctx.fillStyle = '#2B3B70';
+  pctx.fillStyle = '#4B32A8';
   pctx.beginPath();
   pctx.arc(cx - R * 0.34, cy - R * 0.30, R * 0.95, 0, Math.PI * 2);
   pctx.fill();
-  // Carve inner terminator edge
-  pctx.fillStyle = '#1B2242';
+  pctx.fillStyle = '#1E1542';
   pctx.beginPath();
   pctx.arc(cx + R * 0.14, cy + R * 0.13, R * 0.90, 0, Math.PI * 2);
   pctx.fill();
   pctx.restore();
 
-  // Zone 3: Bright sunlit cyan-blue rim crescent (upper-left solar key)
+  // Zone 3: Electric cyan sunlit rim crescent
   pctx.save();
   pctx.beginPath();
   pctx.arc(cx, cy, R, 0, Math.PI * 2);
   pctx.clip();
-  pctx.fillStyle = '#4E8FD1';
+  pctx.fillStyle = '#00B8FF';
   pctx.beginPath();
   pctx.arc(cx - R * 0.04, cy - R * 0.04, R * 1.0, 0, Math.PI * 2);
   pctx.fill();
-  pctx.fillStyle = '#2B3B70';
+  pctx.fillStyle = '#4B32A8';
   pctx.beginPath();
   pctx.arc(cx + R * 0.055, cy + R * 0.050, R * 0.975, 0, Math.PI * 2);
   pctx.fill();
-  // Innermost shadow carve back cleanly
-  pctx.fillStyle = '#1B2242';
+  pctx.fillStyle = '#1E1542';
   pctx.beginPath();
   pctx.arc(cx + R * 0.20, cy + R * 0.18, R * 0.94, 0, Math.PI * 2);
   pctx.fill();
-  pctx.fillStyle = '#0D1120';
+  pctx.fillStyle = '#090A14';
   pctx.beginPath();
   pctx.arc(cx + R * 0.42, cy + R * 0.38, R * 0.94, 0, Math.PI * 2);
   pctx.fill();
@@ -383,9 +379,9 @@ function drawGrainyFlatPlanet(ctx, W, H, dpr, planet, rng, noise, transparentBg)
 
     const L = sphereLight(ux, uy);
     // 1) Bright cyan/ice fine square grain denser toward sunlit upper-left crescent
-    if (L > 0.08 && rng() < Math.pow(L, 1.2) * 0.72) {
-      pctx.fillStyle = L > 0.65 ? '#CBEFFF' : (L > 0.34 ? '#7DCFFF' : '#BB9AF7');
-      pctx.globalAlpha = 0.14 + L * 0.44;
+    if (L > 0.08 && rng() < Math.pow(L, 1.2) * 0.76) {
+      pctx.fillStyle = L > 0.65 ? '#B8FAFF' : (L > 0.34 ? '#00E5FF' : '#C084FC');
+      pctx.globalAlpha = 0.16 + L * 0.48;
       const sz = L > 0.5 ? 1.15 : 1.35;
       pctx.fillRect(px, py, sz, sz);
     }

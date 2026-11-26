@@ -43,52 +43,52 @@ function _nave_apply_palette() {
   case "$pal" in
     cyber)
       _NAVE_C=(
-        frame 240  user 81   host 111  dir 39    git 141
-        warn 215   info 81   ok 78     err 203   dur 221
-        muted 242  node 114  docker 75 path 117  str 221
-        bg "#0E111A" cursor "#5CE1E6"
-        grad1 "125;207;255" grad2 "122;162;247" grad3 "187;154;247"
-        fzf_hl "#7dcfff" fzf_bg "#1a1b26" fzf_ptr "#7aa2f7" fzf_info "#bb9af7" fzf_border "#3b4261"
+        frame 240  user 51   host 135  dir 45    git 171
+        warn 214   info 51   ok 48     err 197   dur 220
+        muted 244  node 83   docker 39 path 87   str 220
+        bg "#08090F" cursor "#00F0FF"
+        grad1 "0;245;255" grad2 "124;77;255" grad3 "255;46;151"
+        fzf_hl "#00f0ff" fzf_bg "#131524" fzf_ptr "#a855f7" fzf_info "#ff2e97" fzf_border "#3b2f63"
       )
       ;;
     emerald)
       _NAVE_C=(
-        frame 239  user 48   host 79   dir 42    git 114
-        warn 221   info 50   ok 82     err 203   dur 185
-        muted 242  node 119  docker 44 path 85   str 192
-        bg "#0B1510" cursor "#50FA7B"
-        grad1 "80;250;123" grad2 "46;229;157" grad3 "56;189;248"
-        fzf_hl "#50fa7b" fzf_bg "#0f1914" fzf_ptr "#2ee59d" fzf_info "#8be9fd" fzf_border "#28503c"
+        frame 239  user 48   host 51   dir 46    git 118
+        warn 226   info 51   ok 82     err 197   dur 190
+        muted 244  node 84   docker 45 path 85   str 226
+        bg "#070C09" cursor "#00FF88"
+        grad1 "0;255;136" grad2 "0;229;255" grad3 "178;255;89"
+        fzf_hl "#00ff88" fzf_bg "#0e1d14" fzf_ptr "#00e5ff" fzf_info "#b2ff59" fzf_border "#1f593b"
       )
       ;;
     sunset)
       _NAVE_C=(
-        frame 240  user 215  host 209  dir 204   git 177
-        warn 221   info 216  ok 114    err 196   dur 228
-        muted 243  node 150  docker 111 path 217 str 222
-        bg "#181016" cursor "#FF9E64"
-        grad1 "255;215;95" grad2 "255;158;100" grad3 "247;118;142"
-        fzf_hl "#ff9e64" fzf_bg "#1c1419" fzf_ptr "#f7768e" fzf_info "#e0af68" fzf_border "#523644"
+        frame 240  user 208  host 204  dir 197   git 220
+        warn 226   info 214  ok 48     err 196   dur 226
+        muted 244  node 118  docker 45 path 215  str 220
+        bg "#0C070A" cursor "#FF5E3A"
+        grad1 "255;214;0" grad2 "255;94;58" grad3 "255;30;142"
+        fzf_hl "#ff5e3a" fzf_bg "#1e1018" fzf_ptr "#ff1e8e" fzf_info "#ffd600" fzf_border "#5c2540"
       )
       ;;
     nord)
       _NAVE_C=(
-        frame 240  user 110  host 109  dir 116   git 146
-        warn 222   info 110  ok 108    err 174   dur 223
-        muted 243  node 108  docker 110 path 152 str 223
-        bg "#232934" cursor "#88C0D0"
-        grad1 "136;192;208" grad2 "129;161;193" grad3 "180;142;173"
-        fzf_hl "#88c0d0" fzf_bg "#2e3440" fzf_ptr "#81a1c1" fzf_info "#b48ead" fzf_border "#4c566a"
+        frame 240  user 87   host 75   dir 45    git 141
+        warn 221   info 87   ok 85     err 203   dur 220
+        muted 244  node 84   docker 39 path 123  str 221
+        bg "#080B12" cursor "#38E8FF"
+        grad1 "56;232;255" grad2 "108;140;255" grad3 "192;132;252"
+        fzf_hl "#38e8ff" fzf_bg "#121a2b" fzf_ptr "#6c8cff" fzf_info "#c084fc" fzf_border "#2c3f66"
       )
       ;;
     stealth)
       _NAVE_C=(
-        frame 238  user 250  host 245  dir 255   git 248
-        warn 221   info 250  ok 252    err 203   dur 246
-        muted 240  node 247  docker 247 path 252 str 249
-        bg "#101012" cursor "#F4F4F5"
-        grad1 "248;250;252" grad2 "180;188;200" grad3 "113;113;122"
-        fzf_hl "#e5e9f0" fzf_bg "#121212" fzf_ptr "#d8dee9" fzf_info "#888888" fzf_border "#3a3a3a"
+        frame 239  user 255  host 141  dir 135   git 177
+        warn 220   info 141  ok 255    err 197   dur 183
+        muted 243  node 141  docker 135 path 255 str 213
+        bg "#08080B" cursor "#A855F7"
+        grad1 "248;250;252" grad2 "168;85;247" grad3 "236;72;153"
+        fzf_hl "#c084fc" fzf_bg "#15121f" fzf_ptr "#a855f7" fzf_info "#ec4899" fzf_border "#4c2875"
       )
       ;;
     *)

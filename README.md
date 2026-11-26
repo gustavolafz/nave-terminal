@@ -47,11 +47,11 @@ Troque a qualquer momento com `nave-theme <nome>` — a escolha fica salva em `~
 
 | Paleta | Comando | Background (OSC 11) | Estilo |
 | :--- | :--- | :---: | :--- |
-| **Cyber** *(padrão)* | `nave-theme cyber` | `#0E111A` | Cyan elétrico, roxo e verde menta inspirado em Tokyo Night |
-| **Emerald** | `nave-theme emerald` | `#0B1510` | Verde neon e teal de alto contraste |
-| **Sunset** | `nave-theme sunset` | `#181016` | Laranja quente, coral e magenta |
-| **Nord** | `nave-theme nord` | `#232934` | Azul ártico, gelo e tons suaves |
-| **Stealth** | `nave-theme stealth` | `#101012` | Monocromático minimalista com foco apenas em alertas e erros |
+| **Cyber** *(padrão)* | `nave-theme cyber` | `#08090F` | Obsidiana profunda com ciano elétrico, violeta e magenta neon |
+| **Emerald** | `nave-theme emerald` | `#070C09` | Obsidiana escura com esmeralda ácido, ciano e verde-lima |
+| **Sunset** | `nave-theme sunset` | `#0C070A` | Obsidiana magma com ouro solar, laranja vivo e rosa carmim |
+| **Nord** | `nave-theme nord` | `#080B12` | Obsidiana aurora com azul elétrico, gelo vibrante e lavanda |
+| **Stealth** | `nave-theme stealth` | `#08080B` | Obsidiana pura com roxo ametista vibrante e branco cristalino |
 
 ---
 

@@ -57,44 +57,44 @@ $script:NaveBgSync  = (_Nave-LoadSetting "bg_sync" "1") -eq "1"
 
 $script:NavePalettes = @{
     cyber = @{
-        frame="240"; user="81"; host="111"; dir="39"; git="141"
-        warn="215"; info="81"; ok="78"; err="203"; dur="221"
-        muted="242"; node="114"; docker="75"
-        bg="#0E111A"; cursor="#5CE1E6"
-        g1=@(125,207,255); g2=@(122,162,247); g3=@(187,154,247)
-        ps_cmd="#50FA7B"; ps_param="#7DCFFF"; ps_str="#E0AF68"; ps_var="#BB9AF7"; ps_err="#F7768E"
+        frame="240"; user="51"; host="135"; dir="45"; git="171"
+        warn="214"; info="51"; ok="48"; err="197"; dur="220"
+        muted="244"; node="83"; docker="39"
+        bg="#08090F"; cursor="#00F0FF"
+        g1=@(0,245,255); g2=@(124,77,255); g3=@(255,46,151)
+        ps_cmd="#00FF88"; ps_param="#00F0FF"; ps_str="#FFD600"; ps_var="#C084FC"; ps_err="#FF2E63"
     }
     emerald = @{
-        frame="239"; user="48"; host="79"; dir="42"; git="114"
-        warn="221"; info="50"; ok="82"; err="203"; dur="185"
-        muted="242"; node="119"; docker="44"
-        bg="#0B1510"; cursor="#50FA7B"
-        g1=@(80,250,123); g2=@(46,229,157); g3=@(56,189,248)
-        ps_cmd="#5FFF00"; ps_param="#00FF87"; ps_str="#FFD75F"; ps_var="#87D787"; ps_err="#FF5F5F"
+        frame="239"; user="48"; host="51"; dir="46"; git="118"
+        warn="226"; info="51"; ok="82"; err="197"; dur="190"
+        muted="244"; node="84"; docker="45"
+        bg="#070C09"; cursor="#00FF88"
+        g1=@(0,255,136); g2=@(0,229,255); g3=@(178,255,89)
+        ps_cmd="#00FF88"; ps_param="#00F5D4"; ps_str="#FFE600"; ps_var="#B2FF59"; ps_err="#FF2E63"
     }
     sunset = @{
-        frame="240"; user="215"; host="209"; dir="204"; git="177"
-        warn="221"; info="216"; ok="114"; err="196"; dur="228"
-        muted="243"; node="150"; docker="111"
-        bg="#181016"; cursor="#FF9E64"
-        g1=@(255,215,95); g2=@(255,158,100); g3=@(247,118,142)
-        ps_cmd="#87D787"; ps_param="#FFAF5F"; ps_str="#FFD75F"; ps_var="#D787FF"; ps_err="#FF5F5F"
+        frame="240"; user="208"; host="204"; dir="197"; git="220"
+        warn="226"; info="214"; ok="48"; err="196"; dur="226"
+        muted="244"; node="118"; docker="45"
+        bg="#0C070A"; cursor="#FF5E3A"
+        g1=@(255,214,0); g2=@(255,94,58); g3=@(255,30,142)
+        ps_cmd="#00FF88"; ps_param="#FF9F1C"; ps_str="#FFD600"; ps_var="#FF2E97"; ps_err="#FF1E56"
     }
     nord = @{
-        frame="240"; user="110"; host="109"; dir="116"; git="146"
-        warn="222"; info="110"; ok="108"; err="174"; dur="223"
-        muted="243"; node="108"; docker="110"
-        bg="#232934"; cursor="#88C0D0"
-        g1=@(136,192,208); g2=@(129,161,193); g3=@(180,142,173)
-        ps_cmd="#A3BE8C"; ps_param="#88C0D0"; ps_str="#EBCB8B"; ps_var="#B48EAD"; ps_err="#BF616A"
+        frame="240"; user="87"; host="75"; dir="45"; git="141"
+        warn="221"; info="87"; ok="85"; err="203"; dur="220"
+        muted="244"; node="84"; docker="39"
+        bg="#080B12"; cursor="#38E8FF"
+        g1=@(56,232,255); g2=@(108,140,255); g3=@(192,132,252)
+        ps_cmd="#34FFB4"; ps_param="#38E8FF"; ps_str="#FFD75F"; ps_var="#C084FC"; ps_err="#FF5F73"
     }
     stealth = @{
-        frame="238"; user="250"; host="245"; dir="255"; git="248"
-        warn="221"; info="250"; ok="252"; err="203"; dur="246"
-        muted="240"; node="247"; docker="247"
-        bg="#101012"; cursor="#F4F4F5"
-        g1=@(248,250,252); g2=@(180,188,200); g3=@(113,113,122)
-        ps_cmd="#E5E9F0"; ps_param="#D8DEE9"; ps_str="#BCBCBC"; ps_var="#A8A8A8"; ps_err="#FF5F5F"
+        frame="239"; user="255"; host="141"; dir="135"; git="177"
+        warn="220"; info="141"; ok="255"; err="197"; dur="183"
+        muted="243"; node="141"; docker="135"
+        bg="#08080B"; cursor="#A855F7"
+        g1=@(248,250,252); g2=@(168,85,247); g3=@(236,72,153)
+        ps_cmd="#F8FAFC"; ps_param="#C084FC"; ps_str="#EC4899"; ps_var="#A855F7"; ps_err="#FF2E63"
     }
 }
 
