@@ -27,6 +27,7 @@ Construído para ser rápido, legível e consistente em qualquer visualizador (W
 - **Transient Prompt**: após pressionar Enter, prompts antigos colapsam para uma única linha minimalista (`HH:MM ❯ comando`).
 - **Arte TrueColor + Cockpit em tempo real**: `sysinfo` com foguete em gradiente dinâmico, régua divisória `hr [titulo]`, dashboard interativo `nave-hud` e starfield 3D `nave-warp`.
 - **Acabamento nativo no Windows Terminal**: 5 esquemas de cor, wallpaper minimalista espacial sob medida e 2 pixel shaders GPU em HLSL (`nave-glow.hlsl` e `nave-crt.hlsl`) alternáveis via `nave-shader`.
+- **Edição de texto estilo VS Code no Zsh (`config/keybindings.zsh`) e PowerShell**: seleção pelo teclado (`Shift+Setas`, `Ctrl+Shift+Setas`, `Shift+Home/End`, `Ctrl+A`) com destaque visual, digitar/colar substitui a seleção, navegação por subpalavra (`WORDCHARS=''`), `Ctrl+Z` / `Ctrl+Y` / `Ctrl+Shift+Z`, `Ctrl+C` inteligente (copia se houver seleção, cancela caso contrário), `Ctrl+X`, `Ctrl+Shift+K`, `Ctrl+Shift+D`, `Ctrl+/` e `Alt+E`.
 - **Toolkit WSL2 + PowerShell**: notificações toast no Windows para comandos longos (`>= 15s`), hub de projetos fuzzy (`p`), radar de portas (`ports` / `killport`), ponte WSL ↔ Windows (`clip`, `paste`, `winopen`, `winip`), Git turbo (`ginfo`, `gbf`, `gwip`, `gbclean`) e Docker cockpit (`dks`, `dkl`, `dksh`).
 
 ---
@@ -155,6 +156,21 @@ Add-Content -Path $PROFILE -Value "`n. `"$env:USERPROFILE\.config\nave\nave.ps1`
 ```
 
 Depois você pode alternar o shader direto pelo terminal com `nave-shader glow`, `nave-shader crt` ou `nave-shader off`.
+
+Para habilitar também `Ctrl+Shift+Z` (refazer), `Ctrl+Shift+K` (apagar linha) e `Ctrl+Shift+D` (duplicar) no WSL dentro do Windows Terminal, adicione em `"actions"` e `"keybindings"` do `settings.json`:
+
+```json
+"actions": [
+  { "id": "Nave.redo",       "command": { "action": "sendInput", "input": "\u001b[90;6u" } },
+  { "id": "Nave.deleteLine", "command": { "action": "sendInput", "input": "\u001b[75;6u" } },
+  { "id": "Nave.duplicate",  "command": { "action": "sendInput", "input": "\u001b[68;6u" } }
+],
+"keybindings": [
+  { "id": "Nave.redo",       "keys": "ctrl+shift+z" },
+  { "id": "Nave.deleteLine", "keys": "ctrl+shift+k" },
+  { "id": "Nave.duplicate",  "keys": "ctrl+shift+d" }
+]
+```
 </details>
 
 <details>
@@ -191,6 +207,11 @@ Adicione o conteúdo de [config/gitconfig.delta](config/gitconfig.delta) ao seu 
 | **Sistema** | `ports` / `killport <porta>` | Radar de portas TCP/UDP abertas e encerramento rápido |
 | **Navegação** | `p [projeto]` / `z <termo>` | Hub fuzzy de projetos em `$NAVE_PROJECTS_DIR` e salto inteligente (`zoxide`) |
 | **Busca** | `Ctrl+R` / `Ctrl+T` / `Alt+C` | Histórico fuzzy, arquivos com preview (`bat`) e diretórios (`eza`) |
+| **Edição** | `Shift+Setas` / `Ctrl+Shift+Setas` / `Ctrl+A` | Seleciona texto na linha de comando (digitar, colar ou Backspace substitui) |
+| **Edição** | `Ctrl+←/→` / `Ctrl+BS` / `Ctrl+Del` | Navega e apaga por subpalavra/pasta (`/` `-` `_` `.` `=` `:`) |
+| **Edição** | `Ctrl+Z` / `Ctrl+Y` / `Ctrl+Shift+Z` | Desfazer e refazer edições na linha de comando |
+| **Edição** | `Ctrl+C` / `Ctrl+X` / `Alt+W` | Copia seleção (ou cancela sem seleção) / Recorta para o clipboard Windows |
+| **Edição** | `Ctrl+Shift+K` / `Ctrl+Shift+D` / `Ctrl+/` / `Alt+E` | Apaga linha / duplica / comenta com `#` / abre no `$EDITOR` |
 | **Atalho** | `Esc Esc` | Adiciona ou remove `sudo ` no início da linha atual |
 | **Git** | `lg` / `ginfo` / `gbf` / `gwip` / `gbclean` | Lazygit, painel do repo, troca de branch fuzzy, WIP e limpeza de branches |
 | **Docker** | `dks` / `dkl` / `dksh` | Tabela de containers, logs e shell com seleção interativa via `fzf` |
@@ -204,6 +225,7 @@ Adicione o conteúdo de [config/gitconfig.delta](config/gitconfig.delta) ao seu 
 nave-terminal/
 ├── theme/nave.zsh-theme               # Tema Zsh v3 (paletas OSC 11/12, 4 layouts, transient, toasts)
 ├── config/toolkit.zsh                 # Arte gradiente, hr, nave-shader, WSL, Git, Docker, projetos
+├── config/keybindings.zsh             # Edição estilo VS Code no Zsh (seleção, undo/redo, clipboard)
 ├── config/zshrc.example               # Exemplo limpo de ~/.zshrc
 ├── config/gitconfig.delta             # Configuração recomendada para git-delta
 ├── bin/nave-hud                       # Cockpit interativo em tela cheia (relógio + CPU sparkline)

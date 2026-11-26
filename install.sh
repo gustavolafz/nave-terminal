@@ -36,6 +36,7 @@ mkdir -p "$ZSH_CUSTOM/themes" "$ZSH_CUSTOM/plugins" "$NAVE_DIR" "$HOME/.local/bi
 # 1. Install theme, toolkit & interactive cockpit apps
 cp "$REPO_DIR/theme/nave.zsh-theme" "$ZSH_CUSTOM/themes/nave.zsh-theme"
 cp "$REPO_DIR/config/toolkit.zsh" "$NAVE_DIR/toolkit.zsh"
+cp "$REPO_DIR/config/keybindings.zsh" "$NAVE_DIR/keybindings.zsh"
 cp "$REPO_DIR/bin/nave-hud" "$HOME/.local/bin/nave-hud"
 cp "$REPO_DIR/bin/nave-warp" "$HOME/.local/bin/nave-warp"
 chmod +x "$HOME/.local/bin/nave-hud" "$HOME/.local/bin/nave-warp"

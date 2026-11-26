@@ -162,7 +162,7 @@ function _Nave-ApplyPalette([string]$pal) {
 
 if (Get-Module -ListAvailable -Name PSReadLine) {
     Import-Module PSReadLine -ErrorAction SilentlyContinue
-    try { Set-PSReadLineOption -BellStyle None -ErrorAction SilentlyContinue } catch {}
+    try { Set-PSReadLineOption -EditMode Windows -BellStyle None -ErrorAction SilentlyContinue } catch {}
     try { Set-PSReadLineOption -PredictionSource History -ErrorAction SilentlyContinue } catch {}
     try {
         Set-PSReadLineKeyHandler -Key UpArrow -Function HistorySearchBackward

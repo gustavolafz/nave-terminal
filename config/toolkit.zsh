@@ -528,6 +528,13 @@ function nave-help {
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}Ctrl+R / Ctrl+T / Alt+C%f Busca fuzzy no historico / arquivos / pastas"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}Esc Esc / ll / lt / b%f  Toggle sudo / eza Git / arvore / bat viewer"
   print -P "%F{${c_frm}}│%f"
+  print -P "%F{${c_frm}}│%f %F{${c_lbl}}%BEdicao Estilo VS Code%b%f"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}Shift+Setas / Ctrl+A%f   Seleciona texto (digitar/colar/BS substitui)"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}Ctrl+←/→ / Ctrl+BS/Del%f Navega e apaga por subpalavra/pasta"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}Ctrl+Z / Ctrl+Y / +ShZ%f Desfazer e Refazer na linha de comando"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}Ctrl+C / Ctrl+X / +V%f   Copia selecao / Recorta / Cola (Windows)"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}Ctrl+Sh+K / D / Ctrl+/%f Apaga linha / duplica / comenta (#) · Alt+E editor"
+  print -P "%F{${c_frm}}│%f"
   print -P "%F{${c_frm}}│%f %F{${c_lbl}}%BGit, Docker, Portas & WSL%b%f"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}lg / ginfo / gbf%f       Lazygit, painel do repo, trocar branch fuzzy"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}gwip / gunwip / gbclean%f Commit WIP rapido e limpeza de branches"
@@ -537,5 +544,8 @@ function nave-help {
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}notify <cmd> / mon%f     Toast ao terminar comando / monitor btop"
   print -P "%F{${c_dir}}╰───────────────────────────────────────────────────────────%f"
 }
+
+# Load VS Code-style ZLE keybindings (selection, subword nav, undo/redo, clipboard)
+[[ -r "$HOME/.config/nave/keybindings.zsh" ]] && source "$HOME/.config/nave/keybindings.zsh"
 
 _nave_show_welcome
