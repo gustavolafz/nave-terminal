@@ -5,6 +5,7 @@ mod input;
 mod layout;
 mod palette;
 mod picker;
+mod pty_term;
 mod render;
 mod rope;
 mod search;
@@ -19,9 +20,10 @@ use layout::{
 };
 use palette::Palette;
 use picker::{Picker, PickerAction};
+use pty_term::IntegratedTerminal;
 use render::{
     char_col_at_visual, ensure_cursor_visible, render_editor, DropPreview, DropZone, LayoutInfo,
-    PaneRenderInput, PromptBar, TabBadge,
+    PaneRenderInput, PromptBar, TabBadge, TermPanelView,
 };
 use rope::LineEnding;
 use std::collections::VecDeque;
@@ -50,6 +52,7 @@ enum DragState {
     None,
     Selection(PaneId),
     Divider(DividerHit),
+    TermDivider,
     Scrollbar {
         pane_id: PaneId,
         start_row: usize,
@@ -126,6 +129,12 @@ struct App {
     follow_cursor: bool,
     last_click: Option<(Instant, usize, usize, u8)>,
     pending_pane_pickers: VecDeque<(PaneId, PathBuf, usize, usize)>,
+    term_panel: Option<IntegratedTerminal>,
+    term_open: bool,
+    term_focused: bool,
+    term_height: usize,
+    hover_term_divider: bool,
+    hover_term_close: bool,
     should_quit: bool,
     last_mtime_check: Instant,
 }
@@ -198,6 +207,12 @@ impl App {
             follow_cursor: true,
             last_click: None,
             pending_pane_pickers: VecDeque::new(),
+            term_panel: None,
+            term_open: false,
+            term_focused: false,
+            term_height: 0,
+            hover_term_divider: false,
+            hover_term_close: false,
             should_quit: false,
             last_mtime_check: Instant::now(),
         }
@@ -308,7 +323,7 @@ impl App {
             .count()
     }
 
-    fn pane_area(&self, cols: usize, rows: usize) -> Rect {
+    fn bottom_reserved_rows(&self) -> usize {
         let has_prompt = matches!(
             self.mode,
             Mode::Find
@@ -318,13 +333,126 @@ impl App {
                 | Mode::ConfirmQuit
                 | Mode::ConfirmCloseTab
         );
-        let bottom_reserved = if has_prompt { 2 } else { 1 };
-        Rect {
-            x: 0,
-            y: 0,
-            w: cols,
-            h: rows.saturating_sub(bottom_reserved).max(2),
+        if has_prompt { 2 } else { 1 }
+    }
+
+    /// Returns `Some((header_row, body_height))` when the integrated terminal drawer is visible.
+    fn term_layout(&self, rows: usize) -> Option<(usize, usize)> {
+        if !self.term_open || self.term_panel.is_none() {
+            return None;
         }
+        let usable_h = rows.saturating_sub(self.bottom_reserved_rows());
+        let min_editor_h = (MIN_PANE_H + 1).max(4);
+        if usable_h < min_editor_h + 4 {
+            return None;
+        }
+        let max_body = usable_h.saturating_sub(min_editor_h + 1).max(3);
+        let desired = if self.term_height == 0 {
+            (usable_h / 3).clamp(6, 16)
+        } else {
+            self.term_height
+        };
+        let body_h = desired.clamp(3, max_body);
+        let header_row = usable_h.saturating_sub(body_h + 1);
+        Some((header_row, body_h))
+    }
+
+    fn pane_area(&self, cols: usize, rows: usize) -> Rect {
+        let h = if let Some((header_row, _)) = self.term_layout(rows) {
+            header_row.max(2)
+        } else {
+            rows.saturating_sub(self.bottom_reserved_rows()).max(2)
+        };
+        Rect { x: 0, y: 0, w: cols, h }
+    }
+
+    fn term_pty_fd(&self) -> Option<std::os::unix::io::RawFd> {
+        self.term_panel
+            .as_ref()
+            .filter(|t| t.alive)
+            .map(|t| t.master_fd())
+    }
+
+    fn drain_terminal_output(&mut self) -> bool {
+        let mut changed = false;
+        let mut exited = false;
+        if let Some(ref mut t) = self.term_panel {
+            if t.drain_output() {
+                changed = true;
+            }
+            if !t.alive {
+                exited = true;
+            }
+        }
+        if exited {
+            self.term_panel = None;
+            self.term_open = false;
+            self.term_focused = false;
+            self.hover_term_divider = false;
+            self.hover_term_close = false;
+            self.set_status("Terminal encerrado");
+            changed = true;
+        }
+        changed
+    }
+
+    fn toggle_terminal(&mut self, cols: usize, rows: usize) {
+        if self.term_open && self.term_panel.is_some() {
+            if self.term_focused {
+                // Hide drawer (keep shell alive in background!) and focus editor
+                self.term_open = false;
+                self.term_focused = false;
+                self.hover_term_divider = false;
+                self.hover_term_close = false;
+                self.set_status("Terminal oculto em segundo plano (Ctrl+' reabre)");
+            } else {
+                // Already visible: focus it immediately
+                self.term_focused = true;
+                self.mode = Mode::Edit;
+                self.set_status("Foco no Terminal (Ctrl+' ocultar · Ctrl+1..9 editor)");
+            }
+            return;
+        }
+
+        if self.term_panel.is_none() {
+            let cwd = self.base_dir();
+            let init_h = ((rows.saturating_sub(2)) / 3).clamp(6, 16);
+            match IntegratedTerminal::spawn(&cwd, cols, init_h) {
+                Ok(t) => {
+                    self.term_panel = Some(t);
+                }
+                Err(e) => {
+                    self.set_status(format!("Erro ao abrir terminal: {}", e));
+                    return;
+                }
+            }
+        }
+        self.term_open = true;
+        self.term_focused = true;
+        self.mode = Mode::Edit;
+        if let Some((_, body_h)) = self.term_layout(rows) {
+            if let Some(ref mut t) = self.term_panel {
+                t.resize(cols, body_h);
+            }
+        }
+        self.set_status("Terminal integrado aberto (Ctrl+' ocultar · Ctrl+1..9 editor)");
+    }
+
+    fn restart_terminal(&mut self, cols: usize, rows: usize) {
+        self.term_panel = None;
+        self.term_open = false;
+        self.term_focused = false;
+        self.toggle_terminal(cols, rows);
+    }
+
+    fn kill_terminal(&mut self) {
+        self.term_panel = None;
+        self.term_open = false;
+        self.term_focused = false;
+        self.hover_term_divider = false;
+        self.hover_term_close = false;
+        self.hover_shape = PointerShape::Default;
+        self.set_status("Terminal fechado");
     }
 
     fn group_number_of(&self, pane_id: PaneId) -> usize {
@@ -866,6 +994,12 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: &str) {
+        if matches!(self.mode, Mode::Edit) && self.term_open && self.term_focused {
+            if let Some(ref mut t) = self.term_panel {
+                t.send_paste(text);
+                return;
+            }
+        }
         match &mut self.mode {
             Mode::Edit => self.doc_mut().paste(text),
             Mode::Find => {
@@ -891,16 +1025,45 @@ impl App {
         }
     }
 
-    fn update_hover(&mut self, col: usize, row: usize) -> bool {
+    fn update_hover(&mut self, col: usize, row: usize, cols: usize, rows: usize) -> bool {
         let prev_div = self.hover_divider;
         let prev_sb = self.hover_scrollbar;
+        let prev_tdiv = self.hover_term_divider;
+        let prev_tclose = self.hover_term_close;
 
         if matches!(self.mode, Mode::Picker(_)) {
             self.hover_divider = None;
             self.hover_scrollbar = None;
+            self.hover_term_divider = false;
+            self.hover_term_close = false;
             self.hover_shape = PointerShape::Default;
-            return prev_div != self.hover_divider || prev_sb != self.hover_scrollbar;
+            return prev_div != self.hover_divider
+                || prev_sb != self.hover_scrollbar
+                || prev_tdiv != self.hover_term_divider
+                || prev_tclose != self.hover_term_close;
         }
+
+        if let Some((header_row, _)) = self.term_layout(rows) {
+            if row == header_row {
+                self.hover_divider = None;
+                self.hover_scrollbar = None;
+                if cols >= 3 && col >= cols - 3 {
+                    self.hover_term_close = true;
+                    self.hover_term_divider = false;
+                    self.hover_shape = PointerShape::Grab;
+                } else {
+                    self.hover_term_divider = true;
+                    self.hover_term_close = false;
+                    self.hover_shape = PointerShape::ResizeV;
+                }
+                return prev_div != self.hover_divider
+                    || prev_sb != self.hover_scrollbar
+                    || prev_tdiv != self.hover_term_divider
+                    || prev_tclose != self.hover_term_close;
+            }
+        }
+        self.hover_term_divider = false;
+        self.hover_term_close = false;
 
         if let Some(d) = self.layout.dividers.iter().copied().find(|d| d.hits(col, row)) {
             self.hover_divider = Some(d.split_id);
@@ -933,7 +1096,10 @@ impl App {
             self.hover_shape = PointerShape::Default;
         }
 
-        prev_div != self.hover_divider || prev_sb != self.hover_scrollbar
+        prev_div != self.hover_divider
+            || prev_sb != self.hover_scrollbar
+            || prev_tdiv != self.hover_term_divider
+            || prev_tclose != self.hover_term_close
     }
 
     fn scroll_pane_from_scrollbar(
@@ -999,9 +1165,18 @@ impl App {
 
         match m.kind {
             MouseKind::Move => {
-                return self.update_hover(m.col, m.row);
+                return self.update_hover(m.col, m.row, cols, rows);
             }
             MouseKind::WheelUp | MouseKind::WheelDown => {
+                if let Some((header_row, body_h)) = self.term_layout(rows) {
+                    if m.row > header_row && m.row < header_row + 1 + body_h {
+                        if let Some(ref mut t) = self.term_panel {
+                            let delta = if m.kind == MouseKind::WheelUp { 3 } else { -3 };
+                            t.screen.scroll_view(delta);
+                        }
+                        return true;
+                    }
+                }
                 let target_pid = self
                     .layout
                     .panes
@@ -1044,6 +1219,30 @@ impl App {
                 true
             }
             MouseKind::LeftDown => {
+                // 0. Check integrated terminal header/divider/close button & body
+                if let Some((header_row, body_h)) = self.term_layout(rows) {
+                    if m.row == header_row {
+                        if cols >= 3 && m.col >= cols - 3 {
+                            self.kill_terminal();
+                        } else {
+                            self.drag = DragState::TermDivider;
+                            self.hover_term_divider = true;
+                            self.hover_term_close = false;
+                            self.hover_shape = PointerShape::ResizeV;
+                            self.set_status("Arraste ↕ para redimensionar o terminal");
+                        }
+                        return true;
+                    }
+                    if m.row > header_row && m.row < header_row + 1 + body_h {
+                        self.term_focused = true;
+                        self.mode = Mode::Edit;
+                        self.drag = DragState::None;
+                        return true;
+                    }
+                }
+                // Clicking anywhere above the terminal returns focus to editor panes
+                self.term_focused = false;
+
                 // 1. Check split dividers (exact 1-col `│` / 1-row `─`)
                 if let Some(div) = self.layout.dividers.iter().copied().find(|d| d.hits(m.col, m.row)) {
                     self.drag = DragState::Divider(div);
@@ -1163,6 +1362,20 @@ impl App {
                 false
             }
             MouseKind::LeftDrag => match self.drag {
+                DragState::TermDivider => {
+                    let usable_h = rows.saturating_sub(self.bottom_reserved_rows());
+                    let min_editor_h = (MIN_PANE_H + 1).max(4);
+                    let max_header = usable_h.saturating_sub(4).max(min_editor_h);
+                    let new_header = m.row.clamp(min_editor_h, max_header);
+                    let new_body = usable_h.saturating_sub(new_header + 1).max(3);
+                    self.term_height = new_body;
+                    if let Some(ref mut t) = self.term_panel {
+                        t.resize(cols, new_body);
+                    }
+                    self.hover_shape = PointerShape::ResizeV;
+                    self.set_status(format!("Altura do terminal: {} linhas", new_body));
+                    true
+                }
                 DragState::Divider(div) => {
                     let raw_ratio = match div.axis {
                         SplitAxis::Horizontal => {
@@ -1238,7 +1451,7 @@ impl App {
                     }
                 }
                 self.drag = DragState::None;
-                let hover_changed = self.update_hover(m.col, m.row);
+                let hover_changed = self.update_hover(m.col, m.row, cols, rows);
                 was_dragging || hover_changed
             }
         }
@@ -1676,6 +1889,61 @@ impl App {
             Mode::Edit => {}
         }
 
+        // ---- Integrated Terminal Focus Mode (VS Code Ctrl+' bottom drawer) ----
+        if self.term_open && self.term_focused {
+            if self.term_panel.is_some() {
+                // Global exit/navigation shortcuts from inside the integrated terminal
+                if k.ctrl && !k.alt && !k.shift {
+                    match k.code {
+                        KeyCode::Char('\'') | KeyCode::Char('`') => {
+                            self.toggle_terminal(cols, rows);
+                            return;
+                        }
+                        KeyCode::Char(c @ '1'..='9') => {
+                            self.term_focused = false;
+                            let num = (c as u8 - b'0') as usize;
+                            self.focus_pane_by_number(num, cols, rows);
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+                if k.shift && !k.ctrl && !k.alt {
+                    let step = self
+                        .term_layout(rows)
+                        .map(|(_, h)| (h / 2).max(2) as isize)
+                        .unwrap_or(5);
+                    match k.code {
+                        KeyCode::PageUp => {
+                            if let Some(ref mut t) = self.term_panel {
+                                t.screen.scroll_view(step);
+                            }
+                            return;
+                        }
+                        KeyCode::PageDown => {
+                            if let Some(ref mut t) = self.term_panel {
+                                t.screen.scroll_view(-step);
+                            }
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+                if !k.ctrl && !k.alt && !k.shift && k.code == KeyCode::F(1) {
+                    self.term_focused = false;
+                    self.open_command_palette();
+                    return;
+                }
+                if let Some(ref mut t) = self.term_panel {
+                    t.send_key(k);
+                }
+                return;
+            } else {
+                self.term_focused = false;
+                self.term_open = false;
+            }
+        }
+
         // ---- Main Edit Mode Keybindings (100% VS Code aligned + Multi-Pane) ----
         let page_step = self
             .last_computed
@@ -1913,6 +2181,10 @@ impl App {
                 }
                 KeyCode::Char('\\') => {
                     self.split_active(SplitAxis::Horizontal, false, cols, rows);
+                    return;
+                }
+                KeyCode::Char('\'') | KeyCode::Char('`') => {
+                    self.toggle_terminal(cols, rows);
                     return;
                 }
                 KeyCode::Char('k') => {
@@ -2185,6 +2457,9 @@ impl App {
             }
             KeyCode::Char(c @ '1'..='9') => {
                 self.focus_pane_by_number((c as u8 - b'0') as usize, cols, rows);
+            }
+            KeyCode::Char('t') | KeyCode::Char('\'') | KeyCode::Char('`') => {
+                self.toggle_terminal(cols, rows);
             }
             _ => {
                 self.set_status("Ctrl+K cancelado");
@@ -2657,6 +2932,8 @@ impl App {
                 }
                 PickerAction::EqualizePanes => self.equalize_panes(),
                 PickerAction::ClosePane => self.close_active_pane(),
+                PickerAction::ToggleTerminal => self.toggle_terminal(cols, rows),
+                PickerAction::RestartTerminal => self.restart_terminal(cols, rows),
                 PickerAction::SetPalette(idx) => self.set_palette_index(idx),
             }
         }
@@ -2800,7 +3077,7 @@ impl App {
                     pane_id: pid,
                     group_num: order_idx + 1,
                     rect,
-                    is_focused: pid == self.active_pane,
+                    is_focused: pid == self.active_pane && !(self.term_open && self.term_focused),
                     doc_id: tv.doc_id,
                     tabs,
                     scroll_row: tv.scroll_row,
@@ -2896,6 +3173,28 @@ impl App {
         };
         let highlight_all_dividers = matches!(self.mode, Mode::ResizePane);
 
+        // Keep integrated PTY dimensions synced with live drawer geometry
+        let term_geom = self.term_layout(rows);
+        if let Some((_, body_h)) = term_geom {
+            if let Some(ref mut t) = self.term_panel {
+                t.resize(cols, body_h);
+            }
+        }
+        let term_view = term_geom.and_then(|(header_row, body_h)| {
+            self.term_panel.as_ref().map(|t| TermPanelView {
+                screen: &t.screen,
+                header_row,
+                body_height: body_h,
+                is_focused: self.term_focused,
+                hover_divider: self.hover_term_divider,
+                dragging_divider: matches!(self.drag, DragState::TermDivider),
+                hover_close: self.hover_term_close,
+                cwd_label: &t.cwd_label,
+                shell_name: &t.shell_name,
+            })
+        });
+        let term_bg_alive = self.term_panel.as_ref().is_some_and(|t| t.alive);
+
         let (frame, layout_info) = render_editor(
             &mut self.docs,
             &pane_views,
@@ -2905,6 +3204,8 @@ impl App {
             hot_scrollbar,
             highlight_all_dividers,
             drop_preview.as_ref(),
+            term_view.as_ref(),
+            term_bg_alive,
             self.palette,
             cols,
             rows,
@@ -3011,9 +3312,14 @@ fn main() {
     let mut needs_redraw = true;
     let mut last_activity = Instant::now();
     let mut standby_blink = false;
+    let mut esc_pending_since: Option<Instant> = None;
 
     while !app.should_quit {
         let (cols, rows) = Terminal::size();
+
+        if app.drain_terminal_output() {
+            needs_redraw = true;
+        }
 
         if app.term_sync_needed {
             term.set_cursor_style(app.cfg.block_cursor, standby_blink);
@@ -3056,8 +3362,12 @@ fn main() {
             needs_redraw = false;
         }
 
-        let poll_ms = if decoder.has_pending_esc() { 25 } else { 60 };
-        if term.poll_stdin(poll_ms) {
+        let poll_ms = if decoder.has_pending_esc() { 15 } else { 60 };
+        let (stdin_ready, pty_ready) = term.poll_events(app.term_pty_fd(), poll_ms);
+        if pty_ready && app.drain_terminal_output() {
+            needs_redraw = true;
+        }
+        if stdin_ready {
             let n = term.read_bytes(&mut read_buf);
             if n > 0 {
                 decoder.push(&read_buf[..n]);
@@ -3084,8 +3394,16 @@ fn main() {
                         break;
                     }
                 }
+                if decoder.has_pending_esc() {
+                    esc_pending_since.get_or_insert_with(Instant::now);
+                } else {
+                    esc_pending_since = None;
+                }
             }
-        } else if decoder.has_pending_esc() {
+        } else if decoder.has_pending_esc()
+            && esc_pending_since.is_none_or(|t| t.elapsed() >= Duration::from_millis(25))
+        {
+            esc_pending_since = None;
             if let Some(ev) = decoder.flush_bare_esc() {
                 if app.handle_event(ev, cols, rows) {
                     needs_redraw = true;

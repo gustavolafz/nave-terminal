@@ -4,6 +4,7 @@ use crate::git::GutterMark;
 use crate::layout::{ComputedLayout, DividerHit, PaneId, Rect, SplitAxis};
 use crate::palette::{lerp_grad, push_bg, push_fg, push_fg_styled, push_grad_text, Palette, TokenKind};
 use crate::picker::{Picker, PickerAction};
+use crate::pty_term::{render_terminal_cells, VtScreen};
 use crate::syntax::{find_matching_bracket, Span};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -77,6 +78,18 @@ pub struct DropPreview {
     pub tab_insert_col: Option<usize>,
     pub file_name: String,
     pub label: &'static str,
+}
+
+pub struct TermPanelView<'a> {
+    pub screen: &'a VtScreen,
+    pub header_row: usize,
+    pub body_height: usize,
+    pub is_focused: bool,
+    pub hover_divider: bool,
+    pub dragging_divider: bool,
+    pub hover_close: bool,
+    pub cwd_label: &'a str,
+    pub shell_name: &'a str,
 }
 
 pub enum PromptBar<'a> {
@@ -232,6 +245,8 @@ pub fn render_editor(
     hot_scrollbar: Option<PaneId>,
     highlight_all_dividers: bool,
     drop_preview: Option<&DropPreview>,
+    term_panel: Option<&TermPanelView<'_>>,
+    term_bg_alive: bool,
     pal: &Palette,
     cols: usize,
     rows: usize,
@@ -402,6 +417,125 @@ pub fn render_editor(
     }
 
     // -------------------------------------------------------------------------
+    // Integrated Bottom Terminal Drawer (VS Code Ctrl+' style)
+    // -------------------------------------------------------------------------
+    let mut term_cursor_pos: Option<(usize, usize)> = None;
+    if let Some(tp) = term_panel {
+        // 1-row draggable horizontal divider + terminal header bar
+        let _ = write!(out, "\x1b[{};1H", tp.header_row + 1);
+        let bar_bg = if tp.is_focused {
+            pal.tab_active_bg
+        } else {
+            pal.bar_bg
+        };
+        push_bg(&mut out, bar_bg);
+
+        let is_hot = tp.hover_divider || tp.dragging_divider;
+        let line_ch = if tp.dragging_divider { '━' } else { '─' };
+        let mut used = 0usize;
+
+        let scroll_badge = if tp.screen.scroll_offset > 0 {
+            format!(" [SCROLL -{}] ", tp.screen.scroll_offset)
+        } else {
+            String::new()
+        };
+        let title_extra = if !tp.screen.title.is_empty() {
+            tp.screen.title.as_str()
+        } else {
+            tp.cwd_label
+        };
+        let label = format!(" ❯ TERMINAL ({}) · {} ", tp.shell_name, title_extra);
+        let close_btn = " × ";
+        let right_hint = if tp.is_focused {
+            "Ctrl+' ocultar · Ctrl+1..9 editor "
+        } else {
+            "Ctrl+' focar · arraste ↕ "
+        };
+
+        let close_w = str_display_width(close_btn);
+        let avail_before_close = cols.saturating_sub(close_w);
+
+        // Leading grip `──`
+        if avail_before_close >= 2 {
+            push_fg(
+                &mut out,
+                if is_hot || tp.is_focused { pal.grad[0] } else { pal.dim },
+                is_hot || tp.is_focused,
+            );
+            out.push(line_ch);
+            out.push(line_ch);
+            used += 2;
+        }
+
+        // Terminal title pill
+        let lbl_disp = truncate_to_cols(&label, avail_before_close.saturating_sub(used));
+        if tp.is_focused {
+            push_grad_text(&mut out, &lbl_disp, pal.grad, true);
+        } else {
+            push_fg(&mut out, pal.fg, false);
+            out.push_str(&lbl_disp);
+        }
+        used += str_display_width(&lbl_disp);
+
+        // Optional scrollback badge
+        if !scroll_badge.is_empty() && used + str_display_width(&scroll_badge) <= avail_before_close {
+            push_fg(&mut out, pal.warn, true);
+            out.push_str(&scroll_badge);
+            used += str_display_width(&scroll_badge);
+        }
+
+        // Fill middle horizontal rule (acts as drag handle) + right hint
+        let hint_w = str_display_width(right_hint);
+        let show_hint = used + hint_w + 3 <= avail_before_close;
+        let fill_end = if show_hint {
+            avail_before_close - hint_w
+        } else {
+            avail_before_close
+        };
+        push_fg(
+            &mut out,
+            if is_hot { pal.grad[0] } else if tp.is_focused { pal.border } else { pal.dim },
+            is_hot,
+        );
+        while used < fill_end {
+            out.push(line_ch);
+            used += 1;
+        }
+        if show_hint {
+            push_fg(&mut out, if is_hot { pal.grad[0] } else { pal.dim }, is_hot);
+            out.push_str(right_hint);
+            used += hint_w;
+        }
+
+        // Rightmost `[×]` close button
+        if cols >= close_w {
+            while used < cols - close_w {
+                out.push(' ');
+                used += 1;
+            }
+            if tp.hover_close {
+                push_bg(&mut out, pal.err);
+                push_fg(&mut out, pal.fg, true);
+            } else {
+                push_fg(&mut out, pal.dim, false);
+            }
+            out.push_str(close_btn);
+        }
+        out.push_str(RST);
+
+        // Live terminal cells below header row
+        term_cursor_pos = render_terminal_cells(
+            &mut out,
+            tp.screen,
+            tp.header_row + 1,
+            cols,
+            tp.body_height,
+            tp.is_focused,
+            pal,
+        );
+    }
+
+    // -------------------------------------------------------------------------
     // Optional Prompt Bar (Row `rows - 2`, 0-based)
     // -------------------------------------------------------------------------
     let mut prompt_cursor_pos: Option<(usize, usize)> = None;
@@ -542,13 +676,29 @@ pub fn render_editor(
     } else {
         String::new()
     };
-    let left_status = format!(
-        " Ln {}, Col {}{}{}",
-        primary_row + 1,
-        primary_col + 1,
-        multi_badge,
-        pane_badge
-    );
+    let left_status = if let Some(tp) = term_panel.filter(|t| t.is_focused) {
+        if tp.screen.scroll_offset > 0 {
+            format!(
+                " ❯ TERMINAL [{}] · Scroll -{} linhas",
+                tp.shell_name, tp.screen.scroll_offset
+            )
+        } else {
+            format!(
+                " ❯ TERMINAL [{}] · {},{}",
+                tp.shell_name,
+                tp.screen.cur_row + 1,
+                tp.screen.cur_col + 1
+            )
+        }
+    } else {
+        format!(
+            " Ln {}, Col {}{}{}",
+            primary_row + 1,
+            primary_col + 1,
+            multi_badge,
+            pane_badge
+        )
+    };
     push_fg(&mut out, pal.grad[0], true);
     let left_disp = truncate_to_cols(&left_status, cols);
     out.push_str(&left_disp);
@@ -574,17 +724,28 @@ pub fn render_editor(
         used_s += str_display_width(&disp);
     }
 
-    let right_help = if multi_pane {
+    let term_badge = if term_bg_alive && term_panel.is_none() {
+        " [❯ term]"
+    } else {
+        ""
+    };
+    let right_help = if term_panel.is_some_and(|t| t.is_focused) {
+        "Ctrl+' ocultar · Ctrl+1..9 editor · Shift+PgUp/Dn scroll · F1 cmds ".into()
+    } else if multi_pane {
         format!(
-            "[{} · {}{}{}] [{}] · Ctrl+K painel · F1 cmds ",
+            "[{} · {}{}{}] [{}]{} · Ctrl+' term · F1 cmds ",
             lang_name,
             eol_lbl,
             if cfg.wrap { " · WRAP" } else { "" },
             if cfg.relative_numbers { " · REL" } else { "" },
-            pal.name
+            pal.name,
+            term_badge
         )
     } else {
-        "Ctrl+S salvar · Ctrl+\\ dividir · Ctrl+K painel · Ctrl+P abrir · F1 cmds ".into()
+        format!(
+            "Ctrl+S salvar · Ctrl+\\ dividir · Ctrl+' term · Ctrl+P abrir{} · F1 cmds ",
+            term_badge
+        )
     };
     let rh_w = str_display_width(&right_help);
     if used_s + rh_w + 2 <= cols {
@@ -739,7 +900,7 @@ pub fn render_editor(
     }
 
     // Position real hardware cursor
-    if let Some((cy, cx)) = prompt_cursor_pos.or(primary_screen_pos) {
+    if let Some((cy, cx)) = prompt_cursor_pos.or(term_cursor_pos).or(primary_screen_pos) {
         let _ = write!(out, "\x1b[{};{}H\x1b[?25h", cy + 1, cx + 1);
     }
 

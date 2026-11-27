@@ -48,6 +48,8 @@ pub enum PickerAction {
     ResizePaneMode,
     EqualizePanes,
     ClosePane,
+    ToggleTerminal,
+    RestartTerminal,
     SetPalette(usize),
 }
 
@@ -353,6 +355,16 @@ impl Picker {
                 label: "Fechar Painel Atual".into(),
                 detail: "Ctrl+K w".into(),
                 action: PickerAction::ClosePane,
+            },
+            PickerItem {
+                label: "Alternar Terminal Integrado (VS Code)".into(),
+                detail: "Ctrl+' · Ctrl+K t".into(),
+                action: PickerAction::ToggleTerminal,
+            },
+            PickerItem {
+                label: "Novo / Reiniciar Terminal Integrado".into(),
+                detail: "abre shell limpo na pasta atual".into(),
+                action: PickerAction::RestartTerminal,
             },
             PickerItem {
                 label: "Recarregar arquivo do disco".into(),

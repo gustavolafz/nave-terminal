@@ -98,14 +98,28 @@ impl Terminal {
         WINCH_FLAG.swap(false, Ordering::SeqCst)
     }
 
-    pub fn poll_stdin(&self, timeout_ms: i32) -> bool {
-        let mut pfd = libc::pollfd {
-            fd: self.fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let rc = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
-        rc > 0 && (pfd.revents & libc::POLLIN) != 0
+    pub fn poll_events(&self, extra_fd: Option<RawFd>, timeout_ms: i32) -> (bool, bool) {
+        let mut pfds = [
+            libc::pollfd {
+                fd: self.fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: extra_fd.unwrap_or(-1),
+                events: if extra_fd.is_some() { libc::POLLIN } else { 0 },
+                revents: 0,
+            },
+        ];
+        let nfds = if extra_fd.is_some() { 2 } else { 1 };
+        let rc = unsafe { libc::poll(pfds.as_mut_ptr(), nfds, timeout_ms) };
+        if rc <= 0 {
+            return (false, false);
+        }
+        let stdin_ready = (pfds[0].revents & libc::POLLIN) != 0;
+        let extra_ready = extra_fd.is_some()
+            && (pfds[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR)) != 0;
+        (stdin_ready, extra_ready)
     }
 
     pub fn read_bytes(&self, buf: &mut [u8]) -> usize {
