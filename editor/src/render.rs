@@ -69,6 +69,14 @@ pub struct TrailCell {
     pub dust: Option<(char, Rgb)>, // delicate stardust mote drawn ONLY on blank space cells
 }
 
+#[inline]
+fn smootherstep(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    // Quintic C2-continuous S-curve: f(0)=0, f'(0)=0, f''(0)=0, f(1)=1, f'(1)=0, f''(1)=0
+    // Finite acceleration on launch & velvet deceleration on landing (zero infinite jerk!)
+    x * x * x * (x * (x * 6.0 - 15.0) + 10.0)
+}
+
 impl CursorTrail {
     pub fn new(from: (usize, usize), to: (usize, usize), now: Instant) -> Option<Self> {
         let dr = to.0 as f32 - from.0 as f32;
@@ -91,8 +99,8 @@ impl CursorTrail {
         if path.len() < 2 {
             return None;
         }
-        // Ultra-snappy shooting-star flash: ~68ms word jump up to ~128ms cross-pane meteor
-        let duration_ms = (58.0 + dist * 0.82).clamp(68.0, 128.0);
+        // Smooth shooting-star glide: ~140ms word jump up to ~235ms cross-pane meteor
+        let duration_ms = (122.0 + dist * 1.55).clamp(138.0, 238.0);
         Some(Self {
             path,
             started_at: now,
@@ -100,8 +108,31 @@ impl CursorTrail {
         })
     }
 
+    pub fn progress(&self, now: Instant) -> f32 {
+        (now.saturating_duration_since(self.started_at).as_secs_f32() * 1000.0)
+            / self.duration_ms.max(1.0)
+    }
+
+    pub fn head_u(&self, now: Instant) -> f32 {
+        let t = self.progress(now);
+        smootherstep(t / 0.72)
+    }
+
+    pub fn current_head_pos(&self, now: Instant) -> Option<(usize, usize)> {
+        if self.path.is_empty() {
+            return None;
+        }
+        let idx = ((self.head_u(now) * (self.path.len() - 1) as f32).round() as usize)
+            .min(self.path.len() - 1);
+        Some(self.path[idx])
+    }
+
+    pub fn is_head_flying(&self, now: Instant) -> bool {
+        self.progress(now) < 0.66
+    }
+
     pub fn is_finished(&self, now: Instant) -> bool {
-        now.saturating_duration_since(self.started_at).as_secs_f32() * 1000.0 >= self.duration_ms
+        self.progress(now) >= 1.0
     }
 }
 
@@ -121,43 +152,61 @@ pub fn build_trail_map(
 ) -> HashMap<(usize, usize), TrailCell> {
     let mut map: HashMap<(usize, usize), TrailCell> = HashMap::new();
     for tr in trails {
-        let elapsed_ms = now.saturating_duration_since(tr.started_at).as_secs_f32() * 1000.0;
-        let t = elapsed_ms / tr.duration_ms.max(1.0);
+        let t = tr.progress(now);
         if t >= 1.0 || tr.path.len() < 2 {
             continue;
         }
-        // Shooting-star kinematics: explosive quartic meteor head + sleek fast-chasing wake
-        let t_eff = (0.18 + 0.82 * t).min(1.0);
-        let head_u = 1.0 - (1.0 - t_eff).powi(4);
-        let tail_u = t.powf(1.55);
-        let fade = (1.0 - t).powf(0.68);
+        // Two phase-shifted C2 smootherstep curves:
+        // - Head smoothly accelerates from 0 (finite accel!) -> fast glide -> soft landing at t=0.72
+        // - Tail trails slightly behind [0.10..1.00], stretching the shooting star & dissolving into landing
+        let head_u = smootherstep(t / 0.72);
+        let tail_u = smootherstep((t - 0.10) / 0.90);
+        // Smooth envelope: gentle ignition at t=0..0.06, full brilliance mid-flight, silky dissolve at end
+        let fade_out = (1.0 - t * t * t).clamp(0.0, 1.0);
         let denom = (tr.path.len() - 1) as f32;
-        let span = (head_u - tail_u).max(0.05);
+        let head_idx = ((head_u * denom).round() as usize).min(tr.path.len() - 1);
+        let span = (head_u - tail_u).max(0.04);
 
         for (idx, &(r, c)) in tr.path.iter().enumerate() {
             let u = idx as f32 / denom;
-            if u < tail_u || u > head_u {
+            let is_head_cell = idx == head_idx;
+            if !is_head_cell && (u < tail_u || u > head_u) {
                 continue;
             }
-            let rel = ((u - tail_u) / span).clamp(0.0, 1.0);
-            // Sharp exponential shooting-star taper: incandescent tip -> gossamer fading tail
-            let core = rel.powf(2.35);
-            let intensity = (0.09 + 0.91 * core) * fade;
+            let rel = if is_head_cell {
+                1.0
+            } else {
+                ((u - tail_u) / span).clamp(0.0, 1.0)
+            };
+            // Exponential shooting-star taper: bright incandescent tip -> delicate vapor wake
+            let core = rel.powf(2.20);
+            let intensity = if is_head_cell {
+                (0.75 + 0.25 * (1.0 - t)).min(1.0) * fade_out
+            } else {
+                (0.08 + 0.92 * core) * fade_out
+            };
             if intensity < 0.03 {
                 continue;
             }
             let base_neon = lerp_grad(pal.grad, 1.0 - rel);
-            // White-hot starlight core right at the meteor's leading edge
-            let head_white = ((rel - 0.80) / 0.20).clamp(0.0, 1.0) * fade;
-            let star_color = lerp_rgb(base_neon, (255, 255, 255), head_white * 0.78);
-            // Tapered alpha: luminous tip, whisper-thin vapor tail
-            let bg_alpha = (intensity * 0.78 + head_white * 0.16).clamp(0.0, 0.92);
+            // White-hot starlight core right at the meteor head
+            let head_white = if is_head_cell {
+                0.82 * fade_out
+            } else {
+                ((rel - 0.78) / 0.22).clamp(0.0, 1.0) * 0.65 * fade_out
+            };
+            let star_color = lerp_rgb(base_neon, (255, 255, 255), head_white);
+            let bg_alpha = if is_head_cell {
+                (0.86 * fade_out).clamp(0.0, 0.94)
+            } else {
+                (intensity * 0.74 + head_white * 0.14).clamp(0.0, 0.88)
+            };
             let bg = lerp_rgb(pal.bg, star_color, bg_alpha);
 
             // Delicate stardust motes ONLY in the dissipating wake (drawn exclusively over blank spaces)
-            let dust = if rel > 0.10 && rel < 0.74 && intensity > 0.05 {
+            let dust = if !is_head_cell && rel > 0.08 && rel < 0.78 && intensity > 0.04 {
                 let h = (r.wrapping_mul(31) ^ c.wrapping_mul(17) ^ idx.wrapping_mul(13)) % 5;
-                if rel > 0.48 && h <= 2 {
+                if rel > 0.46 && h <= 2 {
                     Some(('∙', lerp_rgb(pal.bg, star_color, (0.55 + intensity * 0.45).min(1.0))))
                 } else if h <= 3 {
                     Some(('·', lerp_rgb(pal.bg, base_neon, (0.35 + intensity * 0.55).min(0.95))))
@@ -171,7 +220,7 @@ pub fn build_trail_map(
             let cell = TrailCell {
                 bg,
                 intensity,
-                is_hot: intensity > 0.56 || head_white > 0.35,
+                is_hot: is_head_cell || intensity > 0.54 || head_white > 0.35,
                 dust,
             };
             map.entry((r, c))
@@ -481,6 +530,7 @@ pub fn render_editor(
     timer_badge: Option<&(String, bool)>,
     judge_progress: Option<&str>,
     trail_cells: &HashMap<(usize, usize), TrailCell>,
+    hide_editor_cursor: bool,
     pal: &Palette,
     cols: usize,
     rows: usize,
@@ -1295,9 +1345,13 @@ pub fn render_editor(
         }
     }
 
-    // Position real hardware cursor
-    if let Some((cy, cx)) = prompt_cursor_pos.or(term_cursor_pos).or(primary_screen_pos) {
+    // Position real hardware cursor (briefly hidden while the shooting-star core is physically flying!)
+    if let Some((cy, cx)) = prompt_cursor_pos.or(term_cursor_pos) {
         let _ = write!(out, "\x1b[{};{}H\x1b[?25h", cy + 1, cx + 1);
+    } else if !hide_editor_cursor {
+        if let Some((cy, cx)) = primary_screen_pos {
+            let _ = write!(out, "\x1b[{};{}H\x1b[?25h", cy + 1, cx + 1);
+        }
     }
 
     if synced {
@@ -2239,11 +2293,14 @@ mod tests {
         assert_eq!(diag.path.last(), Some(&(4, 80)));
 
         let pal = &crate::palette::PALETTES[0];
+        // At t=0, C2 smootherstep starts at head_u = 0 (finite acceleration, zero teleport!)
+        assert_eq!(tr.head_u(now), 0.0);
         let m0 = build_trail_map(&[tr.clone()], now, pal);
-        assert!(!m0.is_empty(), "trail should be visible immediately on frame 0");
-        let mid = build_trail_map(&[tr.clone()], now + Duration::from_millis(32), pal);
-        assert!(!mid.is_empty(), "trail should glow mid-flight");
-        let done_t = now + Duration::from_millis(160);
+        assert!(m0.contains_key(&(5, 10)), "star should ignite right at start position on frame 0");
+        assert!(!m0.contains_key(&(5, 22)), "star must not teleport to destination on frame 0");
+        let mid = build_trail_map(&[tr.clone()], now + Duration::from_millis(65), pal);
+        assert!(!mid.is_empty(), "trail should glide smoothly mid-flight");
+        let done_t = now + Duration::from_millis(260);
         assert!(tr.is_finished(done_t));
         assert!(build_trail_map(&[tr], done_t, pal).is_empty(), "trail must vanish completely after duration");
     }

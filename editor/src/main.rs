@@ -2962,14 +2962,17 @@ impl App {
                 self.doc_mut().indent(true);
             }
             KeyCode::Backspace => {
+                self.cursor_trails.clear();
                 self.doc_mut().backspace(false);
                 self.refresh_completion(false);
             }
             KeyCode::Delete => {
+                self.cursor_trails.clear();
                 self.clear_completion();
                 self.doc_mut().delete(false);
             }
             KeyCode::Char(ch) if !k.ctrl && !k.alt => {
+                self.cursor_trails.clear();
                 self.doc_mut().insert_char(ch);
                 if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' || ch == ':' || ch == '>' {
                     self.refresh_completion(false);
@@ -3943,7 +3946,14 @@ impl App {
         if self.arm_cursor_trail {
             self.arm_cursor_trail = false;
             if cfg.cursor_trail && matches!(self.mode, Mode::Edit) && !(self.term_open && self.term_focused) {
-                if let (Some(from), Some(to)) = (self.last_cursor_screen, predicted_pos) {
+                // If a previous shooting star is still mid-flight, chain smoothly from its live head!
+                let live_from = self
+                    .cursor_trails
+                    .last()
+                    .filter(|tr| tr.is_head_flying(now_frame))
+                    .and_then(|tr| tr.current_head_pos(now_frame))
+                    .or(self.last_cursor_screen);
+                if let (Some(from), Some(to)) = (live_from, predicted_pos) {
                     if let Some(tr) = CursorTrail::new(from, to, now_frame) {
                         self.cursor_trails.push(tr);
                         if self.cursor_trails.len() > 4 {
@@ -3960,6 +3970,8 @@ impl App {
         } else {
             HashMap::new()
         };
+        let hide_editor_cursor = cfg.cursor_trail
+            && self.cursor_trails.last().is_some_and(|tr| tr.is_head_flying(now_frame));
 
         let (frame, layout_info) = render_editor(
             &mut self.docs,
@@ -3977,6 +3989,7 @@ impl App {
             timer_badge.as_ref(),
             judge_progress.as_deref(),
             &trail_cells,
+            hide_editor_cursor,
             self.palette,
             cols,
             rows,
