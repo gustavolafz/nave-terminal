@@ -4,12 +4,13 @@ use crate::document::{Document, Selection};
 use crate::git::GutterMark;
 use crate::judge::{DiagSeverity, Diagnostic};
 use crate::layout::{ComputedLayout, DividerHit, PaneId, Rect, SplitAxis};
-use crate::palette::{lerp_grad, push_bg, push_fg, push_fg_styled, push_grad_text, Palette, TokenKind};
+use crate::palette::{lerp_grad, push_bg, push_fg, push_fg_styled, push_grad_text, Palette, Rgb, TokenKind};
 use crate::picker::{Picker, PickerAction};
 use crate::pty_term::{render_terminal_cells, VtScreen};
 use crate::syntax::{find_matching_bracket, Span};
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::time::Instant;
 
 const SYNC_START: &str = "\x1b[?2026h";
 const SYNC_END: &str = "\x1b[?2026l";
@@ -48,6 +49,203 @@ pub struct PaneLayoutInfo {
 pub struct LayoutInfo {
     pub panes: Vec<PaneLayoutInfo>,
     pub dividers: Vec<DividerHit>,
+    pub primary_cursor_screen: Option<(usize, usize)>,
+}
+
+/// Fast comet/smear travel trail drawn along the exact path of a cursor jump
+/// (Ctrl+Arrows, Ctrl+1..9 pane jump, mouse click, Goto Line, Ctrl+], F8, etc.).
+#[derive(Clone, Debug)]
+pub struct CursorTrail {
+    pub path: Vec<(usize, usize)>, // (abs_row, abs_col) screen coordinates from start -> end
+    pub started_at: Instant,
+    pub duration_ms: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TrailCell {
+    pub bg: Rgb,
+    pub intensity: f32,
+    pub is_hot: bool,
+}
+
+impl CursorTrail {
+    pub fn new(from: (usize, usize), to: (usize, usize), now: Instant) -> Option<Self> {
+        let dr = to.0 as f32 - from.0 as f32;
+        let dc = to.1 as f32 - from.1 as f32;
+        // Terminal cells are ~2:1 tall, so scale row delta by 2.0 for perceptual distance
+        let dist = ((dr * 2.0) * (dr * 2.0) + dc * dc).sqrt();
+        if dist < 2.0 {
+            return None;
+        }
+        let steps = ((dr.abs() * 2.0).max(dc.abs()) * 2.0).ceil().max(2.0) as usize;
+        let mut path = Vec::with_capacity(steps + 1);
+        for i in 0..=steps {
+            let u = i as f32 / steps as f32;
+            let r = (from.0 as f32 + dr * u).round().max(0.0) as usize;
+            let c = (from.1 as f32 + dc * u).round().max(0.0) as usize;
+            if path.last().copied() != Some((r, c)) {
+                path.push((r, c));
+            }
+        }
+        if path.len() < 2 {
+            return None;
+        }
+        let duration_ms = (95.0 + dist * 1.45).clamp(115.0, 205.0);
+        Some(Self {
+            path,
+            started_at: now,
+            duration_ms,
+        })
+    }
+
+    pub fn is_finished(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.started_at).as_secs_f32() * 1000.0 >= self.duration_ms
+    }
+}
+
+#[inline]
+fn lerp_rgb(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |x: u8, y: u8| -> u8 {
+        ((x as f32) + ((y as f32) - (x as f32)) * t).round().clamp(0.0, 255.0) as u8
+    };
+    (mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
+}
+
+pub fn build_trail_map(
+    trails: &[CursorTrail],
+    now: Instant,
+    pal: &Palette,
+) -> HashMap<(usize, usize), TrailCell> {
+    let mut map: HashMap<(usize, usize), TrailCell> = HashMap::new();
+    for tr in trails {
+        let elapsed_ms = now.saturating_duration_since(tr.started_at).as_secs_f32() * 1000.0;
+        let t = elapsed_ms / tr.duration_ms.max(1.0);
+        if t >= 1.0 || tr.path.len() < 2 {
+            continue;
+        }
+        // Launch immediately on frame 0; head arrives fast (ease-out cubic), tail sweeps in cleanly
+        let t_eff = (0.14 + 0.86 * t).min(1.0);
+        let head_u = 1.0 - (1.0 - t_eff).powi(3);
+        let tail_u = t * t;
+        let fade = if t < 0.68 {
+            1.0
+        } else {
+            let k = ((t - 0.68) / 0.32).clamp(0.0, 1.0);
+            1.0 - k * k
+        };
+        let denom = (tr.path.len() - 1) as f32;
+        let span = (head_u - tail_u).max(0.06);
+
+        for (idx, &(r, c)) in tr.path.iter().enumerate() {
+            let u = idx as f32 / denom;
+            if u < tail_u || u > head_u {
+                continue;
+            }
+            let rel = ((u - tail_u) / span).clamp(0.0, 1.0);
+            let intensity = (0.18 + 0.82 * rel.powf(1.30)) * fade;
+            if intensity < 0.04 {
+                continue;
+            }
+            let neon = lerp_grad(pal.grad, 1.0 - rel);
+            let bg = lerp_rgb(pal.bg, neon, (intensity * 0.82).clamp(0.0, 0.88));
+            let cell = TrailCell {
+                bg,
+                intensity,
+                is_hot: intensity > 0.62,
+            };
+            map.entry((r, c))
+                .and_modify(|prev| {
+                    if cell.intensity > prev.intensity {
+                        *prev = cell;
+                    }
+                })
+                .or_insert(cell);
+        }
+    }
+    map
+}
+
+/// Predicts the focused pane's primary cursor `(abs_row, abs_col)` upfront so cursor trail
+/// animations launch on frame 0 with zero latency.
+pub fn predict_primary_screen_pos(
+    doc: &Document,
+    p: &PaneRenderInput,
+    cfg: &EditorConfig,
+) -> Option<(usize, usize)> {
+    let rect = p.rect;
+    let total_lines = doc.rope.line_count();
+    let content_h = rect.h.saturating_sub(1);
+    let content_start_row = rect.y + 1;
+    let raw_gutter_w = compute_gutter_width(total_lines);
+    let show_gutter = rect.w >= raw_gutter_w + 4;
+    let gutter_w = if show_gutter { raw_gutter_w } else { 0 };
+    let show_sb = cfg.scrollbar && rect.w >= gutter_w + 16;
+    let sb_w = if show_sb { 1 } else { 0 };
+    let text_w = rect.w.saturating_sub(gutter_w + sb_w);
+    if text_w == 0 || content_h == 0 {
+        return None;
+    }
+
+    let primary_sel = p
+        .cursors
+        .get(p.primary.min(p.cursors.len().saturating_sub(1)))
+        .copied()
+        .unwrap_or_else(|| Selection::caret(0));
+    let head = doc.clamp_byte_pos(primary_sel.head);
+    let (prow, pcol) = doc.rope.byte_to_line_col(head);
+    if prow < p.scroll_row {
+        return None;
+    }
+
+    if !cfg.wrap {
+        let sy = prow - p.scroll_row;
+        if sy >= content_h {
+            return None;
+        }
+        let line_txt = doc.rope.line(prow);
+        let vcol = visual_col_of(&line_txt, pcol, doc.tab_width);
+        if vcol >= p.scroll_col && vcol - p.scroll_col < text_w {
+            return Some((content_start_row + sy, rect.x + gutter_w + (vcol - p.scroll_col)));
+        }
+        return None;
+    }
+
+    // Wrapped mode: count exact wrapped visual rows from scroll_row to prow
+    let mut sy = 0usize;
+    for r in p.scroll_row..=prow.min(total_lines.saturating_sub(1)) {
+        if sy >= content_h {
+            return None;
+        }
+        let line_txt = doc.rope.line(r);
+        let ls = doc.rope.line_start_byte(r);
+        let cells = build_char_cells(&line_txt, ls, &[], doc.tab_width);
+        let segs = split_wrapped_segments(&cells, text_w);
+        if r == prow {
+            for (seg_start, seg_end) in segs {
+                if sy >= content_h {
+                    return None;
+                }
+                if (pcol >= seg_start && pcol < seg_end)
+                    || (seg_end == cells.len() && pcol == seg_end)
+                {
+                    let c_vis: usize = cells[seg_start..pcol.min(seg_end)]
+                        .iter()
+                        .map(|c| c.width)
+                        .sum();
+                    if c_vis < text_w {
+                        return Some((content_start_row + sy, rect.x + gutter_w + c_vis));
+                    }
+                    return None;
+                }
+                sy += 1;
+            }
+            return None;
+        } else {
+            sy += segs.len();
+        }
+    }
+    None
 }
 
 #[derive(Clone, Debug)]
@@ -262,6 +460,7 @@ pub fn render_editor(
     active_diags: &[Diagnostic],
     timer_badge: Option<&(String, bool)>,
     judge_progress: Option<&str>,
+    trail_cells: &HashMap<(usize, usize), TrailCell>,
     pal: &Palette,
     cols: usize,
     rows: usize,
@@ -284,6 +483,7 @@ pub fn render_editor(
     let mut layout = LayoutInfo {
         panes: Vec::with_capacity(pane_views.len()),
         dividers: computed.dividers.clone(),
+        primary_cursor_screen: None,
     };
 
     let mut primary_screen_pos: Option<(usize, usize)> = None;
@@ -312,12 +512,14 @@ pub fn render_editor(
             sb_hot,
             pane_diags,
             pane_ghost,
+            trail_cells,
             pal,
             cfg,
         );
 
         if p.is_focused {
             primary_screen_pos = p_cursor;
+            layout.primary_cursor_screen = p_cursor;
             active_status_info = Some((
                 cur_row,
                 cur_col,
@@ -341,34 +543,50 @@ pub fn render_editor(
         for d in &computed.dividers {
             let is_drag = highlight_all_dividers || active_divider == Some(d.split_id);
             let is_hover = hover_divider == Some(d.split_id);
-            if is_drag || is_hover {
-                push_fg(&mut out, pal.grad[0], true);
-            } else {
-                push_fg(&mut out, pal.dim, false);
-            }
+            let div_fg = if is_drag || is_hover { pal.grad[0] } else { pal.dim };
+            let div_bold = is_drag || is_hover;
             match d.axis {
                 SplitAxis::Horizontal => {
                     let glyph = if is_drag { '┃' } else { '│' };
                     for r in d.y..(d.y + d.len) {
+                        if let Some(tc) = trail_cells.get(&(r, d.x)) {
+                            push_bg(&mut out, tc.bg);
+                            push_fg(&mut out, if tc.is_hot { pal.bracket_fg } else { pal.grad[0] }, true);
+                        } else {
+                            push_base_bg(&mut out, cfg, pal);
+                            push_fg(&mut out, div_fg, div_bold);
+                        }
                         let _ = write!(out, "\x1b[{};{}H{}", r + 1, d.x + 1, glyph);
                     }
                 }
                 SplitAxis::Vertical => {
                     let glyph = if is_drag { '━' } else { '─' };
                     let _ = write!(out, "\x1b[{};{}H", d.y + 1, d.x + 1);
-                    for _ in 0..d.len {
+                    for off in 0..d.len {
+                        let c = d.x + off;
+                        if let Some(tc) = trail_cells.get(&(d.y, c)) {
+                            push_bg(&mut out, tc.bg);
+                            push_fg(&mut out, if tc.is_hot { pal.bracket_fg } else { pal.grad[0] }, true);
+                        } else {
+                            push_base_bg(&mut out, cfg, pal);
+                            push_fg(&mut out, div_fg, div_bold);
+                        }
                         out.push(glyph);
                     }
                 }
             }
         }
         if !computed.junctions.is_empty() {
-            if highlight_all_dividers || active_divider.is_some() || hover_divider.is_some() {
-                push_fg(&mut out, pal.grad[0], true);
-            } else {
-                push_fg(&mut out, pal.dim, false);
-            }
+            let j_hot = highlight_all_dividers || active_divider.is_some() || hover_divider.is_some();
+            let j_fg = if j_hot { pal.grad[0] } else { pal.dim };
             for &(jx, jy, jch) in &computed.junctions {
+                if let Some(tc) = trail_cells.get(&(jy, jx)) {
+                    push_bg(&mut out, tc.bg);
+                    push_fg(&mut out, if tc.is_hot { pal.bracket_fg } else { pal.grad[0] }, true);
+                } else {
+                    push_base_bg(&mut out, cfg, pal);
+                    push_fg(&mut out, j_fg, j_hot);
+                }
                 let _ = write!(out, "\x1b[{};{}H{}", jy + 1, jx + 1, jch);
             }
         }
@@ -1076,6 +1294,7 @@ fn render_pane(
     sb_hot: bool,
     diagnostics: &[Diagnostic],
     ghost_suffix: Option<&str>,
+    trail_cells: &HashMap<(usize, usize), TrailCell>,
     pal: &Palette,
     cfg: &EditorConfig,
 ) -> (PaneLayoutInfo, Option<(usize, usize)>, usize, usize, usize, usize) {
@@ -1342,15 +1561,45 @@ fn render_pane(
             let _ = write!(out, "\x1b[{};{}H", abs_row + 1, rect.x + 1);
             push_base_bg(out, cfg, pal);
             if show_gutter {
-                push_fg(out, pal.border, false);
-                let _ = write!(out, "  {:>width$} │ ", "~", width = num_digits);
+                let g_str = format!("  {:>width$} │ ", "~", width = num_digits);
+                if trail_cells.is_empty() {
+                    push_fg(out, pal.border, false);
+                    out.push_str(&g_str);
+                } else {
+                    for (gx, ch) in g_str.chars().enumerate() {
+                        if let Some(tc) = trail_cells.get(&(abs_row, rect.x + gx)) {
+                            push_bg(out, tc.bg);
+                            push_fg(out, if tc.is_hot { pal.bracket_fg } else { pal.fg }, tc.is_hot);
+                        } else {
+                            push_base_bg(out, cfg, pal);
+                            push_fg(out, pal.border, false);
+                        }
+                        out.push(ch);
+                    }
+                }
             }
             out.push_str(RST);
-            push_base_bg(out, cfg, pal);
-            for _ in 0..text_w {
-                out.push(' ');
+            if trail_cells.is_empty() {
+                push_base_bg(out, cfg, pal);
+                for _ in 0..text_w {
+                    out.push(' ');
+                }
+            } else {
+                for tx in 0..text_w {
+                    if let Some(tc) = trail_cells.get(&(abs_row, rect.x + gutter_w + tx)) {
+                        push_bg(out, tc.bg);
+                    } else {
+                        push_base_bg(out, cfg, pal);
+                    }
+                    out.push(' ');
+                }
             }
             if show_sb {
+                if let Some(tc) = trail_cells.get(&(abs_row, rect.x + gutter_w + text_w)) {
+                    push_bg(out, tc.bg);
+                } else {
+                    push_base_bg(out, cfg, pal);
+                }
                 push_scrollbar_cell(out, screen_y, content_h, sb_start, sb_end, sb_cursor_row, sb_hot, pal);
             }
             out.push_str(RST);
@@ -1386,11 +1635,36 @@ fn render_pane(
             // Gutter
             if show_gutter {
                 let is_bookmarked = doc.bookmarks.contains(&doc_row);
-                if is_cur_line {
-                    push_bg(out, pal.cur_line_bg);
-                } else {
-                    push_base_bg(out, cfg, pal);
-                }
+                let mut g_col = 0usize;
+                let emit_g = |out: &mut String, g_col: &mut usize, s: &str, fg: Rgb, bold: bool| {
+                    if trail_cells.is_empty() {
+                        if is_cur_line {
+                            push_bg(out, pal.cur_line_bg);
+                        } else {
+                            push_base_bg(out, cfg, pal);
+                        }
+                        push_fg(out, fg, bold);
+                        out.push_str(s);
+                        *g_col += s.chars().count();
+                    } else {
+                        for ch in s.chars() {
+                            if let Some(tc) = trail_cells.get(&(abs_row, rect.x + *g_col)) {
+                                push_bg(out, tc.bg);
+                                push_fg(out, if tc.is_hot { pal.bracket_fg } else { fg }, bold || tc.is_hot);
+                            } else {
+                                if is_cur_line {
+                                    push_bg(out, pal.cur_line_bg);
+                                } else {
+                                    push_base_bg(out, cfg, pal);
+                                }
+                                push_fg(out, fg, bold);
+                            }
+                            out.push(ch);
+                            *g_col += 1;
+                        }
+                    }
+                };
+
                 if seg_idx == 0 {
                     let line_diag = diagnostics.iter().find(|d| d.line == doc_row);
                     let has_radar = cfg.cp_radar
@@ -1398,60 +1672,39 @@ fn render_pane(
                         && detect_cp_pitfall(&line_text, doc.lang, has_custom_hash).is_some();
                     if let Some(d) = line_diag {
                         match d.severity {
-                            DiagSeverity::Error => {
-                                push_fg(out, pal.err, true);
-                                out.push('●');
-                            }
-                            DiagSeverity::Warning => {
-                                push_fg(out, pal.warn, true);
-                                out.push('▲');
-                            }
+                            DiagSeverity::Error => emit_g(out, &mut g_col, "●", pal.err, true),
+                            DiagSeverity::Warning => emit_g(out, &mut g_col, "▲", pal.warn, true),
                         }
                     } else if has_radar {
-                        push_fg(out, pal.warn, true);
-                        out.push('!');
+                        emit_g(out, &mut g_col, "!", pal.warn, true);
                     } else if is_bookmarked {
-                        push_fg(out, pal.grad[2], true);
-                        out.push('◆');
+                        emit_g(out, &mut g_col, "◆", pal.grad[2], true);
                     } else if is_cur_line {
-                        push_fg(out, pal.active_line_num, true);
-                        out.push('▸');
+                        emit_g(out, &mut g_col, "▸", pal.active_line_num, true);
                     } else {
-                        out.push(' ');
+                        emit_g(out, &mut g_col, " ", pal.line_num, false);
                     }
                     if is_cur_line {
-                        push_fg(out, pal.active_line_num, true);
-                        let _ = write!(out, " {:>width$} ", doc_row + 1, width = num_digits);
+                        let s = format!(" {:>width$} ", doc_row + 1, width = num_digits);
+                        emit_g(out, &mut g_col, &s, pal.active_line_num, true);
                     } else if cfg.relative_numbers {
                         let dist = doc_row.abs_diff(primary_row);
-                        push_fg(out, pal.line_num, false);
-                        let _ = write!(out, " {:>width$} ", dist, width = num_digits);
+                        let s = format!(" {:>width$} ", dist, width = num_digits);
+                        emit_g(out, &mut g_col, &s, pal.line_num, false);
                     } else {
-                        push_fg(out, pal.line_num, false);
-                        let _ = write!(out, " {:>width$} ", doc_row + 1, width = num_digits);
+                        let s = format!(" {:>width$} ", doc_row + 1, width = num_digits);
+                        emit_g(out, &mut g_col, &s, pal.line_num, false);
                     }
                 } else {
-                    push_fg(out, pal.dim, false);
-                    let _ = write!(out, "  {:>width$} ", "↪", width = num_digits);
+                    let s = format!("  {:>width$} ", "↪", width = num_digits);
+                    emit_g(out, &mut g_col, &s, pal.dim, false);
                 }
 
                 match git_marks.get(&doc_row) {
-                    Some(GutterMark::Added) if seg_idx == 0 => {
-                        push_fg(out, pal.ok, false);
-                        out.push_str("▎ ");
-                    }
-                    Some(GutterMark::Modified) if seg_idx == 0 => {
-                        push_fg(out, pal.warn, false);
-                        out.push_str("▎ ");
-                    }
-                    Some(GutterMark::Deleted) if seg_idx == 0 => {
-                        push_fg(out, pal.err, false);
-                        out.push_str("▁ ");
-                    }
-                    _ => {
-                        push_fg(out, pal.border, false);
-                        out.push_str("│ ");
-                    }
+                    Some(GutterMark::Added) if seg_idx == 0 => emit_g(out, &mut g_col, "▎ ", pal.ok, false),
+                    Some(GutterMark::Modified) if seg_idx == 0 => emit_g(out, &mut g_col, "▎ ", pal.warn, false),
+                    Some(GutterMark::Deleted) if seg_idx == 0 => emit_g(out, &mut g_col, "▁ ", pal.err, false),
+                    _ => emit_g(out, &mut g_col, "│ ", pal.border, false),
                 }
             }
 
@@ -1554,7 +1807,7 @@ fn render_pane(
                 let mut underline = false;
                 let mut glyph_override: Option<char> = None;
 
-                let bg_c = if is_sec_caret {
+                let mut bg_c = if is_sec_caret {
                     fg_c = pal.bar_bg;
                     bold = true;
                     italic = false;
@@ -1587,6 +1840,18 @@ fn render_pane(
 
                 if style.bg.is_some() && !is_sec_caret && !is_bracket && bg_c != style.bg {
                     fg_c = pal.fg;
+                }
+
+                // Luminous cursor travel trail overlay (preserves code text razor-sharp!)
+                if !trail_cells.is_empty() && !is_sec_caret {
+                    if let Some(tc) = trail_cells.get(&(abs_row, rect.x + gutter_w + drawn_cols)) {
+                        bg_c = Some(tc.bg);
+                        if tc.is_hot {
+                            fg_c = pal.bracket_fg;
+                            bold = true;
+                            italic = false;
+                        }
+                    }
                 }
 
                 if !is_sec_caret && !is_selected && !is_match && !is_active_match {
@@ -1680,7 +1945,14 @@ fn render_pane(
                     && vis_x % indent_w == 0;
                 let is_ruler = ruler_col == Some(vis_x);
 
-                if is_cur_line || is_ruler {
+                let trail_hit = if trail_cells.is_empty() {
+                    None
+                } else {
+                    trail_cells.get(&(abs_row, rect.x + gutter_w + drawn_cols))
+                };
+                if let Some(tc) = trail_hit {
+                    push_bg(out, tc.bg);
+                } else if is_cur_line || is_ruler {
                     push_bg(out, pal.cur_line_bg);
                 } else {
                     push_base_bg(out, cfg, pal);
@@ -1698,7 +1970,11 @@ fn render_pane(
             }
 
             if show_sb {
-                push_base_bg(out, cfg, pal);
+                if let Some(tc) = trail_cells.get(&(abs_row, rect.x + gutter_w + text_w)) {
+                    push_bg(out, tc.bg);
+                } else {
+                    push_base_bg(out, cfg, pal);
+                }
                 push_scrollbar_cell(out, screen_y, content_h, sb_start, sb_end, sb_cursor_row, sb_hot, pal);
             }
             out.push_str(RST);
@@ -1909,4 +2185,37 @@ fn truncate_to_cols(s: &str, max_cols: usize) -> String {
         w += cw;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn cursor_trail_skips_1cell_steps_and_animates_jumps_smoothly() {
+        let now = Instant::now();
+        // Adjacent 1-column move should NOT spawn a trail
+        assert!(CursorTrail::new((5, 10), (5, 11), now).is_none());
+
+        // Word jump (Ctrl+Right) spawns a crisp horizontal path
+        let tr = CursorTrail::new((5, 10), (5, 22), now).expect("word jump should spawn trail");
+        assert_eq!(tr.path.first(), Some(&(5, 10)));
+        assert_eq!(tr.path.last(), Some(&(5, 22)));
+        assert!(tr.path.len() >= 13);
+
+        // Cross-pane diagonal jump (Ctrl+2) spawns continuous path
+        let diag = CursorTrail::new((12, 15), (4, 80), now).expect("pane jump should spawn trail");
+        assert_eq!(diag.path.first(), Some(&(12, 15)));
+        assert_eq!(diag.path.last(), Some(&(4, 80)));
+
+        let pal = &crate::palette::PALETTES[0];
+        let m0 = build_trail_map(&[tr.clone()], now, pal);
+        assert!(!m0.is_empty(), "trail should be visible immediately on frame 0");
+        let mid = build_trail_map(&[tr.clone()], now + Duration::from_millis(55), pal);
+        assert!(!mid.is_empty(), "trail should glow mid-flight");
+        let done_t = now + Duration::from_millis(250);
+        assert!(tr.is_finished(done_t));
+        assert!(build_trail_map(&[tr], done_t, pal).is_empty(), "trail must vanish completely after duration");
+    }
 }

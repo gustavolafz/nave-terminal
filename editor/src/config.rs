@@ -9,6 +9,7 @@ pub struct EditorConfig {
     pub vim_visual: bool,
     pub relative_numbers: bool,
     pub block_cursor: bool,
+    pub cursor_trail: bool,
     pub auto_hide_mouse: bool,
     pub wheel_moves_cursor: bool,
     pub scrollbar: bool,
@@ -38,6 +39,7 @@ impl Default for EditorConfig {
             vim_visual: false,
             relative_numbers: false,
             block_cursor: false,
+            cursor_trail: true,
             auto_hide_mouse: true,
             wheel_moves_cursor: false,
             scrollbar: true,
@@ -97,6 +99,7 @@ impl EditorConfig {
                 "vim_visual" => cfg.vim_visual = parse_bool(v),
                 "relative_numbers" => cfg.relative_numbers = parse_bool(v),
                 "block_cursor" => cfg.block_cursor = parse_bool(v),
+                "cursor_trail" => cfg.cursor_trail = parse_bool(v),
                 "auto_hide_mouse" => cfg.auto_hide_mouse = parse_bool(v),
                 "wheel_moves_cursor" | "keyboard_only_nav" => cfg.wheel_moves_cursor = parse_bool(v),
                 "mouse" => cfg.wheel_moves_cursor = !parse_bool(v), // legacy config migration
@@ -151,6 +154,7 @@ impl EditorConfig {
              vim_visual={}\n\
              relative_numbers={}\n\
              block_cursor={}\n\
+             cursor_trail={}\n\
              auto_hide_mouse={}\n\
              wheel_moves_cursor={}\n\
              scrollbar={}\n\
@@ -175,6 +179,7 @@ impl EditorConfig {
             self.vim_visual,
             self.relative_numbers,
             self.block_cursor,
+            self.cursor_trail,
             self.auto_hide_mouse,
             self.wheel_moves_cursor,
             self.scrollbar,

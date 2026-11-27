@@ -25,6 +25,7 @@ pub enum PickerAction {
     ToggleOpaqueBg,
     ToggleRelativeNumbers,
     ToggleBlockCursor,
+    ToggleCursorTrail,
     ToggleAutoHideMouse,
     ToggleWheelMovesCursor,
     ToggleScrollbar,
@@ -315,6 +316,11 @@ impl Picker {
                 label: format!("Cursor em Bloco Solido [{}]", onoff(cfg.block_cursor)),
                 detail: "█ vs |".into(),
                 action: PickerAction::ToggleBlockCursor,
+            },
+            PickerItem {
+                label: format!("Animacao de Trajeto do Cursor [{}]", onoff(cfg.cursor_trail)),
+                detail: "Ctrl+setas · Ctrl+1..9 · clique".into(),
+                action: PickerAction::ToggleCursorTrail,
             },
             PickerItem {
                 label: format!("Auto-Hide Ponteiro do Mouse [{}]", onoff(cfg.auto_hide_mouse)),

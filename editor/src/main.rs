@@ -29,8 +29,9 @@ use palette::Palette;
 use picker::{Picker, PickerAction};
 use pty_term::IntegratedTerminal;
 use render::{
-    char_col_at_visual, ensure_cursor_visible, render_editor, DropPreview, DropZone, LayoutInfo,
-    PaneRenderInput, PromptBar, TabBadge, TermPanelView,
+    build_trail_map, char_col_at_visual, ensure_cursor_visible, predict_primary_screen_pos,
+    render_editor, CursorTrail, DropPreview, DropZone, LayoutInfo, PaneRenderInput, PromptBar,
+    TabBadge, TermPanelView,
 };
 use rope::LineEnding;
 use std::collections::{HashMap, VecDeque};
@@ -149,6 +150,9 @@ struct App {
     diag_idx: usize,
     judge_doc_id: Option<usize>,
     cp_timer: CpTimer,
+    cursor_trails: Vec<CursorTrail>,
+    last_cursor_screen: Option<(usize, usize)>,
+    arm_cursor_trail: bool,
     should_quit: bool,
     last_mtime_check: Instant,
 }
@@ -234,6 +238,9 @@ impl App {
             diag_idx: 0,
             judge_doc_id: None,
             cp_timer: CpTimer::default(),
+            cursor_trails: Vec::new(),
+            last_cursor_screen: None,
+            arm_cursor_trail: false,
             should_quit: false,
             last_mtime_check: Instant::now(),
         }
@@ -317,10 +324,17 @@ impl App {
         }
     }
 
+    fn arm_trail(&mut self) {
+        if self.cfg.cursor_trail {
+            self.arm_cursor_trail = true;
+        }
+    }
+
     fn focus_pane_and_tab(&mut self, pane_id: PaneId, tab_idx: usize) {
         if !self.panes.iter().any(|p| p.id == pane_id) {
             return;
         }
+        self.arm_trail();
         self.sync_active_to_tab();
         self.active_pane = pane_id;
         let pane = self.pane_mut(pane_id);
@@ -750,6 +764,7 @@ impl App {
         let idx = self.diag_idx % list.len();
         self.diag_idx = (idx + 1) % list.len();
         let d = &list[idx];
+        self.arm_trail();
         self.doc_mut().goto_line(d.line + 1);
         let tag = match d.severity {
             DiagSeverity::Error => "● Erro",
@@ -1773,6 +1788,7 @@ impl App {
                                 self.drag = DragState::None;
                             }
                             _ => {
+                                self.arm_trail();
                                 self.doc_mut().set_cursor_at_line_col(doc_row, doc_col, m.shift);
                                 self.drag = DragState::Selection(pid);
                             }
@@ -2415,18 +2431,22 @@ impl App {
                     return;
                 }
                 KeyCode::Left => {
+                    self.arm_trail();
                     self.doc_mut().move_cursors(Motion::WordLeft, true);
                     return;
                 }
                 KeyCode::Right => {
+                    self.arm_trail();
                     self.doc_mut().move_cursors(Motion::WordRight, true);
                     return;
                 }
                 KeyCode::Home => {
+                    self.arm_trail();
                     self.doc_mut().move_cursors(Motion::DocStart, true);
                     return;
                 }
                 KeyCode::End => {
+                    self.arm_trail();
                     self.doc_mut().move_cursors(Motion::DocEnd, true);
                     return;
                 }
@@ -2486,7 +2506,9 @@ impl App {
                 KeyCode::Char('m') => {
                     self.clear_completion();
                     let bc = self.cfg.block_cursor;
-                    if !self.doc_mut().jump_to_matching_bracket(bc) {
+                    if self.doc_mut().jump_to_matching_bracket(bc) {
+                        self.arm_trail();
+                    } else {
                         self.set_status("Posicione o cursor em um delimitador (), [] ou {}");
                     }
                     return;
@@ -2505,6 +2527,7 @@ impl App {
                     } else if self.panes.len() > 1 {
                         self.travel_editor(-1);
                     } else {
+                        self.arm_trail();
                         self.doc_mut().move_cursors(Motion::WordLeft, false);
                     }
                     return;
@@ -2515,6 +2538,7 @@ impl App {
                     } else if self.panes.len() > 1 {
                         self.travel_editor(1);
                     } else {
+                        self.arm_trail();
                         self.doc_mut().move_cursors(Motion::WordRight, false);
                     }
                     return;
@@ -2564,6 +2588,7 @@ impl App {
                 }
                 KeyCode::Char(']') => {
                     if let Some((idx, tot, ln)) = self.doc_mut().jump_git_hunk(true) {
+                        self.arm_trail();
                         self.set_status(format!("Git hunk {}/{} (Ln {})", idx, tot, ln));
                     } else {
                         self.set_status("Nenhuma alteracao Git neste arquivo");
@@ -2572,6 +2597,7 @@ impl App {
                 }
                 KeyCode::Char('[') => {
                     if let Some((idx, tot, ln)) = self.doc_mut().jump_git_hunk(false) {
+                        self.arm_trail();
                         self.set_status(format!("Git hunk {}/{} (Ln {})", idx, tot, ln));
                     } else {
                         self.set_status("Nenhuma alteracao Git neste arquivo");
@@ -2653,7 +2679,9 @@ impl App {
                 KeyCode::Char(']') => {
                     self.clear_completion();
                     let bc = self.cfg.block_cursor;
-                    if !self.doc_mut().jump_to_matching_bracket(bc) {
+                    if self.doc_mut().jump_to_matching_bracket(bc) {
+                        self.arm_trail();
+                    } else {
                         self.set_status("Posicione o cursor em um delimitador (), [] ou {}");
                     }
                     return;
@@ -2747,26 +2775,32 @@ impl App {
                     return;
                 }
                 KeyCode::Left => {
+                    self.arm_trail();
                     self.doc_mut().move_cursors(Motion::WordLeft, false);
                     return;
                 }
                 KeyCode::Right => {
+                    self.arm_trail();
                     self.doc_mut().move_cursors(Motion::WordRight, false);
                     return;
                 }
                 KeyCode::Up => {
+                    self.arm_trail();
                     self.doc_mut().move_cursors(Motion::PageUp(5), false);
                     return;
                 }
                 KeyCode::Down => {
+                    self.arm_trail();
                     self.doc_mut().move_cursors(Motion::PageDown(5), false);
                     return;
                 }
                 KeyCode::Home => {
+                    self.arm_trail();
                     self.doc_mut().move_cursors(Motion::DocStart, false);
                     return;
                 }
                 KeyCode::End => {
+                    self.arm_trail();
                     self.doc_mut().move_cursors(Motion::DocEnd, false);
                     return;
                 }
@@ -2820,12 +2854,14 @@ impl App {
                     self.doc_mut().search.next_match()
                 };
                 if let Some((s, e)) = m {
+                    self.arm_trail();
                     self.select_byte_range(s, e);
                 }
             }
             KeyCode::F(4) => {
                 self.clear_completion();
                 if let Some((idx, tot, ln)) = self.doc_mut().jump_bookmark(!k.shift) {
+                    self.arm_trail();
                     self.set_status(format!("◆ Bookmark {}/{} (Ln {})", idx, tot, ln));
                 } else {
                     self.set_status("Nenhum bookmark (use Alt+B para marcar linha)");
@@ -2886,18 +2922,22 @@ impl App {
             }
             KeyCode::Home => {
                 self.clear_completion();
+                self.arm_trail();
                 self.doc_mut().move_cursors(Motion::Home, k.shift);
             }
             KeyCode::End => {
                 self.clear_completion();
+                self.arm_trail();
                 self.doc_mut().move_cursors(Motion::End, k.shift);
             }
             KeyCode::PageUp => {
                 self.clear_completion();
+                self.arm_trail();
                 self.doc_mut().move_cursors(Motion::PageUp(page_step), k.shift);
             }
             KeyCode::PageDown => {
                 self.clear_completion();
+                self.arm_trail();
                 self.doc_mut().move_cursors(Motion::PageDown(page_step), k.shift);
             }
             KeyCode::Enter => {
@@ -3238,6 +3278,7 @@ impl App {
                 };
                 self.mode = Mode::Edit;
                 if let Some(ln) = num {
+                    self.arm_trail();
                     self.doc_mut().goto_line(ln);
                     self.set_status(format!("Linha {}", ln));
                 }
@@ -3345,6 +3386,7 @@ impl App {
                 PickerAction::OpenFile(path) => self.open_or_focus_file(&path, None),
                 PickerAction::BrowseDir(_) => {}
                 PickerAction::JumpToLine(ln) => {
+                    self.arm_trail();
                     self.doc_mut().goto_line(ln);
                     self.set_status(format!("Simbolo na linha {}", ln));
                 }
@@ -3450,6 +3492,15 @@ impl App {
                     self.term_sync_needed = true;
                     let st = if self.cfg.block_cursor { "Bloco (█)" } else { "Barra (|)" };
                     self.set_status(format!("Cursor: {}", st));
+                }
+                PickerAction::ToggleCursorTrail => {
+                    self.cfg.cursor_trail = !self.cfg.cursor_trail;
+                    self.cfg.save();
+                    if !self.cfg.cursor_trail {
+                        self.cursor_trails.clear();
+                    }
+                    let st = if self.cfg.cursor_trail { "ON" } else { "OFF" };
+                    self.set_status(format!("Animacao de Trajeto do Cursor: {}", st));
                 }
                 PickerAction::ToggleAutoHideMouse => {
                     self.cfg.auto_hide_mouse = !self.cfg.auto_hide_mouse;
@@ -3878,6 +3929,38 @@ impl App {
             None
         };
 
+        // Launch cursor travel trail on frame 0 when an explicit jump/click/pane-switch occurred
+        let now_frame = Instant::now();
+        let predicted_pos = pane_views
+            .iter()
+            .find(|p| p.is_focused)
+            .and_then(|p| {
+                self.docs
+                    .get(p.doc_id)
+                    .and_then(|d| d.as_ref())
+                    .and_then(|doc| predict_primary_screen_pos(doc, p, &cfg))
+            });
+        if self.arm_cursor_trail {
+            self.arm_cursor_trail = false;
+            if cfg.cursor_trail && matches!(self.mode, Mode::Edit) && !(self.term_open && self.term_focused) {
+                if let (Some(from), Some(to)) = (self.last_cursor_screen, predicted_pos) {
+                    if let Some(tr) = CursorTrail::new(from, to, now_frame) {
+                        self.cursor_trails.push(tr);
+                        if self.cursor_trails.len() > 4 {
+                            let excess = self.cursor_trails.len() - 4;
+                            self.cursor_trails.drain(0..excess);
+                        }
+                    }
+                }
+            }
+        }
+        self.cursor_trails.retain(|tr| !tr.is_finished(now_frame));
+        let trail_cells = if cfg.cursor_trail && !self.cursor_trails.is_empty() {
+            build_trail_map(&self.cursor_trails, now_frame, self.palette)
+        } else {
+            HashMap::new()
+        };
+
         let (frame, layout_info) = render_editor(
             &mut self.docs,
             &pane_views,
@@ -3893,6 +3976,7 @@ impl App {
             &active_diags,
             timer_badge.as_ref(),
             judge_progress.as_deref(),
+            &trail_cells,
             self.palette,
             cols,
             rows,
@@ -3903,6 +3987,9 @@ impl App {
             eff_mode_hint,
             synced,
         );
+        if layout_info.primary_cursor_screen.is_some() {
+            self.last_cursor_screen = layout_info.primary_cursor_screen;
+        }
         self.layout = layout_info;
         self.last_computed = computed;
         frame
@@ -4009,6 +4096,7 @@ fn main() {
     let mut standby_blink = false;
     let mut esc_pending_since: Option<Instant> = None;
     let mut last_timer_tick: u64 = 0;
+    let mut last_trail_frame = Instant::now();
 
     while !app.should_quit {
         let (cols, rows) = Terminal::size();
@@ -4018,6 +4106,10 @@ fn main() {
         }
         if app.poll_judge_updates(cols, rows) {
             needs_redraw = true;
+        }
+        if !app.cursor_trails.is_empty() && last_trail_frame.elapsed() >= Duration::from_millis(12) {
+            needs_redraw = true;
+            last_trail_frame = Instant::now();
         }
         if app.cp_timer.active && app.cp_timer.running {
             let cur_s = app.cp_timer.elapsed_secs();
@@ -4068,7 +4160,13 @@ fn main() {
             needs_redraw = false;
         }
 
-        let poll_ms = if decoder.has_pending_esc() { 15 } else { 60 };
+        let poll_ms = if !app.cursor_trails.is_empty() {
+            12
+        } else if decoder.has_pending_esc() {
+            15
+        } else {
+            60
+        };
         let (stdin_ready, pty_ready) = term.poll_events(app.term_pty_fd(), poll_ms);
         if pty_ready && app.drain_terminal_output() {
             needs_redraw = true;
