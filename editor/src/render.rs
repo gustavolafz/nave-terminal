@@ -602,6 +602,8 @@ pub fn ensure_cursor_visible(
     pane_w: usize,
     pane_content_h: usize,
     cfg: &EditorConfig,
+    follow_v: bool,
+    follow_h: bool,
 ) {
     let view_h = pane_content_h.max(1);
     let gutter_w = compute_gutter_width(doc.rope.line_count());
@@ -609,20 +611,22 @@ pub fn ensure_cursor_visible(
     let text_w = pane_w.saturating_sub(gutter_w + sb_w).max(4);
     let (prow, pcol) = doc.primary_line_col();
 
-    if cfg.center_scroll {
-        doc.scroll_row = prow.saturating_sub(view_h / 2);
-    } else {
-        let scrolloff = cfg.scrolloff.min(view_h / 2);
-        if prow < doc.scroll_row + scrolloff {
-            doc.scroll_row = prow.saturating_sub(scrolloff);
-        } else if prow + scrolloff >= doc.scroll_row + view_h {
-            doc.scroll_row = (prow + scrolloff + 1).saturating_sub(view_h);
+    if follow_v {
+        if cfg.center_scroll {
+            doc.scroll_row = prow.saturating_sub(view_h / 2);
+        } else {
+            let scrolloff = cfg.scrolloff.min(view_h / 2);
+            if prow < doc.scroll_row + scrolloff {
+                doc.scroll_row = prow.saturating_sub(scrolloff);
+            } else if prow + scrolloff >= doc.scroll_row + view_h {
+                doc.scroll_row = (prow + scrolloff + 1).saturating_sub(view_h);
+            }
         }
     }
 
     if cfg.wrap {
         doc.scroll_col = 0;
-    } else {
+    } else if follow_h {
         let line_txt = doc.rope.line(prow);
         let vcol = visual_col_of(&line_txt, pcol, doc.tab_width);
         let h_margin = 4.min(text_w / 4);
@@ -2824,5 +2828,32 @@ mod tests {
         assert!(out.contains("[✓]"));
         assert!(out.contains('┌'));
         assert!(out.contains('═'));
+    }
+
+    #[test]
+    fn vertical_scroll_preserves_horizontal_pan_column() {
+        let cfg = EditorConfig::default(); // wrap=false, scrolloff=8
+        let mut doc = Document::new_empty();
+        let mut text = String::new();
+        for i in 0..30 {
+            if i == 12 {
+                text.push('\n'); // short/blank line in the middle
+            } else {
+                text.push_str(&format!("line {:02}: {}\n", i, "x".repeat(150)));
+            }
+        }
+        doc.rope = crate::rope::Rope::from_str(&text);
+        // Cursor at (row 21, col 0), past viewport height 20, while user panned horizontally to col 80
+        doc.goto_line(22);
+        doc.scroll_col = 80;
+
+        // Vertical follow ONLY (e.g. touchpad wheel down with wheel_moves_cursor=true) must NOT reset scroll_col!
+        ensure_cursor_visible(&mut doc, 80, 20, &cfg, true, false);
+        assert_eq!(doc.scroll_col, 80, "vertical scroll must keep user's horizontal pan intact");
+        assert!(doc.scroll_row > 0, "vertical scroll must still advance scroll_row");
+
+        // Explicit horizontal follow (e.g. typing or Left/Right) brings col 0 cleanly back into view
+        ensure_cursor_visible(&mut doc, 80, 20, &cfg, true, true);
+        assert_eq!(doc.scroll_col, 0);
     }
 }

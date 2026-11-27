@@ -147,6 +147,7 @@ struct App {
     hover_hscrollbar: Option<PaneId>,
     hover_shape: PointerShape,
     follow_cursor: bool,
+    follow_cursor_h: bool,
     last_click: Option<(Instant, usize, usize, u8)>,
     pending_pane_pickers: VecDeque<(PaneId, PathBuf, usize, usize)>,
     term_panel: Option<IntegratedTerminal>,
@@ -239,6 +240,7 @@ impl App {
             hover_hscrollbar: None,
             hover_shape: PointerShape::Default,
             follow_cursor: true,
+            follow_cursor_h: true,
             last_click: None,
             pending_pane_pickers: VecDeque::new(),
             term_panel: None,
@@ -1587,13 +1589,43 @@ impl App {
         match ev {
             Event::Paste(text) => {
                 self.follow_cursor = true;
+                self.follow_cursor_h = true;
                 self.handle_paste(&text);
                 true
             }
             Event::Mouse(m) => self.handle_mouse(m, cols, rows),
             Event::Key(k) => {
+                let is_pure_vertical_nav = matches!(self.mode, Mode::Edit)
+                    && !k.alt
+                    && matches!(
+                        k.code,
+                        KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown
+                    );
                 self.follow_cursor = true;
+                let had_h_pan_lock = !self.follow_cursor_h;
+                if !is_pure_vertical_nav {
+                    self.follow_cursor_h = true;
+                }
                 self.handle_key(k, cols, rows);
+                if is_pure_vertical_nav {
+                    if had_h_pan_lock {
+                        // User explicitly panned horizontally via touchpad/scrollbar: keep reading column locked!
+                        self.follow_cursor_h = false;
+                    } else if !self.cfg.wrap && self.doc().scroll_col > 0 {
+                        // Moving vertically across a shorter/blank line while desired_col is still
+                        // to the right of scroll_col should NOT yank the viewport back to col 0!
+                        let d = self.doc();
+                        let desired = d
+                            .cursors
+                            .get(d.primary.min(d.cursors.len().saturating_sub(1)))
+                            .map(|s| s.desired_col)
+                            .unwrap_or(0);
+                        let (_, pcol) = d.primary_line_col();
+                        if pcol < desired && desired >= d.scroll_col {
+                            self.follow_cursor_h = false;
+                        }
+                    }
+                }
                 true
             }
         }
@@ -1748,7 +1780,7 @@ impl App {
         };
         if pane_id == self.active_pane {
             self.doc_mut().scroll_col = target;
-            self.follow_cursor = false;
+            self.follow_cursor_h = false;
         } else if self.panes.iter().any(|p| p.id == pane_id) {
             self.pane_mut(pane_id).active_view_mut().scroll_col = target;
         }
@@ -1789,7 +1821,7 @@ impl App {
                 cur.saturating_add(delta as usize).min(max_sc)
             };
             self.doc_mut().scroll_col = next;
-            self.follow_cursor = false;
+            self.follow_cursor_h = false;
         } else if self.panes.iter().any(|p| p.id == pane_id) {
             let tv = self.pane_mut(pane_id).active_view_mut();
             let cur = tv.scroll_col;
@@ -1924,9 +1956,11 @@ impl App {
                     return true;
                 }
                 if self.cfg.wheel_moves_cursor {
-                    // Move cursor 1 line per wheel tick (smooth line-by-line tracking with scrolloff)
+                    // Move cursor 1 line per wheel tick (smooth line-by-line tracking with scrolloff),
+                    // WITHOUT snapping horizontal scroll_col back to col 0!
                     self.focus_pane(target_pid);
                     self.follow_cursor = true;
+                    self.follow_cursor_h = false;
                     let motion = if m.kind == MouseKind::WheelUp {
                         Motion::Up
                     } else {
@@ -2131,6 +2165,7 @@ impl App {
                         return true;
                     }
                     self.follow_cursor = true;
+                    self.follow_cursor_h = true;
                     if let Some((doc_row, doc_col)) = self.screen_to_doc_in_pane(pid, m.col, m.row) {
                         let now = Instant::now();
                         let clicks = if let Some((prev_t, pr, pc, cnt)) = self.last_click {
@@ -4307,14 +4342,16 @@ impl App {
         let computed = self.layout_tree.compute(area);
         let cfg = self.cfg.clone();
 
-        // Keep active pane's cursor visible unless user explicitly scrolled via scrollbar/wheel
-        if self.follow_cursor && !self.active_is_md_preview() {
+        // Keep active pane's cursor visible along vertical/horizontal axes independently
+        if (self.follow_cursor || self.follow_cursor_h) && !self.active_is_md_preview() {
             if let Some(active_rect) = computed.rect_of(self.active_pane) {
                 let (content_h, _) = {
                     let d = self.doc();
                     pane_content_height(d, active_rect.w, active_rect.h, d.scroll_row, d.scroll_col, &cfg)
                 };
-                ensure_cursor_visible(self.doc_mut(), active_rect.w, content_h.max(1), &cfg);
+                let fv = self.follow_cursor;
+                let fh = self.follow_cursor_h;
+                ensure_cursor_visible(self.doc_mut(), active_rect.w, content_h.max(1), &cfg, fv, fh);
             }
         }
         self.sync_active_to_tab();
