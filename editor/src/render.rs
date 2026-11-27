@@ -56,7 +56,9 @@ pub struct LayoutInfo {
 /// (Ctrl+Arrows, Ctrl+1..9 pane jump, mouse click, Goto Line, Ctrl+], F8, etc.).
 #[derive(Clone, Debug)]
 pub struct CursorTrail {
-    pub path: Vec<(usize, usize)>, // (abs_row, abs_col) screen coordinates from start -> end
+    pub from: (usize, usize),
+    pub to: (usize, usize),
+    pub path: Vec<(usize, usize)>, // (abs_row, abs_col) spine from start -> end
     pub started_at: Instant,
     pub duration_ms: f32,
 }
@@ -99,9 +101,11 @@ impl CursorTrail {
         if path.len() < 2 {
             return None;
         }
-        // Smooth shooting-star glide: ~140ms word jump up to ~235ms cross-pane meteor
+        // Smooth shooting-star glide: ~140ms word jump up to ~238ms cross-pane meteor
         let duration_ms = (122.0 + dist * 1.55).clamp(138.0, 238.0);
         Some(Self {
+            from,
+            to,
             path,
             started_at: now,
             duration_ms,
@@ -156,73 +160,40 @@ pub fn build_trail_map(
         if t >= 1.0 || tr.path.len() < 2 {
             continue;
         }
-        // Two phase-shifted C2 smootherstep curves:
-        // - Head smoothly accelerates from 0 (finite accel!) -> fast glide -> soft landing at t=0.72
-        // - Tail trails slightly behind [0.10..1.00], stretching the shooting star & dissolving into landing
+        // Two phase-shifted C2 smootherstep curves (finite acceleration on launch & smooth landing)
         let head_u = smootherstep(t / 0.72);
         let tail_u = smootherstep((t - 0.10) / 0.90);
-        // Smooth envelope: gentle ignition at t=0..0.06, full brilliance mid-flight, silky dissolve at end
         let fade_out = (1.0 - t * t * t).clamp(0.0, 1.0);
-        let denom = (tr.path.len() - 1) as f32;
-        let head_idx = ((head_u * denom).round() as usize).min(tr.path.len() - 1);
-        let span = (head_u - tail_u).max(0.04);
 
-        for (idx, &(r, c)) in tr.path.iter().enumerate() {
-            let u = idx as f32 / denom;
-            let is_head_cell = idx == head_idx;
-            if !is_head_cell && (u < tail_u || u > head_u) {
-                continue;
-            }
-            let rel = if is_head_cell {
-                1.0
-            } else {
-                ((u - tail_u) / span).clamp(0.0, 1.0)
-            };
-            // Exponential shooting-star taper: bright incandescent tip -> delicate vapor wake
-            let core = rel.powf(2.20);
-            let intensity = if is_head_cell {
-                (0.75 + 0.25 * (1.0 - t)).min(1.0) * fade_out
-            } else {
-                (0.08 + 0.92 * core) * fade_out
-            };
-            if intensity < 0.03 {
-                continue;
-            }
-            let base_neon = lerp_grad(pal.grad, 1.0 - rel);
-            // White-hot starlight core right at the meteor head
-            let head_white = if is_head_cell {
-                0.82 * fade_out
-            } else {
-                ((rel - 0.78) / 0.22).clamp(0.0, 1.0) * 0.65 * fade_out
-            };
-            let star_color = lerp_rgb(base_neon, (255, 255, 255), head_white);
-            let bg_alpha = if is_head_cell {
-                (0.86 * fade_out).clamp(0.0, 0.94)
-            } else {
-                (intensity * 0.74 + head_white * 0.14).clamp(0.0, 0.88)
-            };
-            let bg = lerp_rgb(pal.bg, star_color, bg_alpha);
+        let dr = tr.to.0 as f32 - tr.from.0 as f32;
+        let dc = tr.to.1 as f32 - tr.from.1 as f32;
+        let dy = dr * 2.0; // perceptual aspect-corrected Y (cells are ~2:1 tall)
+        let dx = dc;
+        let total_len = (dx * dx + dy * dy).sqrt().max(1.0);
+        let tx = dx / total_len;
+        let ty = dy / total_len;
+        let nx = -ty;
+        let ny = tx;
 
-            // Delicate stardust motes ONLY in the dissipating wake (drawn exclusively over blank spaces)
-            let dust = if !is_head_cell && rel > 0.08 && rel < 0.78 && intensity > 0.04 {
-                let h = (r.wrapping_mul(31) ^ c.wrapping_mul(17) ^ idx.wrapping_mul(13)) % 5;
-                if rel > 0.46 && h <= 2 {
-                    Some(('∙', lerp_rgb(pal.bg, star_color, (0.55 + intensity * 0.45).min(1.0))))
-                } else if h <= 3 {
-                    Some(('·', lerp_rgb(pal.bg, base_neon, (0.35 + intensity * 0.55).min(0.95))))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+        // Diagonal factor: 0.0 for pure horizontal/vertical (razor 1-cell streak),
+        // ramps smoothly to 1.0 for diagonal jumps -> 2D conical shooting-star plume!
+        let diag_factor = if dr.abs() >= 1.0 && dc.abs() >= 2.0 {
+            ((dr.abs() * 2.0).min(dc.abs()) / 3.5).clamp(0.35, 1.0)
+        } else {
+            0.0
+        };
 
-            let cell = TrailCell {
-                bg,
-                intensity,
-                is_hot: is_head_cell || intensity > 0.54 || head_white > 0.35,
-                dust,
-            };
+        let p0x = tr.from.1 as f32;
+        let p0y = tr.from.0 as f32 * 2.0;
+        let ax = p0x + dx * tail_u;
+        let ay = p0y + dy * tail_u;
+        let bx = p0x + dx * head_u;
+        let by = p0y + dy * head_u;
+        let seg_len = ((bx - ax) * (bx - ax) + (by - ay) * (by - ay)).sqrt();
+        let head_r = (by * 0.5).round().max(0.0) as usize;
+        let head_c = bx.round().max(0.0) as usize;
+
+        let mut insert_cell = |r: usize, c: usize, cell: TrailCell| {
             map.entry((r, c))
                 .and_modify(|prev| {
                     if cell.intensity > prev.intensity {
@@ -230,6 +201,166 @@ pub fn build_trail_map(
                     }
                 })
                 .or_insert(cell);
+        };
+
+        if diag_factor > 0.0 && seg_len >= 1.2 {
+            // 2D Conical Shooting-Star Plume:
+            // Pinpoint incandescent nose at B (rel=1.0) -> smoothly widening conical aura toward A (rel=0.0)
+            let max_cone_r = (1.8 + (seg_len * 0.095).min(2.1)) * diag_factor;
+            let pad_c = max_cone_r.ceil() as isize + 1;
+            let pad_r = (max_cone_r * 0.5).ceil() as isize + 1;
+
+            let min_r = ((ay.min(by) * 0.5).floor() as isize - pad_r).max(0) as usize;
+            let max_r = ((ay.max(by) * 0.5).ceil() as isize + pad_r).max(0) as usize;
+            let min_c = (ax.min(bx).floor() as isize - pad_c).max(0) as usize;
+            let max_c = (ax.max(bx).ceil() as isize + pad_c).max(0) as usize;
+
+            for r in min_r..=max_r {
+                let qy = r as f32 * 2.0;
+                for c in min_c..=max_c {
+                    let qx = c as f32;
+                    let is_head_cell = r == head_r && c == head_c;
+
+                    let vx = qx - ax;
+                    let vy = qy - ay;
+                    let proj = vx * tx + vy * ty;
+                    let perp = (vx * nx + vy * ny).abs();
+
+                    if !is_head_cell && (proj < -0.5 || proj > seg_len + 0.55) {
+                        continue;
+                    }
+                    let rel = if is_head_cell {
+                        1.0
+                    } else {
+                        (proj / seg_len).clamp(0.0, 1.0)
+                    };
+
+                    // Conical half-width: sharp pinpoint at tip (0.62), smoothly flares out behind
+                    let cone_r = 0.62 + max_cone_r * (1.0 - rel).powf(0.82);
+                    if !is_head_cell && perp > cone_r {
+                        continue;
+                    }
+
+                    // Smooth radial Gaussian-like falloff across cone cross-section (soft edges!)
+                    let norm_p = (perp / cone_r).clamp(0.0, 1.0);
+                    let radial = (1.0 - norm_p * norm_p).powf(1.55);
+                    // Longitudinal meteor taper (brightest near tip, dissipating gracefully at rear)
+                    let longi = rel.powf(1.45);
+                    let intensity = if is_head_cell {
+                        (0.80 + 0.20 * (1.0 - t)).min(1.0) * fade_out
+                    } else {
+                        (0.06 + 0.94 * longi) * radial * fade_out
+                    };
+                    if intensity < 0.035 {
+                        continue;
+                    }
+
+                    // Color flows from white-cyan core along spine -> violet-magenta along cone wings!
+                    let grad_pos = (1.0 - rel * 0.72 + norm_p * 0.36).clamp(0.0, 1.0);
+                    let base_neon = lerp_grad(pal.grad, grad_pos);
+                    let head_white = if is_head_cell {
+                        0.85 * fade_out
+                    } else {
+                        ((rel - 0.76) / 0.24).clamp(0.0, 1.0) * radial * 0.65 * fade_out
+                    };
+                    let star_color = lerp_rgb(base_neon, (255, 255, 255), head_white);
+                    let bg_alpha = if is_head_cell {
+                        (0.88 * fade_out).clamp(0.0, 0.94)
+                    } else {
+                        (intensity * 0.76 + head_white * 0.14).clamp(0.0, 0.88)
+                    };
+                    let bg = lerp_rgb(pal.bg, star_color, bg_alpha);
+
+                    // Delicate stardust sparks along the conical wake & outer fringes (blank spaces only)
+                    let dust = if !is_head_cell && rel < 0.82 && intensity > 0.04 && intensity < 0.58 {
+                        let h = (r.wrapping_mul(37) ^ c.wrapping_mul(19) ^ ((rel * 11.0) as usize)) % 7;
+                        if norm_p < 0.55 && rel > 0.35 && h <= 2 {
+                            Some(('∙', lerp_rgb(pal.bg, star_color, (0.48 + intensity * 0.50).min(1.0))))
+                        } else if h <= 3 {
+                            Some(('·', lerp_rgb(pal.bg, base_neon, (0.30 + intensity * 0.60).min(0.95))))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    insert_cell(
+                        r,
+                        c,
+                        TrailCell {
+                            bg,
+                            intensity,
+                            is_hot: is_head_cell || (intensity > 0.56 && norm_p < 0.45),
+                            dust,
+                        },
+                    );
+                }
+            }
+        } else {
+            // Pure horizontal/vertical jump (e.g. Ctrl+Right word travel): razor-sharp 1-line shooting star
+            let denom = (tr.path.len() - 1) as f32;
+            let head_idx = ((head_u * denom).round() as usize).min(tr.path.len() - 1);
+            let span = (head_u - tail_u).max(0.04);
+
+            for (idx, &(r, c)) in tr.path.iter().enumerate() {
+                let u = idx as f32 / denom;
+                let is_head_cell = idx == head_idx;
+                if !is_head_cell && (u < tail_u || u > head_u) {
+                    continue;
+                }
+                let rel = if is_head_cell {
+                    1.0
+                } else {
+                    ((u - tail_u) / span).clamp(0.0, 1.0)
+                };
+                let core = rel.powf(2.20);
+                let intensity = if is_head_cell {
+                    (0.75 + 0.25 * (1.0 - t)).min(1.0) * fade_out
+                } else {
+                    (0.08 + 0.92 * core) * fade_out
+                };
+                if intensity < 0.03 {
+                    continue;
+                }
+                let base_neon = lerp_grad(pal.grad, 1.0 - rel);
+                let head_white = if is_head_cell {
+                    0.82 * fade_out
+                } else {
+                    ((rel - 0.78) / 0.22).clamp(0.0, 1.0) * 0.65 * fade_out
+                };
+                let star_color = lerp_rgb(base_neon, (255, 255, 255), head_white);
+                let bg_alpha = if is_head_cell {
+                    (0.86 * fade_out).clamp(0.0, 0.94)
+                } else {
+                    (intensity * 0.74 + head_white * 0.14).clamp(0.0, 0.88)
+                };
+                let bg = lerp_rgb(pal.bg, star_color, bg_alpha);
+
+                let dust = if !is_head_cell && rel > 0.08 && rel < 0.78 && intensity > 0.04 {
+                    let h = (r.wrapping_mul(31) ^ c.wrapping_mul(17) ^ idx.wrapping_mul(13)) % 5;
+                    if rel > 0.46 && h <= 2 {
+                        Some(('∙', lerp_rgb(pal.bg, star_color, (0.55 + intensity * 0.45).min(1.0))))
+                    } else if h <= 3 {
+                        Some(('·', lerp_rgb(pal.bg, base_neon, (0.35 + intensity * 0.55).min(0.95))))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                insert_cell(
+                    r,
+                    c,
+                    TrailCell {
+                        bg,
+                        intensity,
+                        is_hot: is_head_cell || intensity > 0.54 || head_white > 0.35,
+                        dust,
+                    },
+                );
+            }
         }
     }
     map
@@ -2298,8 +2429,17 @@ mod tests {
         let m0 = build_trail_map(&[tr.clone()], now, pal);
         assert!(m0.contains_key(&(5, 10)), "star should ignite right at start position on frame 0");
         assert!(!m0.contains_key(&(5, 22)), "star must not teleport to destination on frame 0");
-        let mid = build_trail_map(&[tr.clone()], now + Duration::from_millis(65), pal);
-        assert!(!mid.is_empty(), "trail should glide smoothly mid-flight");
+        // Pure horizontal jump stays strictly on row 5 (1-line laser streak)
+        let mid_h = build_trail_map(&[tr.clone()], now + Duration::from_millis(65), pal);
+        assert!(!mid_h.is_empty());
+        assert!(mid_h.keys().all(|&(r, _)| r == 5), "horizontal jump must stay 1-row thin");
+
+        // Diagonal jump fans out into a 2D conical plume strictly wider than its 1-cell spine!
+        let mid_d = build_trail_map(&[diag.clone()], now + Duration::from_millis(95), pal);
+        let spine_set: std::collections::HashSet<(usize, usize)> = diag.path.iter().copied().collect();
+        let off_spine = mid_d.keys().filter(|k| !spine_set.contains(k)).count();
+        assert!(off_spine >= 6, "diagonal jump should render a 2D conical wake, off_spine={}", off_spine);
+
         let done_t = now + Duration::from_millis(260);
         assert!(tr.is_finished(done_t));
         assert!(build_trail_map(&[tr], done_t, pal).is_empty(), "trail must vanish completely after duration");
