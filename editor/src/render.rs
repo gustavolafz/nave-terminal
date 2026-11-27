@@ -2116,17 +2116,24 @@ fn render_pane(
                 drawn_cols += cw;
             }
 
-            // Secondary caret at end-of-line
+            // Secondary caret or VS Code-style newline selection marker at end-of-line (and blank lines!)
             let eol_byte = line_start + line_text.len();
-            if seg_end == char_info.len()
-                && secondary_carets.contains(&eol_byte)
-                && drawn_cols < text_w
-                && cur_vis >= h_off
-            {
-                push_bg(out, pal.grad[0]);
-                push_fg(out, pal.bar_bg, true);
-                out.push(' ');
-                drawn_cols += 1;
+            let eol_selected = sel_ranges.iter().any(|&(s, e)| eol_byte >= s && eol_byte < e);
+            if seg_end == char_info.len() && drawn_cols < text_w && cur_vis >= h_off {
+                if secondary_carets.contains(&eol_byte) {
+                    push_bg(out, pal.grad[0]);
+                    push_fg(out, pal.bar_bg, true);
+                    out.push(' ');
+                    drawn_cols += 1;
+                } else if eol_selected {
+                    if let Some(tc) = trail_cells.get(&(abs_row, rect.x + gutter_w + drawn_cols)) {
+                        push_bg(out, tc.bg);
+                    } else {
+                        push_bg(out, pal.sel_bg);
+                    }
+                    out.push(' ');
+                    drawn_cols += 1;
+                }
             }
 
             // Inline ghost autocomplete suffix right after primary caret at EOL
@@ -2443,5 +2450,38 @@ mod tests {
         let done_t = now + Duration::from_millis(260);
         assert!(tr.is_finished(done_t));
         assert!(build_trail_map(&[tr], done_t, pal).is_empty(), "trail must vanish completely after duration");
+    }
+
+    #[test]
+    fn blank_line_inside_selection_renders_vscode_newline_marker() {
+        let mut doc = Document::new_empty();
+        doc.rope = crate::rope::Rope::from_str("abc\n\ndef\n");
+        let sel = Selection { anchor: 0, head: 8, desired_col: 0 }; // selects "abc\n\ndef"
+        let p = PaneRenderInput {
+            pane_id: 0,
+            group_num: 1,
+            rect: Rect { x: 0, y: 0, w: 60, h: 10 },
+            is_focused: true,
+            doc_id: 0,
+            tabs: vec![TabBadge { name: "t.cpp".into(), dirty: false, active: true }],
+            scroll_row: 0,
+            scroll_col: 0,
+            cursors: vec![sel],
+            primary: 0,
+        };
+        let pal = &crate::palette::PALETTES[0];
+        let cfg = EditorConfig::default();
+        let mut out = String::new();
+        render_pane(&mut out, &mut doc, &p, false, false, &[], None, &HashMap::new(), pal, &cfg);
+        let sel_seq = format!("\x1b[48;2;{};{};{}m ", pal.sel_bg.0, pal.sel_bg.1, pal.sel_bg.2);
+        // Row 3 (1-based: row 1 tab bar, row 2 "abc", row 3 blank line!) must contain sel_bg marker
+        let row3_marker = "\x1b[3;1H";
+        let row4_marker = "\x1b[4;1H";
+        let s3 = out.find(row3_marker).expect("row 3 rendered");
+        let s4 = out.find(row4_marker).expect("row 4 rendered");
+        assert!(
+            out[s3..s4].contains(&sel_seq),
+            "blank line inside selection must render sel_bg newline block"
+        );
     }
 }
