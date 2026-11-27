@@ -22,6 +22,7 @@ pub enum PickerAction {
     ToggleCursorWord,
     ToggleIndentGuides,
     ToggleRainbowBrackets,
+    ToggleBracketMatch,
     ToggleCommentBadges,
     ToggleTrailingSpaces,
     CycleColorColumn,
@@ -128,9 +129,14 @@ impl Picker {
                 action: PickerAction::ToggleIndentGuides,
             },
             PickerItem {
-                label: format!("Rainbow Brackets (cores por nivel) [{}]", onoff(cfg.rainbow_brackets)),
-                detail: "() [] {} por profundidade".into(),
+                label: format!("Cor de Delimitadores (Rainbow Brackets) [{}]", onoff(cfg.rainbow_brackets)),
+                detail: "() [] {} <> por nivel (OFF = neutro)".into(),
                 action: PickerAction::ToggleRainbowBrackets,
+            },
+            PickerItem {
+                label: format!("Destaque de Par de Delimitadores (MatchParen) [{}]", onoff(cfg.bracket_match)),
+                detail: "fundo em () [] {} ao lado do cursor".into(),
+                action: PickerAction::ToggleBracketMatch,
             },
             PickerItem {
                 label: format!("Badges TODO / FIXME em Comentarios [{}]", onoff(cfg.comment_badges)),

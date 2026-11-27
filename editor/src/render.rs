@@ -264,7 +264,11 @@ pub fn render_editor(
     // -------------------------------------------------------------------------
     let (primary_row, primary_col) = doc.primary_line_col();
     let primary_head = doc.primary_cursor().head;
-    let bracket_pair = find_matching_bracket(&doc.rope, primary_head, cfg.block_cursor);
+    let bracket_pair = if cfg.bracket_match {
+        find_matching_bracket(&doc.rope, primary_head, cfg.block_cursor)
+    } else {
+        None
+    };
     let git_marks: HashMap<usize, GutterMark> = doc.git.snapshot();
     let total_lines = doc.rope.line_count();
     let num_digits = gutter_w - 5;

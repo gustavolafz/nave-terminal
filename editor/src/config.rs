@@ -17,6 +17,7 @@ pub struct EditorConfig {
     pub cursorword: bool,
     pub indent_guides: bool,
     pub rainbow_brackets: bool,
+    pub bracket_match: bool,
     pub comment_badges: bool,
     pub show_trailing: bool,
     pub color_column: usize, // 0 = off, else 80 / 100 / 120
@@ -39,6 +40,7 @@ impl Default for EditorConfig {
             cursorword: true,
             indent_guides: true,
             rainbow_brackets: true,
+            bracket_match: true,
             comment_badges: true,
             show_trailing: true,
             color_column: 120,
@@ -95,6 +97,7 @@ impl EditorConfig {
                 "cursorword" => cfg.cursorword = parse_bool(v),
                 "indent_guides" => cfg.indent_guides = parse_bool(v),
                 "rainbow_brackets" => cfg.rainbow_brackets = parse_bool(v),
+                "bracket_match" => cfg.bracket_match = parse_bool(v),
                 "comment_badges" => cfg.comment_badges = parse_bool(v),
                 "show_trailing" => cfg.show_trailing = parse_bool(v),
                 "color_column" => {
@@ -129,6 +132,7 @@ impl EditorConfig {
              cursorword={}\n\
              indent_guides={}\n\
              rainbow_brackets={}\n\
+             bracket_match={}\n\
              comment_badges={}\n\
              show_trailing={}\n\
              color_column={}\n",
@@ -146,6 +150,7 @@ impl EditorConfig {
             self.cursorword,
             self.indent_guides,
             self.rainbow_brackets,
+            self.bracket_match,
             self.comment_badges,
             self.show_trailing,
             self.color_column

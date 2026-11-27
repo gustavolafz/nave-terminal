@@ -1022,8 +1022,14 @@ impl App {
                 PickerAction::ToggleRainbowBrackets => {
                     self.cfg.rainbow_brackets = !self.cfg.rainbow_brackets;
                     self.cfg.save();
-                    let st = if self.cfg.rainbow_brackets { "ON" } else { "OFF" };
-                    self.set_status(format!("Rainbow Brackets: {}", st));
+                    let st = if self.cfg.rainbow_brackets { "ON (por nivel)" } else { "OFF (neutro)" };
+                    self.set_status(format!("Cor de delimitadores: {}", st));
+                }
+                PickerAction::ToggleBracketMatch => {
+                    self.cfg.bracket_match = !self.cfg.bracket_match;
+                    self.cfg.save();
+                    let st = if self.cfg.bracket_match { "ON" } else { "OFF" };
+                    self.set_status(format!("Destaque de par de delimitadores: {}", st));
                 }
                 PickerAction::ToggleCommentBadges => {
                     self.cfg.comment_badges = !self.cfg.comment_badges;
