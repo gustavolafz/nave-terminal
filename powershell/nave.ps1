@@ -263,6 +263,98 @@ function nave-shader {
     Write-Host (_Nave-Fg $script:NaveC.ok "$($script:CH_CHK) Windows Terminal shader alterado para: $Mode" -Bold)
 }
 
+function nave-glass {
+    param([string]$Mode = "toggle")
+    $wtPath = Join-Path $env:LOCALAPPDATA "Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
+    if (-not (Test-Path $wtPath)) { Write-Host "settings.json do Windows Terminal nao encontrado."; return }
+    $data = Get-Content $wtPath -Raw | ConvertFrom-Json
+    $targets = @("Ubuntu", "Windows PowerShell", "PowerShell")
+    $opFile = Join-Path $script:NaveConfigDir "glass_opacity"
+    $wallFile = Join-Path $script:NaveConfigDir "wall_opacity"
+
+    $defaults = $data.profiles.defaults
+    $curAc = [bool]($defaults.useAcrylic)
+    $curOp = if ($null -ne $defaults.opacity) { [int]$defaults.opacity } else { 100 }
+    $curWop = if ($null -ne $defaults.backgroundImageOpacity) { [double]$defaults.backgroundImageOpacity } else { 0.0 }
+    $isGlass = $curAc -or ($curOp -lt 100)
+    $m = $Mode.ToLowerInvariant()
+
+    if ($m -eq "status") {
+        $gLbl = if ($isGlass) { "ON (Acrylic · ${curOp}%)" } else { "OFF (Solido · ${curOp}%)" }
+        $wLbl = if ($curWop -gt 0.01) { "ON ($('{0:N2}' -f $curWop))" } else { "OFF (0.00)" }
+        Write-Host "  Fundo translucido : $gLbl"
+        Write-Host "  Wallpaper         : $wLbl"
+        return
+    }
+
+    $matched = @($defaults)
+    foreach ($p in $data.profiles.list) {
+        if ($p.name -in $targets -or $p.PSObject.Properties['useAcrylic'] -or $p.PSObject.Properties['opacity']) {
+            $matched += $p
+        }
+    }
+
+    if ($m -in @("wall", "wallpaper")) {
+        if ($curWop -gt 0.01) {
+            Set-Content -Path $wallFile -Value ("{0:0.00}" -f $curWop) -NoNewline
+            $newWop = 0.0
+            $msg = "$($script:CH_CHK) Wallpaper do Windows Terminal: OFF (fundo liso)"
+        } else {
+            $newWop = 0.68
+            if (Test-Path $wallFile) {
+                $parsed = 0.0
+                if ([double]::TryParse((Get-Content $wallFile -Raw).Trim(), [ref]$parsed) -and $parsed -ge 0.05 -and $parsed -le 1.0) { $newWop = $parsed }
+            }
+            $msg = "$($script:CH_CHK) Wallpaper do Windows Terminal: ON (opacidade $('{0:0.00}' -f $newWop))"
+        }
+        foreach ($p in $matched) {
+            if ($p -eq $defaults -or $p.PSObject.Properties['backgroundImage']) {
+                $p | Add-Member -NotePropertyName 'backgroundImageOpacity' -NotePropertyValue $newWop -Force
+            }
+        }
+        $data | ConvertTo-Json -Depth 12 | Set-Content -Path $wtPath -Encoding UTF8
+        Write-Host (_Nave-Fg $script:NaveC.ok $msg -Bold)
+        return
+    }
+
+    $wantGlass = $false
+    $customOp = $null
+    if ($m -eq "toggle") { $wantGlass = -not $isGlass }
+    elseif ($m -in @("off", "solid", "solido", "opaco", "0", "false")) { $wantGlass = $false }
+    elseif ($m -in @("on", "glass", "translucido", "acrylic", "1", "true")) { $wantGlass = $true }
+    elseif ($m -match '^\d+$') {
+        $v = [Math]::Max(40, [Math]::Min(100, [int]$m))
+        $wantGlass = $v -lt 100
+        $customOp = $v
+    } else {
+        Write-Host "Uso: nave-glass [toggle|off|solid|on|glass|wall|status|<40..100>]"
+        return
+    }
+
+    if (-not $wantGlass) {
+        if ($curOp -lt 100) { Set-Content -Path $opFile -Value $curOp -NoNewline }
+        $newAc = $false; $newOp = 100
+        $msg = "$($script:CH_CHK) Modo translucido: OFF (fundo 100% solido)"
+    } else {
+        $newOp = 92
+        if ($null -ne $customOp) { $newOp = $customOp }
+        elseif (Test-Path $opFile) {
+            $parsed = 0
+            if ([int]::TryParse((Get-Content $opFile -Raw).Trim(), [ref]$parsed) -and $parsed -ge 40 -and $parsed -lt 100) { $newOp = $parsed }
+        }
+        Set-Content -Path $opFile -Value $newOp -NoNewline
+        $newAc = $true
+        $msg = "$($script:CH_CHK) Modo translucido: ON (Acrylic · opacidade ${newOp}%)"
+    }
+
+    foreach ($p in $matched) {
+        $p | Add-Member -NotePropertyName 'useAcrylic' -NotePropertyValue $newAc -Force
+        $p | Add-Member -NotePropertyName 'opacity' -NotePropertyValue $newOp -Force
+    }
+    $data | ConvertTo-Json -Depth 12 | Set-Content -Path $wtPath -Encoding UTF8
+    Write-Host (_Nave-Fg $script:NaveC.ok $msg -Bold)
+}
+
 function hr {
     param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Title)
     $w = 80
@@ -582,6 +674,7 @@ function nave-help {
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-theme <nome>    ") + "Paleta + fundo ao vivo (cyber|emerald|sunset|nord|stealth|dracula)")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-layout <modo>   ") + "Layout do prompt (framed|rail|hud|compact)")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-shader <modo>   ") + "Shader GPU Windows Terminal (glow|crt|off)")
+    Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-glass [modo]    ") + "Alterna fundo translucido/solido (off|on|wall|40..100)")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-bg / welcome    ") + "Liga/desliga fundo OSC 11 ou welcome bar")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "sysinfo / hr [tit]   ") + "Arte gradiente + sistema / regua divisoria")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-hud / nave-warp ") + "Cockpit em tempo real / starfield 3D")

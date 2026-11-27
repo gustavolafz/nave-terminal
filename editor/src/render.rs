@@ -15,6 +15,15 @@ const SYNC_START: &str = "\x1b[?2026h";
 const SYNC_END: &str = "\x1b[?2026l";
 const RST: &str = "\x1b[0m";
 
+#[inline]
+fn push_base_bg(out: &mut String, cfg: &EditorConfig, pal: &Palette) {
+    if cfg.opaque_bg {
+        push_bg(out, pal.bg);
+    } else {
+        out.push_str("\x1b[49m");
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct VisualRowInfo {
     pub doc_row: usize,
@@ -328,7 +337,7 @@ pub fn render_editor(
     // Render Split Dividers (`│`, `─`) and Intersections (`┼`, `├`, `┤`, `┬`, `┴`)
     // -------------------------------------------------------------------------
     if multi_pane {
-        out.push_str("\x1b[49m");
+        push_base_bg(&mut out, cfg, pal);
         for d in &computed.dividers {
             let is_drag = highlight_all_dividers || active_divider == Some(d.split_id);
             let is_hover = hover_divider == Some(d.split_id);
@@ -546,6 +555,7 @@ pub fn render_editor(
             tp.body_height,
             tp.is_focused,
             pal,
+            if cfg.opaque_bg { Some(pal.bg) } else { None },
         );
     }
 
@@ -1330,19 +1340,20 @@ fn render_pane(
 
         if doc_row >= total_lines {
             let _ = write!(out, "\x1b[{};{}H", abs_row + 1, rect.x + 1);
-            out.push_str("\x1b[49m");
+            push_base_bg(out, cfg, pal);
             if show_gutter {
                 push_fg(out, pal.border, false);
                 let _ = write!(out, "  {:>width$} │ ", "~", width = num_digits);
             }
             out.push_str(RST);
+            push_base_bg(out, cfg, pal);
             for _ in 0..text_w {
                 out.push(' ');
             }
             if show_sb {
                 push_scrollbar_cell(out, screen_y, content_h, sb_start, sb_end, sb_cursor_row, sb_hot, pal);
-                out.push_str(RST);
             }
+            out.push_str(RST);
             screen_y += 1;
             continue;
         }
@@ -1378,7 +1389,7 @@ fn render_pane(
                 if is_cur_line {
                     push_bg(out, pal.cur_line_bg);
                 } else {
-                    out.push_str("\x1b[49m");
+                    push_base_bg(out, cfg, pal);
                 }
                 if seg_idx == 0 {
                     let line_diag = diagnostics.iter().find(|d| d.line == doc_row);
@@ -1601,7 +1612,7 @@ fn render_pane(
                 if let Some(bg) = bg_c {
                     push_bg(out, bg);
                 } else {
-                    out.push_str("\x1b[49m");
+                    push_base_bg(out, cfg, pal);
                 }
                 push_fg_styled(out, fg_c, bold, italic);
                 if underline {
@@ -1672,7 +1683,7 @@ fn render_pane(
                 if is_cur_line || is_ruler {
                     push_bg(out, pal.cur_line_bg);
                 } else {
-                    out.push_str("\x1b[49m");
+                    push_base_bg(out, cfg, pal);
                 }
                 if is_blank_guide {
                     let in_active_scope = active_scope.is_some_and(|(s_r, e_r, a_col)| {
@@ -1687,7 +1698,7 @@ fn render_pane(
             }
 
             if show_sb {
-                out.push_str("\x1b[49m");
+                push_base_bg(out, cfg, pal);
                 push_scrollbar_cell(out, screen_y, content_h, sb_start, sb_end, sb_cursor_row, sb_hot, pal);
             }
             out.push_str(RST);

@@ -1290,6 +1290,7 @@ pub fn render_terminal_cells(
     height: usize,
     is_focused: bool,
     pal: &Palette,
+    default_bg: Option<Rgb>,
 ) -> Option<(usize, usize)> {
     for vy in 0..height {
         let abs_row = y_start + vy;
@@ -1316,7 +1317,12 @@ pub fn render_terminal_cells(
             }
             let cw = (cell.width as usize).max(1);
             if drawn + cw > cols {
-                out.push_str("\x1b[49m ");
+                if let Some(bg_rgb) = default_bg {
+                    push_bg(out, bg_rgb);
+                } else {
+                    out.push_str("\x1b[49m");
+                }
+                out.push(' ');
                 drawn += 1;
                 continue;
             }
@@ -1341,7 +1347,7 @@ pub fn render_terminal_cells(
                 || cell.style.underline != last_underline;
 
             if need_style {
-                if let Some(bg_rgb) = bg {
+                if let Some(bg_rgb) = bg.or(default_bg) {
                     push_bg(out, bg_rgb);
                 } else {
                     out.push_str("\x1b[49m");

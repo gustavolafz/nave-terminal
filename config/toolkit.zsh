@@ -173,6 +173,134 @@ print(f"✓ Windows Terminal shader alterado para: {mode}")
 PY
 }
 
+# Toggle Windows Terminal translucent background (Acrylic/Opacity) & optional wallpaper live:
+#   nave-glass             -> alterna Translucido (Acrylic 92%) <-> Solido (100%)
+#   nave-glass off|solid   -> tira translucidez (useAcrylic=false, opacity=100)
+#   nave-glass on|glass    -> ativa translucidez (restaura opacidade salva, padrao 92%)
+#   nave-glass <40..100>   -> define opacidade exata (100 = solido, <100 = acrylic)
+#   nave-glass wall        -> alterna imagem de fundo (backgroundImageOpacity 0.68 <-> 0)
+#   nave-glass status      -> mostra estado atual
+function nave-glass {
+  local mode="${1:-toggle}"
+  local wt_json="${NAVE_WT_SETTINGS:-}"
+  if [[ -z "$wt_json" ]]; then
+    wt_json=$(ls /mnt/c/Users/*/AppData/Local/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json 2>/dev/null | head -n 1)
+  fi
+  if [[ -z "$wt_json" || ! -f "$wt_json" ]]; then
+    print -P "%F{${_NAVE_C[warn]:-215}}settings.json do Windows Terminal nao encontrado.%f"
+    return 1
+  fi
+  local cfg_dir="${XDG_CONFIG_HOME:-$HOME/.config}/nave"
+  mkdir -p "$cfg_dir" 2>/dev/null
+
+  python3 - "$wt_json" "$mode" "$cfg_dir" <<'PY'
+import json, pathlib, sys
+wt_path = pathlib.Path(sys.argv[1])
+mode = sys.argv[2].lower()
+cfg_dir = pathlib.Path(sys.argv[3])
+op_file = cfg_dir / "glass_opacity"
+wall_file = cfg_dir / "wall_opacity"
+
+data = json.loads(wt_path.read_text(encoding="utf-8"))
+profiles = data.setdefault("profiles", {})
+defaults = profiles.setdefault("defaults", {})
+plist = profiles.get("list", [])
+targets = ("Ubuntu", "Windows PowerShell", "PowerShell")
+sources = ("Microsoft.WSL", "Windows.Terminal.PowershellCore")
+
+def matched_profiles():
+    res = [defaults]
+    for p in plist:
+        if (
+            p.get("name") in targets
+            or p.get("source") in sources
+            or "useAcrylic" in p
+            or "opacity" in p
+            or "backgroundImageOpacity" in p
+        ):
+            res.append(p)
+    return res
+
+def cur_state():
+    ref = next((p for p in plist if p.get("name") == "Ubuntu"), defaults)
+    ac = bool(ref.get("useAcrylic", defaults.get("useAcrylic", False)))
+    op = int(ref.get("opacity", defaults.get("opacity", 100)))
+    wop = float(ref.get("backgroundImageOpacity", defaults.get("backgroundImageOpacity", 0.0)))
+    return ac, op, wop
+
+ac, op, wop = cur_state()
+is_glass = ac or op < 100
+
+if mode == "status":
+    g_lbl = f"ON (Acrylic · {op}%)" if is_glass else f"OFF (Solido · {op}%)"
+    w_lbl = f"ON ({wop:.2f})" if wop > 0.01 else "OFF (0.00)"
+    print(f"  Fundo translucido : {g_lbl}")
+    print(f"  Wallpaper         : {w_lbl}")
+    sys.exit(0)
+
+if mode in ("wall", "wallpaper"):
+    if wop > 0.01:
+        wall_file.write_text(f"{wop:.2f}\n", encoding="utf-8")
+        new_wop = 0.0
+        msg = "✓ Wallpaper do Windows Terminal: OFF (fundo liso)"
+    else:
+        try:
+            saved = float(wall_file.read_text(encoding="utf-8").strip())
+            new_wop = saved if 0.05 <= saved <= 1.0 else 0.68
+        except Exception:
+            new_wop = 0.68
+        msg = f"✓ Wallpaper do Windows Terminal: ON (opacidade {new_wop:.2f})"
+    for p in matched_profiles():
+        if "backgroundImage" in p or p is defaults:
+            p["backgroundImageOpacity"] = new_wop
+    wt_path.write_text(json.dumps(data, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(msg)
+    sys.exit(0)
+
+if mode == "toggle":
+    want_glass = not is_glass
+    custom_op = None
+elif mode in ("off", "solid", "solido", "opaco", "0", "false"):
+    want_glass = False
+    custom_op = None
+elif mode in ("on", "glass", "translucido", "acrylic", "1", "true"):
+    want_glass = True
+    custom_op = None
+elif mode.isdigit():
+    val = max(40, min(100, int(mode)))
+    want_glass = val < 100
+    custom_op = val
+else:
+    print("Uso: nave-glass [toggle|off|solid|on|glass|wall|status|<40..100>]")
+    sys.exit(1)
+
+if not want_glass:
+    if op < 100:
+        op_file.write_text(f"{op}\n", encoding="utf-8")
+    new_ac, new_op = False, 100
+    msg = "✓ Modo translucido: OFF (fundo 100% solido)"
+else:
+    if custom_op is not None:
+        new_op = custom_op
+    else:
+        try:
+            saved = int(op_file.read_text(encoding="utf-8").strip())
+            new_op = saved if 40 <= saved < 100 else 92
+        except Exception:
+            new_op = 92
+    op_file.write_text(f"{new_op}\n", encoding="utf-8")
+    new_ac = True
+    msg = f"✓ Modo translucido: ON (Acrylic · opacidade {new_op}%)"
+
+for p in matched_profiles():
+    p["useAcrylic"] = new_ac
+    p["opacity"] = new_op
+
+wt_path.write_text(json.dumps(data, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
+print(msg)
+PY
+}
+
 # ------------------------------------------------------------------------------
 # WSL <-> Windows Bridge
 # ------------------------------------------------------------------------------
@@ -991,6 +1119,7 @@ function nave-help {
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-theme <nome>%f      Paleta + ne sync (cyber|emerald|sunset|nord|stealth|dracula)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-layout <modo>%f     Layout do prompt (framed|rail|hud|compact)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-shader <modo>%f     Shader GPU Windows Terminal (glow|crt|off)"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-glass [modo]%f      Alterna fundo translucido/solido (off|on|wall|40..100)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-bg / transient%f    Liga/desliga fundo OSC 11 ou transient prompt"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}sysinfo / hr [titulo]%f  Arte + barras de sistema / regua divisoria"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-hud / nave-warp%f   Cockpit tempo real ([1-6],[p]) / starfield 3D"

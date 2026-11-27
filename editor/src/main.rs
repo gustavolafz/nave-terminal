@@ -2545,6 +2545,10 @@ impl App {
                     self.set_status(format!("Estilo Vim Visual: {}", st));
                     return;
                 }
+                KeyCode::Char('o') => {
+                    self.toggle_wt_glass();
+                    return;
+                }
                 KeyCode::Char('i') => {
                     self.doc_mut().expand_selection();
                     return;
@@ -3056,8 +3060,29 @@ impl App {
 
     fn open_command_palette(&mut self) {
         self.pending_pane_pickers.clear();
-        let pk = Picker::command_palette(&self.cfg, self.doc().eol.label());
+        let pk = Picker::command_palette(&self.cfg, self.doc().eol.label(), config::wt_glass_state());
         self.mode = Mode::Picker(pk);
+    }
+
+    fn toggle_wt_glass(&mut self) {
+        match config::toggle_wt_glass() {
+            Ok((true, op)) => {
+                self.set_status(format!(
+                    "✓ Fundo translucido ON (Acrylic · {}% · Alt+O alterna)",
+                    op
+                ));
+            }
+            Ok((false, _)) => {
+                self.set_status("✓ Fundo translucido OFF (solido 100% · Alt+O alterna)");
+            }
+            Err(_) => {
+                // Non-WSL / non-Windows-Terminal fallback: toggle solid editor canvas
+                self.cfg.opaque_bg = !self.cfg.opaque_bg;
+                self.cfg.save();
+                let st = if self.cfg.opaque_bg { "Solido (opaco)" } else { "Translucido (herda terminal)" };
+                self.set_status(format!("Fundo do Editor: {}", st));
+            }
+        }
     }
 
     fn enter_find(&mut self, replace: bool) {
@@ -3329,6 +3354,17 @@ impl App {
                     }
                     let st = if self.cfg.autocomplete { "ON" } else { "OFF" };
                     self.set_status(format!("Autocomplete Inteligente: {}", st));
+                }
+                PickerAction::ToggleWtGlass => self.toggle_wt_glass(),
+                PickerAction::ToggleOpaqueBg => {
+                    self.cfg.opaque_bg = !self.cfg.opaque_bg;
+                    self.cfg.save();
+                    let st = if self.cfg.opaque_bg {
+                        "ON (canvas opaco puro)"
+                    } else {
+                        "OFF (herda fundo do terminal)"
+                    };
+                    self.set_status(format!("Fundo Solido no Editor: {}", st));
                 }
                 PickerAction::CycleAutocompleteMinLen => {
                     self.cfg.cycle_autocomplete_min_len();

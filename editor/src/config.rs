@@ -1,9 +1,11 @@
 use std::fs;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
 #[derive(Clone, Debug)]
 pub struct EditorConfig {
     pub palette: String,
+    pub opaque_bg: bool,
     pub vim_visual: bool,
     pub relative_numbers: bool,
     pub block_cursor: bool,
@@ -32,6 +34,7 @@ impl Default for EditorConfig {
     fn default() -> Self {
         Self {
             palette: "auto".into(),
+            opaque_bg: false,
             vim_visual: false,
             relative_numbers: false,
             block_cursor: false,
@@ -90,6 +93,7 @@ impl EditorConfig {
                         cfg.palette = v.to_string();
                     }
                 }
+                "opaque_bg" => cfg.opaque_bg = parse_bool(v),
                 "vim_visual" => cfg.vim_visual = parse_bool(v),
                 "relative_numbers" => cfg.relative_numbers = parse_bool(v),
                 "block_cursor" => cfg.block_cursor = parse_bool(v),
@@ -143,6 +147,7 @@ impl EditorConfig {
         let body = format!(
             "# Nave Edit configuration (persisted automatically)\n\
              palette={}\n\
+             opaque_bg={}\n\
              vim_visual={}\n\
              relative_numbers={}\n\
              block_cursor={}\n\
@@ -166,6 +171,7 @@ impl EditorConfig {
              exam_mode={}\n\
              judge_timeout_ms={}\n",
             self.palette,
+            self.opaque_bg,
             self.vim_visual,
             self.relative_numbers,
             self.block_cursor,
@@ -228,5 +234,189 @@ impl EditorConfig {
             _ => 0,
         };
         self.save();
+    }
+}
+
+pub fn find_wt_settings_json() -> Option<PathBuf> {
+    if let Ok(override_p) = std::env::var("NAVE_WT_SETTINGS") {
+        let p = PathBuf::from(override_p);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let users_dir = PathBuf::from("/mnt/c/Users");
+    let entries = fs::read_dir(users_dir).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_s = name.to_string_lossy();
+        if matches!(name_s.as_ref(), "Public" | "Default" | "Default User" | "All Users") {
+            continue;
+        }
+        let cand = entry
+            .path()
+            .join("AppData/Local/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json");
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+fn parse_json_bool_field(slice: &str, key: &str) -> Option<bool> {
+    let needle = format!("\"{}\"", key);
+    let idx = slice.find(&needle)?;
+    let rest = slice[idx + needle.len()..].trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start();
+    if rest.starts_with("true") {
+        Some(true)
+    } else if rest.starts_with("false") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn parse_json_u8_field(slice: &str, key: &str) -> Option<u8> {
+    let needle = format!("\"{}\"", key);
+    let idx = slice.find(&needle)?;
+    let rest = slice[idx + needle.len()..].trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start();
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse::<u8>().ok()
+}
+
+/// Fast (<0.1ms) read of Windows Terminal translucency state: `(is_translucent, opacity)`.
+pub fn wt_glass_state() -> Option<(bool, u8)> {
+    let path = find_wt_settings_json()?;
+    let raw = fs::read_to_string(path).ok()?;
+    let region = raw
+        .find("\"defaults\"")
+        .map(|i| &raw[i..(i + 1500).min(raw.len())])
+        .unwrap_or(&raw);
+    let ac = parse_json_bool_field(region, "useAcrylic").unwrap_or(false);
+    let op = parse_json_u8_field(region, "opacity").unwrap_or(100);
+    Some((ac || op < 100, op))
+}
+
+/// Toggles Windows Terminal translucent background (`useAcrylic` + `opacity` 92 <-> 100) live.
+pub fn toggle_wt_glass() -> Result<(bool, u8), String> {
+    let wt_path = find_wt_settings_json()
+        .ok_or_else(|| "settings.json do Windows Terminal nao encontrado".to_string())?;
+    let cfg_dir = EditorConfig::config_path()
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let _ = fs::create_dir_all(&cfg_dir);
+
+    let py = r#"
+import json, pathlib, sys
+wt_path = pathlib.Path(sys.argv[1])
+op_file = pathlib.Path(sys.argv[2]) / "glass_opacity"
+data = json.loads(wt_path.read_text(encoding="utf-8"))
+profiles = data.setdefault("profiles", {})
+defaults = profiles.setdefault("defaults", {})
+plist = profiles.get("list", [])
+targets = ("Ubuntu", "Windows PowerShell", "PowerShell")
+sources = ("Microsoft.WSL", "Windows.Terminal.PowershellCore")
+
+ref = next((p for p in plist if p.get("name") == "Ubuntu"), defaults)
+ac = bool(ref.get("useAcrylic", defaults.get("useAcrylic", False)))
+op = int(ref.get("opacity", defaults.get("opacity", 100)))
+is_glass = ac or op < 100
+
+if is_glass:
+    if op < 100:
+        op_file.write_text(f"{op}\n", encoding="utf-8")
+    new_ac, new_op = False, 100
+else:
+    try:
+        saved = int(op_file.read_text(encoding="utf-8").strip())
+        new_op = saved if 40 <= saved < 100 else 92
+    except Exception:
+        new_op = 92
+    op_file.write_text(f"{new_op}\n", encoding="utf-8")
+    new_ac = True
+
+matched = [defaults]
+for p in plist:
+    if p.get("name") in targets or p.get("source") in sources or "useAcrylic" in p or "opacity" in p:
+        matched.append(p)
+for p in matched:
+    p["useAcrylic"] = new_ac
+    p["opacity"] = new_op
+
+wt_path.write_text(json.dumps(data, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
+print(f"{1 if new_ac else 0} {new_op}")
+"#;
+
+    let out = Command::new("python3")
+        .arg("-c")
+        .arg(py)
+        .arg(&wt_path)
+        .arg(&cfg_dir)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("Falha ao rodar python3: {}", e))?;
+
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() {
+            "Erro ao atualizar settings.json".into()
+        } else {
+            err
+        });
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut parts = stdout.split_whitespace();
+    let is_glass = parts.next() == Some("1");
+    let op = parts.next().and_then(|s| s.parse::<u8>().ok()).unwrap_or(if is_glass { 92 } else { 100 });
+    Ok((is_glass, op))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wt_glass_toggles_acrylic_and_restores_saved_opacity() {
+        let dir = std::env::temp_dir().join(format!("nave_wt_glass_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let wt_p = dir.join("settings.json");
+        fs::write(
+            &wt_p,
+            r#"{
+    "profiles": {
+        "defaults": {
+            "opacity": 88,
+            "useAcrylic": true,
+            "backgroundImageOpacity": 0.68
+        },
+        "list": [
+            { "name": "Ubuntu", "opacity": 88, "useAcrylic": true }
+        ]
+    }
+}
+"#,
+        )
+        .unwrap();
+
+        std::env::set_var("NAVE_WT_SETTINGS", &wt_p);
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+
+        assert_eq!(wt_glass_state(), Some((true, 88)));
+        let (glass1, op1) = toggle_wt_glass().unwrap();
+        assert!(!glass1);
+        assert_eq!(op1, 100);
+        assert_eq!(wt_glass_state(), Some((false, 100)));
+
+        let (glass2, op2) = toggle_wt_glass().unwrap();
+        assert!(glass2);
+        assert_eq!(op2, 88);
+        assert_eq!(wt_glass_state(), Some((true, 88)));
+
+        std::env::remove_var("NAVE_WT_SETTINGS");
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -18,6 +18,8 @@ pub enum PickerAction {
     JumpToLine(usize),
     InsertSnippet(String),
     ToggleVimVisual,
+    ToggleWtGlass,
+    ToggleOpaqueBg,
     ToggleRelativeNumbers,
     ToggleBlockCursor,
     ToggleAutoHideMouse,
@@ -257,9 +259,28 @@ impl Picker {
         p
     }
 
-    pub fn command_palette(cfg: &crate::config::EditorConfig, eol: &str) -> Self {
+    pub fn command_palette(
+        cfg: &crate::config::EditorConfig,
+        eol: &str,
+        wt_glass: Option<(bool, u8)>,
+    ) -> Self {
         let onoff = |b: bool| if b { "ON" } else { "OFF" };
+        let wt_lbl = match wt_glass {
+            Some((true, op)) => format!("Fundo Translucido (Terminal) [ON · {}%]", op),
+            Some((false, _)) => "Fundo Translucido (Terminal) [OFF · Solido]".into(),
+            None => "Alternar Fundo Translucido (Terminal)".into(),
+        };
         let items = vec![
+            PickerItem {
+                label: wt_lbl,
+                detail: "Alt+O · Acrylic".into(),
+                action: PickerAction::ToggleWtGlass,
+            },
+            PickerItem {
+                label: format!("Fundo Solido no Editor [{}]", onoff(cfg.opaque_bg)),
+                detail: "oculta wallpaper".into(),
+                action: PickerAction::ToggleOpaqueBg,
+            },
             PickerItem {
                 label: format!("Estilo Vim Visual [{}]", onoff(cfg.vim_visual)),
                 detail: "Alt+V (relnum + scroll cursor + scrolloff)".into(),
