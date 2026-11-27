@@ -20,8 +20,8 @@ use layout::{
 use palette::Palette;
 use picker::{Picker, PickerAction};
 use render::{
-    char_col_at_visual, ensure_cursor_visible, render_editor, LayoutInfo, PaneRenderInput,
-    PromptBar, TabBadge,
+    char_col_at_visual, ensure_cursor_visible, render_editor, DropPreview, DropZone, LayoutInfo,
+    PaneRenderInput, PromptBar, TabBadge,
 };
 use rope::LineEnding;
 use std::env;
@@ -49,6 +49,15 @@ enum DragState {
     None,
     Selection(PaneId),
     Divider(DividerHit),
+    Tab {
+        src_pane: PaneId,
+        src_tab: usize,
+        start_col: usize,
+        start_row: usize,
+        cur_col: usize,
+        cur_row: usize,
+        dragging: bool,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -769,7 +778,7 @@ impl App {
         }
     }
 
-    fn handle_mouse(&mut self, m: input::MouseEvent, _cols: usize, _rows: usize) {
+    fn handle_mouse(&mut self, m: input::MouseEvent, cols: usize, rows: usize) {
         if matches!(self.mode, Mode::Picker(_)) {
             if let Mode::Picker(ref mut pk) = self.mode {
                 match m.kind {
@@ -827,7 +836,7 @@ impl App {
                     return;
                 }
 
-                // 2. Check pane tab bars & pane content rects
+                // 2. Check pane tab bars -> focus/switch immediately AND arm DragState::Tab for drag-and-drop!
                 let hit_tab = self.layout.panes.iter().find_map(|pl| {
                     if m.row == pl.tab_bar_row && pl.rect.contains(m.col, m.row) {
                         let tab_idx = pl
@@ -841,13 +850,22 @@ impl App {
                     }
                 });
                 if let Some((pid, opt_tidx)) = hit_tab {
+                    self.mode = Mode::Edit;
                     if let Some(tidx) = opt_tidx {
                         self.focus_pane_and_tab(pid, tidx);
+                        self.drag = DragState::Tab {
+                            src_pane: pid,
+                            src_tab: tidx,
+                            start_col: m.col,
+                            start_row: m.row,
+                            cur_col: m.col,
+                            cur_row: m.row,
+                            dragging: false,
+                        };
                     } else {
                         self.focus_pane(pid);
+                        self.drag = DragState::None;
                     }
-                    self.mode = Mode::Edit;
-                    self.drag = DragState::None;
                     return;
                 }
 
@@ -912,6 +930,27 @@ impl App {
                     let sep = if div.axis == SplitAxis::Horizontal { "│" } else { "─" };
                     self.set_status(format!("Redimensionando ({}% {} {}%)", pct1, sep, pct2));
                 }
+                DragState::Tab {
+                    src_pane,
+                    src_tab,
+                    start_col,
+                    start_row,
+                    mut dragging,
+                    ..
+                } => {
+                    if !dragging && (m.col.abs_diff(start_col) >= 2 || m.row != start_row) {
+                        dragging = true;
+                    }
+                    self.drag = DragState::Tab {
+                        src_pane,
+                        src_tab,
+                        start_col,
+                        start_row,
+                        cur_col: m.col,
+                        cur_row: m.row,
+                        dragging,
+                    };
+                }
                 DragState::Selection(pid) => {
                     if pid == self.active_pane {
                         if let Some((doc_row, doc_col)) = self.screen_to_doc_in_pane(pid, m.col, m.row) {
@@ -922,7 +961,344 @@ impl App {
                 DragState::None => {}
             },
             MouseKind::LeftUp => {
+                if let DragState::Tab {
+                    src_pane,
+                    src_tab,
+                    dragging: true,
+                    ..
+                } = self.drag
+                {
+                    if let Some(dp) = self.compute_drop_preview(src_pane, src_tab, m.col, m.row) {
+                        self.apply_tab_drop(src_pane, src_tab, dp, cols, rows);
+                    }
+                }
                 self.drag = DragState::None;
+            }
+        }
+    }
+
+    fn compute_drop_preview(
+        &self,
+        src_pane: PaneId,
+        src_tab: usize,
+        col: usize,
+        row: usize,
+    ) -> Option<DropPreview> {
+        let src_p = self.panes.iter().find(|p| p.id == src_pane)?;
+        let tv = src_p.tabs.get(src_tab)?;
+        let file_name = self
+            .docs
+            .get(tv.doc_id)
+            .and_then(|d| d.as_ref())
+            .map(|d| d.display_name())
+            .unwrap_or_else(|| "[Sem nome]".into());
+
+        // Find target pane whose rect contains `(col, row)` (or nearest pane if over divider)
+        let pl = self
+            .layout
+            .panes
+            .iter()
+            .find(|p| p.rect.contains(col, row))
+            .or_else(|| {
+                self.layout.panes.iter().min_by_key(|p| {
+                    let dx = if col < p.rect.x {
+                        p.rect.x - col
+                    } else if col >= p.rect.x + p.rect.w {
+                        col - (p.rect.x + p.rect.w)
+                    } else {
+                        0
+                    };
+                    let dy = if row < p.rect.y {
+                        p.rect.y - row
+                    } else if row >= p.rect.y + p.rect.h {
+                        row - (p.rect.y + p.rect.h)
+                    } else {
+                        0
+                    };
+                    dx + dy
+                })
+            })?;
+
+        let r = pl.rect;
+
+        // 1. Over target pane's tab bar -> reorder / insert into tab bar!
+        if row == pl.tab_bar_row {
+            let target_p = self.panes.iter().find(|p| p.id == pl.pane_id)?;
+            let mut insert_idx = target_p.tabs.len();
+            let mut marker_col = pl
+                .tab_hitboxes
+                .last()
+                .map(|&(_, ec, _)| ec)
+                .unwrap_or(r.x + 1);
+            for &(sc, ec, ti) in &pl.tab_hitboxes {
+                let mid = (sc + ec) / 2;
+                if col < mid {
+                    insert_idx = ti;
+                    marker_col = sc;
+                    break;
+                }
+            }
+            let label = if pl.pane_id == src_pane {
+                "Reordenar aba"
+            } else {
+                "Mover para barra de abas"
+            };
+            return Some(DropPreview {
+                target_pane: pl.pane_id,
+                zone: DropZone::TabBar(insert_idx),
+                preview_rect: Rect { x: r.x, y: r.y, w: r.w, h: 1 },
+                tab_insert_col: Some(marker_col),
+                file_name,
+                label,
+            });
+        }
+
+        // 2. Over target pane's editor canvas -> 5-zone VS Code split/center detection!
+        let canvas_y = r.y + 1;
+        let canvas_h = r.h.saturating_sub(1).max(1);
+        let rel_x = col.saturating_sub(r.x) as f32 / r.w.max(1) as f32;
+        let rel_y = row.saturating_sub(canvas_y) as f32 / canvas_h as f32;
+
+        let d_left = rel_x;
+        let d_right = (1.0 - rel_x).max(0.0);
+        let d_top = rel_y;
+        let d_bot = (1.0 - rel_y).max(0.0);
+
+        let edge_x = d_left.min(d_right);
+        let edge_y = d_top.min(d_bot);
+
+        let zone = if edge_x < 0.28 || edge_y < 0.28 {
+            if edge_x <= edge_y {
+                if d_left <= d_right { DropZone::Left } else { DropZone::Right }
+            } else if d_top <= d_bot {
+                DropZone::Top
+            } else {
+                DropZone::Bottom
+            }
+        } else {
+            DropZone::Center
+        };
+
+        let half_w = (r.w / 2).max(4);
+        let half_h = (r.h / 2).max(3);
+        let (preview_rect, label) = match zone {
+            DropZone::Left => (
+                Rect { x: r.x, y: r.y, w: half_w, h: r.h },
+                "Dividir à Esquerda (│)",
+            ),
+            DropZone::Right => (
+                Rect { x: r.x + r.w - half_w, y: r.y, w: half_w, h: r.h },
+                "Dividir à Direita (│)",
+            ),
+            DropZone::Top => (
+                Rect { x: r.x, y: r.y, w: r.w, h: half_h },
+                "Dividir Acima (─)",
+            ),
+            DropZone::Bottom => (
+                Rect { x: r.x, y: r.y + r.h - half_h, w: r.w, h: half_h },
+                "Dividir Abaixo (─)",
+            ),
+            DropZone::Center => (r, "Mover para este Painel"),
+            DropZone::TabBar(_) => unreachable!(),
+        };
+
+        Some(DropPreview {
+            target_pane: pl.pane_id,
+            zone,
+            preview_rect,
+            tab_insert_col: None,
+            file_name,
+            label,
+        })
+    }
+
+    fn apply_tab_drop(
+        &mut self,
+        src_pane: PaneId,
+        src_tab: usize,
+        dp: DropPreview,
+        cols: usize,
+        rows: usize,
+    ) {
+        if !self.panes.iter().any(|p| p.id == src_pane)
+            || src_tab >= self.pane(src_pane).tabs.len()
+        {
+            return;
+        }
+        self.sync_active_to_tab();
+
+        match dp.zone {
+            DropZone::TabBar(mut insert_idx) => {
+                if dp.target_pane == src_pane {
+                    // Reorder within the SAME pane
+                    let p = self.pane_mut(src_pane);
+                    let len = p.tabs.len();
+                    if len <= 1 {
+                        return;
+                    }
+                    let moved = p.tabs.remove(src_tab);
+                    if insert_idx > src_tab {
+                        insert_idx -= 1;
+                    }
+                    let idx = insert_idx.min(p.tabs.len());
+                    p.tabs.insert(idx, moved);
+                    p.active_tab = idx;
+                    self.active_pane = src_pane;
+                    self.load_active_from_tab();
+                    if idx != src_tab {
+                        self.set_status(format!("Aba reordenada para posicao {}/{}", idx + 1, len));
+                    }
+                } else {
+                    // Move tab directly into target pane's tab bar at `insert_idx`
+                    let moved = {
+                        let src = self.pane_mut(src_pane);
+                        let tv = src.tabs.remove(src_tab);
+                        if !src.tabs.is_empty() && src.active_tab >= src.tabs.len() {
+                            src.active_tab = src.tabs.len() - 1;
+                        }
+                        tv
+                    };
+                    if self.pane(src_pane).tabs.is_empty() {
+                        self.panes.retain(|p| p.id != src_pane);
+                        self.layout_tree.remove_pane(src_pane);
+                    }
+                    let dst = self.pane_mut(dp.target_pane);
+                    if let Some(ex) = dst.tabs.iter().position(|t| t.doc_id == moved.doc_id) {
+                        dst.tabs[ex] = moved;
+                        dst.active_tab = ex;
+                    } else {
+                        let idx = insert_idx.min(dst.tabs.len());
+                        dst.tabs.insert(idx, moved);
+                        dst.active_tab = idx;
+                    }
+                    self.active_pane = dp.target_pane;
+                    self.load_active_from_tab();
+                    let num = self.group_number_of(dp.target_pane);
+                    self.set_status(format!("Aba movida para Painel {}", num));
+                }
+            }
+            DropZone::Center => {
+                if dp.target_pane == src_pane {
+                    return;
+                }
+                let moved = {
+                    let src = self.pane_mut(src_pane);
+                    let tv = src.tabs.remove(src_tab);
+                    if !src.tabs.is_empty() && src.active_tab >= src.tabs.len() {
+                        src.active_tab = src.tabs.len() - 1;
+                    }
+                    tv
+                };
+                if self.pane(src_pane).tabs.is_empty() {
+                    self.panes.retain(|p| p.id != src_pane);
+                    self.layout_tree.remove_pane(src_pane);
+                }
+                let dst = self.pane_mut(dp.target_pane);
+                if let Some(ex) = dst.tabs.iter().position(|t| t.doc_id == moved.doc_id) {
+                    dst.tabs[ex] = moved;
+                    dst.active_tab = ex;
+                } else {
+                    dst.tabs.push(moved);
+                    dst.active_tab = dst.tabs.len() - 1;
+                }
+                self.active_pane = dp.target_pane;
+                self.load_active_from_tab();
+                let num = self.group_number_of(dp.target_pane);
+                self.set_status(format!("Aba movida para Painel {}", num));
+            }
+            DropZone::Left | DropZone::Right | DropZone::Top | DropZone::Bottom => {
+                let axis = match dp.zone {
+                    DropZone::Left | DropZone::Right => SplitAxis::Horizontal,
+                    _ => SplitAxis::Vertical,
+                };
+                let place_first = matches!(dp.zone, DropZone::Left | DropZone::Top);
+                let src_len = self.pane(src_pane).tabs.len();
+
+                // Special case: dragging the ONLY tab of the ONLY pane onto its own edge -> mirror-split!
+                if dp.target_pane == src_pane && src_len == 1 {
+                    if self.panes.len() == 1 {
+                        self.split_active(axis, place_first, cols, rows);
+                        return;
+                    }
+                    // Dragging a 1-tab pane onto its OWN edge when other panes exist -> re-dock on outer edge
+                    let dir = match dp.zone {
+                        DropZone::Left => Dir::Left,
+                        DropZone::Right => Dir::Right,
+                        DropZone::Top => Dir::Up,
+                        _ => Dir::Down,
+                    };
+                    self.active_pane = src_pane;
+                    self.load_active_from_tab();
+                    if self.layout_tree.remove_pane(src_pane).is_some() {
+                        let old_root = std::mem::replace(&mut self.layout_tree, LayoutNode::leaf(0));
+                        let moved = Box::new(LayoutNode::leaf(src_pane));
+                        let rest = Box::new(old_root);
+                        let (first, second) = if place_first { (moved, rest) } else { (rest, moved) };
+                        let split_id = self.next_split_id;
+                        self.next_split_id += 1;
+                        self.layout_tree = LayoutNode::Split {
+                            id: split_id,
+                            axis,
+                            ratio: 0.5,
+                            first,
+                            second,
+                        };
+                        let lbl = match dir {
+                            Dir::Left => "esquerda (│)",
+                            Dir::Right => "direita (│)",
+                            Dir::Up => "topo (─)",
+                            Dir::Down => "base (─)",
+                        };
+                        self.set_status(format!("Painel reposicionado na {}", lbl));
+                    }
+                    return;
+                }
+
+                // Check minimum pane size on target pane before splitting
+                let area = self.pane_area(cols, rows);
+                let computed = self.layout_tree.compute(area);
+                if let Some(tr) = computed.rect_of(dp.target_pane) {
+                    let fits = match axis {
+                        SplitAxis::Horizontal => tr.w >= MIN_PANE_W * 2 + 1,
+                        SplitAxis::Vertical => tr.h >= MIN_PANE_H * 2 + 1,
+                    };
+                    // Allow if collapsing `src_pane` will free space for target!
+                    let will_collapse = src_len == 1 && dp.target_pane != src_pane;
+                    if !fits && !will_collapse {
+                        self.set_status("Espaco insuficiente para dividir este painel");
+                        return;
+                    }
+                }
+
+                // Detach tab from source pane (collapsing source pane if it becomes empty!)
+                let moved_tv = {
+                    let src = self.pane_mut(src_pane);
+                    let tv = src.tabs.remove(src_tab);
+                    if !src.tabs.is_empty() && src.active_tab >= src.tabs.len() {
+                        src.active_tab = src.tabs.len() - 1;
+                    }
+                    tv
+                };
+                if self.pane(src_pane).tabs.is_empty() {
+                    self.panes.retain(|p| p.id != src_pane);
+                    self.layout_tree.remove_pane(src_pane);
+                }
+
+                // Split `dp.target_pane` with a new pane holding `moved_tv`
+                let new_pid = self.next_pane_id;
+                self.next_pane_id += 1;
+                let split_id = self.next_split_id;
+                self.next_split_id += 1;
+                self.panes.push(Pane {
+                    id: new_pid,
+                    tabs: vec![moved_tv],
+                    active_tab: 0,
+                });
+                self.layout_tree
+                    .split_pane(dp.target_pane, new_pid, split_id, axis, place_first);
+                self.active_pane = new_pid;
+                self.load_active_from_tab();
+                self.set_status(format!("{} → {}", dp.file_name, dp.label));
             }
         }
     }
@@ -1416,7 +1792,10 @@ impl App {
         // Plain & Shift keys
         match k.code {
             KeyCode::Esc => {
-                if !self.doc_mut().collapse_cursors() && !self.doc().search.query.is_empty() {
+                if !matches!(self.drag, DragState::None) {
+                    self.drag = DragState::None;
+                    self.set_status("Arrasto cancelado");
+                } else if !self.doc_mut().collapse_cursors() && !self.doc().search.query.is_empty() {
                     self.doc_mut().search.query.clear();
                     self.doc_mut().search.matches.clear();
                     self.doc_mut().search.active_idx = None;
@@ -2138,14 +2517,35 @@ impl App {
             .collect();
 
         let status = self.active_status().map(str::to_string);
-        let mode_hint: Option<&str> = match self.mode {
-            Mode::ChordK => Some(
-                "Ctrl+K → [\\] lado a lado · [-] topo/base · [←↑↓→] focar · [Shift+seta] mover · [o] inverter · [s] trocar · [r] redimensionar · [=] 50/50 · [w] fechar",
-            ),
-            Mode::ResizePane => Some(
-                "REDIMENSIONAR → [←/→] largura · [↑/↓] altura · [+/-] painel · [=] 50/50 · [Enter/Esc] sair",
-            ),
+        let drop_preview = match self.drag {
+            DragState::Tab {
+                src_pane,
+                src_tab,
+                cur_col,
+                cur_row,
+                dragging: true,
+                ..
+            } => self.compute_drop_preview(src_pane, src_tab, cur_col, cur_row),
             _ => None,
+        };
+        let drag_hint_owned = drop_preview.as_ref().map(|dp| {
+            format!(
+                "Arrastando {} → {} · Solte para posicionar · Esc cancela",
+                dp.file_name, dp.label
+            )
+        });
+        let mode_hint: Option<&str> = if let Some(ref dh) = drag_hint_owned {
+            Some(dh.as_str())
+        } else {
+            match self.mode {
+                Mode::ChordK => Some(
+                    "Ctrl+K → [\\] lado a lado · [-] topo/base · [←↑↓→] focar · [Shift+seta] mover · [o] inverter · [s] trocar · [r] redimensionar · [=] 50/50 · [w] fechar",
+                ),
+                Mode::ResizePane => Some(
+                    "REDIMENSIONAR → [←/→] largura · [↑/↓] altura · [+/-] painel · [=] 50/50 · [Enter/Esc] sair",
+                ),
+                _ => None,
+            }
         };
         let search_snap = self.doc().search.clone();
         let prompt = match &self.mode {
@@ -2203,6 +2603,7 @@ impl App {
             &computed,
             active_divider,
             highlight_all_dividers,
+            drop_preview.as_ref(),
             self.palette,
             cols,
             rows,

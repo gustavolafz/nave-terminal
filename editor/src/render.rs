@@ -57,6 +57,26 @@ pub struct PaneRenderInput {
     pub primary: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropZone {
+    TabBar(usize), // insertion index inside target pane's tab list
+    Center,
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+#[derive(Clone, Debug)]
+pub struct DropPreview {
+    pub target_pane: PaneId,
+    pub zone: DropZone,
+    pub preview_rect: Rect,
+    pub tab_insert_col: Option<usize>,
+    pub file_name: String,
+    pub label: &'static str,
+}
+
 pub enum PromptBar<'a> {
     None,
     Find {
@@ -207,6 +227,7 @@ pub fn render_editor(
     computed: &ComputedLayout,
     active_divider: Option<usize>,
     highlight_all_dividers: bool,
+    drop_preview: Option<&DropPreview>,
     pal: &Palette,
     cols: usize,
     rows: usize,
@@ -307,6 +328,70 @@ pub fn render_editor(
             }
         }
         out.push_str(RST);
+    }
+
+    // -------------------------------------------------------------------------
+    // Live Tab Drag-and-Drop Zone Preview Overlay (VS Code style!)
+    // -------------------------------------------------------------------------
+    if let Some(dp) = drop_preview {
+        match dp.zone {
+            DropZone::TabBar(_) => {
+                if let Some(ins_col) = dp.tab_insert_col {
+                    if let Some(pl) = layout.panes.iter().find(|p| p.pane_id == dp.target_pane) {
+                        let cx = ins_col.min(cols.saturating_sub(1));
+                        let _ = write!(out, "\x1b[{};{}H", pl.tab_bar_row + 1, cx + 1);
+                        push_bg(&mut out, pal.grad[0]);
+                        push_fg(&mut out, pal.bar_bg, true);
+                        out.push('┃');
+                        out.push_str(RST);
+                    }
+                }
+            }
+            DropZone::Center | DropZone::Left | DropZone::Right | DropZone::Top | DropZone::Bottom => {
+                let r = dp.preview_rect;
+                if r.w >= 4 && r.h >= 3 {
+                    // Draw glowing rounded preview frame (`╭──╮`, `│`, `╰──╯`)
+                    push_bg(&mut out, pal.sel_bg);
+                    push_fg(&mut out, pal.grad[0], true);
+
+                    // Top edge
+                    let _ = write!(out, "\x1b[{};{}H╭", r.y + 1, r.x + 1);
+                    for _ in 0..r.w.saturating_sub(2) {
+                        out.push('─');
+                    }
+                    out.push('╮');
+
+                    // Side edges
+                    for dy in 1..r.h.saturating_sub(1) {
+                        let y = r.y + dy + 1;
+                        let _ = write!(out, "\x1b[{};{}H│", y, r.x + 1);
+                        let _ = write!(out, "\x1b[{};{}H│", y, r.x + r.w);
+                    }
+
+                    // Bottom edge
+                    let _ = write!(out, "\x1b[{};{}H╰", r.y + r.h, r.x + 1);
+                    for _ in 0..r.w.saturating_sub(2) {
+                        out.push('─');
+                    }
+                    out.push('╯');
+
+                    // Centered floating pill label showing filename + destination action
+                    let badge_raw = format!(" ⬚ {} → {} ", dp.file_name, dp.label);
+                    let max_bw = r.w.saturating_sub(2);
+                    if max_bw >= 6 {
+                        let badge = truncate_to_cols(&badge_raw, max_bw);
+                        let bw = str_display_width(&badge);
+                        let bx = r.x + 1 + (max_bw.saturating_sub(bw)) / 2;
+                        let by = r.y + r.h / 2;
+                        let _ = write!(out, "\x1b[{};{}H", by + 1, bx + 1);
+                        push_bg(&mut out, pal.grad[0]);
+                        push_fg(&mut out, pal.bar_bg, true);
+                        out.push_str(&badge);
+                    }
+                    out.push_str(RST);
+                }
+            }
+        }
     }
 
     // -------------------------------------------------------------------------
