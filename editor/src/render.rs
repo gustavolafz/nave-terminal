@@ -700,6 +700,15 @@ pub fn render_editor(
                     out.push(' ');
                     written += 1;
                 }
+            } else if row_i == 0 && pk.filtered.is_empty() && pk.create_base.is_some() && !pk.query.trim().is_empty() {
+                let msg = format!(" + Criar e abrir '{}'", pk.query.trim());
+                let disp = truncate_to_cols(&msg, inner_w);
+                push_fg(&mut out, pal.ok, true);
+                out.push_str(&disp);
+                let written = str_display_width(&disp);
+                for _ in written..inner_w {
+                    out.push(' ');
+                }
             } else {
                 for _ in 0..inner_w {
                     out.push(' ');

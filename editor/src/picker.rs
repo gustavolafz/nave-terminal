@@ -61,10 +61,15 @@ pub struct Picker {
     pub items: Vec<PickerItem>,
     pub filtered: Vec<ScoredItem>,
     pub selected: usize,
+    pub create_base: Option<PathBuf>,
 }
 
 impl Picker {
     pub fn quick_open(base_dir: &Path) -> Self {
+        Self::quick_open_titled(base_dir, None)
+    }
+
+    pub fn quick_open_titled(base_dir: &Path, title_prefix: Option<&str>) -> Self {
         let root = find_project_root(base_dir).unwrap_or_else(|| base_dir.to_path_buf());
         let mut files = Vec::new();
         walk_files(&root, &root, &mut files, 0, 8_000);
@@ -80,12 +85,21 @@ impl Picker {
                 }
             })
             .collect();
+        let dir_lbl = base_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(".");
+        let title = match title_prefix {
+            Some(pref) => format!("{} · Abrir/Criar ({})", pref, dir_lbl),
+            None => format!("Abrir Arquivo ({})", root.file_name().and_then(|s| s.to_str()).unwrap_or(".")),
+        };
         let mut p = Self {
-            title: format!("Abrir Arquivo ({})", root.file_name().and_then(|s| s.to_str()).unwrap_or(".")),
+            title,
             query: String::new(),
             items,
             filtered: Vec::new(),
             selected: 0,
+            create_base: Some(base_dir.to_path_buf()),
         };
         p.refilter();
         p
@@ -299,6 +313,7 @@ impl Picker {
             items,
             filtered: Vec::new(),
             selected: 0,
+            create_base: None,
         };
         p.refilter();
         p
@@ -340,10 +355,27 @@ impl Picker {
     }
 
     pub fn chosen(&self) -> Option<PickerAction> {
-        self.filtered
+        if let Some(act) = self
+            .filtered
             .get(self.selected)
             .and_then(|s| self.items.get(s.index))
             .map(|it| it.action.clone())
+        {
+            return Some(act);
+        }
+        // No existing file matched: allow creating/opening a new file directly from the typed path!
+        if let Some(ref base) = self.create_base {
+            let q = self.query.trim();
+            if !q.is_empty() {
+                let target = if Path::new(q).is_absolute() {
+                    PathBuf::from(q)
+                } else {
+                    base.join(q)
+                };
+                return Some(PickerAction::OpenFile(target));
+            }
+        }
+        None
     }
 }
 

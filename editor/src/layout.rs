@@ -357,10 +357,26 @@ impl LayoutNode {
     }
 
     pub fn equalize_all(&mut self) {
-        if let LayoutNode::Split { ratio, first, second, .. } = self {
-            *ratio = 0.5;
+        if let LayoutNode::Split { axis, ratio, first, second, .. } = self {
+            let a = *axis;
+            let n1 = first.axis_weight(a) as f32;
+            let n2 = second.axis_weight(a) as f32;
+            *ratio = (n1 / (n1 + n2)).clamp(0.15, 0.85);
             first.equalize_all();
             second.equalize_all();
+        }
+    }
+
+    fn axis_weight(&self, target_axis: SplitAxis) -> usize {
+        match self {
+            LayoutNode::Leaf(_) => 1,
+            LayoutNode::Split { axis, first, second, .. } => {
+                if *axis == target_axis {
+                    first.axis_weight(target_axis) + second.axis_weight(target_axis)
+                } else {
+                    1
+                }
+            }
         }
     }
 }

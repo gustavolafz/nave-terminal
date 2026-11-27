@@ -553,12 +553,72 @@ impl App {
         }
     }
 
-    fn focus_pane_by_number(&mut self, one_based: usize) {
+    fn focus_pane_by_number(&mut self, one_based: usize, cols: usize, rows: usize) {
+        if one_based == 0 {
+            return;
+        }
         let order = self.layout_tree.pane_order();
-        if let Some(&pid) = order.get(one_based.saturating_sub(1)) {
+        if let Some(&pid) = order.get(one_based - 1) {
             self.focus_pane(pid);
             self.set_status(format!("Painel {}/{}", one_based, order.len()));
+            return;
         }
+
+        // VS Code behavior: Ctrl+2/3/4... creates the missing split pane(s) automatically
+        // and immediately opens the fuzzy file picker in the current file's directory!
+        let max_panes = ((cols + 1) / (MIN_PANE_W + 1)).max(1);
+        let target_total = one_based.min(max_panes);
+        if target_total <= order.len() {
+            self.set_status(format!(
+                "Terminal estreito demais para abrir Painel {} (max {})",
+                one_based, max_panes
+            ));
+            return;
+        }
+
+        let origin_dir = self.base_dir();
+        self.sync_active_to_tab();
+
+        let to_create = target_total - order.len();
+        for _ in 0..to_create {
+            let last_pid = self
+                .layout_tree
+                .pane_order()
+                .last()
+                .copied()
+                .unwrap_or(self.active_pane);
+            let blank_doc = Document::new_empty();
+            let mut tv = TabView::from_doc(0, &blank_doc);
+            let did = self.alloc_doc(blank_doc);
+            tv.doc_id = did;
+
+            let new_pid = self.next_pane_id;
+            self.next_pane_id += 1;
+            let split_id = self.next_split_id;
+            self.next_split_id += 1;
+
+            self.panes.push(Pane {
+                id: new_pid,
+                tabs: vec![tv],
+                active_tab: 0,
+            });
+            self.layout_tree
+                .split_pane(last_pid, new_pid, split_id, SplitAxis::Horizontal, false);
+        }
+
+        self.layout_tree.equalize_all();
+        let new_order = self.layout_tree.pane_order();
+        if let Some(&target_pid) = new_order.get(target_total - 1) {
+            self.active_pane = target_pid;
+            self.load_active_from_tab();
+        }
+        let _ = rows;
+        let prefix = format!("Painel {}", target_total);
+        self.mode = Mode::Picker(Picker::quick_open_titled(&origin_dir, Some(&prefix)));
+        self.set_status(format!(
+            "Painel {} aberto · escolha/digite arquivo ou Esc p/ vazio",
+            target_total
+        ));
     }
 
     fn move_active_tab(&mut self, dir: Dir, cols: usize, rows: usize) {
@@ -1829,7 +1889,7 @@ impl App {
                 }
                 KeyCode::Char(c @ '1'..='9') => {
                     let num = (c as u8 - b'0') as usize;
-                    self.focus_pane_by_number(num);
+                    self.focus_pane_by_number(num, cols, rows);
                     return;
                 }
                 KeyCode::Char('s') => {
@@ -2091,7 +2151,7 @@ impl App {
                 }
             }
             KeyCode::Char(c @ '1'..='9') => {
-                self.focus_pane_by_number((c as u8 - b'0') as usize);
+                self.focus_pane_by_number((c as u8 - b'0') as usize, cols, rows);
             }
             _ => {
                 self.set_status("Ctrl+K cancelado");
