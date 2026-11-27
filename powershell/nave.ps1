@@ -248,7 +248,7 @@ function nave-shader {
         }
         return
     }
-    if ($Mode -notin @("glow", "crt", "off")) { Write-Host "Uso: nave-shader <glow|crt|off|status>"; return }
+    if ($Mode -notin @("glow", "crt", "frosted", "off")) { Write-Host "Uso: nave-shader <glow|crt|frosted|off|status>"; return }
     $shaderPath = Join-Path $script:NaveConfigDir "shaders\nave-$Mode.hlsl"
     foreach ($p in $data.profiles.list) {
         if ($p.name -in $targets) {
@@ -264,32 +264,38 @@ function nave-shader {
 }
 
 function nave-glass {
-    param([string]$Mode = "toggle")
+    param([string]$Mode = "cycle")
     $wtPath = Join-Path $env:LOCALAPPDATA "Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
     if (-not (Test-Path $wtPath)) { Write-Host "settings.json do Windows Terminal nao encontrado."; return }
     $data = Get-Content $wtPath -Raw | ConvertFrom-Json
     $targets = @("Ubuntu", "Windows PowerShell", "PowerShell")
     $opFile = Join-Path $script:NaveConfigDir "glass_opacity"
     $wallFile = Join-Path $script:NaveConfigDir "wall_opacity"
+    $prevShFile = Join-Path $script:NaveConfigDir "prev_shader"
+    $frostedSh = Join-Path $script:NaveConfigDir "shaders\nave-frosted.hlsl"
+    $defaultSh = Join-Path $script:NaveConfigDir "shaders\nave-glow.hlsl"
 
     $defaults = $data.profiles.defaults
     $curAc = [bool]($defaults.useAcrylic)
     $curOp = if ($null -ne $defaults.opacity) { [int]$defaults.opacity } else { 100 }
     $curWop = if ($null -ne $defaults.backgroundImageOpacity) { [double]$defaults.backgroundImageOpacity } else { 0.0 }
+    $curSh = if ($defaults.PSObject.Properties['experimental.pixelShaderPath']) { [string]$defaults.'experimental.pixelShaderPath' } else { "" }
     $isGlass = $curAc -or ($curOp -lt 100)
+    $isFrosted = (-not $curAc) -and ($curOp -ge 100) -and ($curSh.ToLowerInvariant().Contains("nave-frosted.hlsl"))
+    $curMode = if ($isGlass) { "glass" } elseif ($isFrosted) { "frosted" } else { "solid" }
     $m = $Mode.ToLowerInvariant()
 
     if ($m -eq "status") {
-        $gLbl = if ($isGlass) { "ON (Acrylic · ${curOp}%)" } else { "OFF (Solido · ${curOp}%)" }
+        $gLbl = if ($curMode -eq "glass") { "Translucido Real (Acrylic · ${curOp}%)" } elseif ($curMode -eq "frosted") { "Vidro Escuro (Frosted 100% · imune a tela branca)" } else { "Obsidiana Solido (${curOp}%)" }
         $wLbl = if ($curWop -gt 0.01) { "ON ($('{0:N2}' -f $curWop))" } else { "OFF (0.00)" }
-        Write-Host "  Fundo translucido : $gLbl"
-        Write-Host "  Wallpaper         : $wLbl"
+        Write-Host "  Modo de fundo : $gLbl"
+        Write-Host "  Wallpaper     : $wLbl"
         return
     }
 
     $matched = @($defaults)
     foreach ($p in $data.profiles.list) {
-        if ($p.name -in $targets -or $p.PSObject.Properties['useAcrylic'] -or $p.PSObject.Properties['opacity']) {
+        if ($p.name -in $targets -or $p.PSObject.Properties['useAcrylic'] -or $p.PSObject.Properties['opacity'] -or $p.PSObject.Properties['experimental.pixelShaderPath']) {
             $matched += $p
         }
     }
@@ -317,24 +323,48 @@ function nave-glass {
         return
     }
 
-    $wantGlass = $false
+    $target = ""
     $customOp = $null
-    if ($m -eq "toggle") { $wantGlass = -not $isGlass }
-    elseif ($m -in @("off", "solid", "solido", "opaco", "0", "false")) { $wantGlass = $false }
-    elseif ($m -in @("on", "glass", "translucido", "acrylic", "1", "true")) { $wantGlass = $true }
-    elseif ($m -match '^\d+$') {
+    if ($m -in @("cycle", "toggle")) {
+        $target = switch ($curMode) { "glass" { "frosted" } "frosted" { "solid" } default { "glass" } }
+    } elseif ($m -in @("frosted", "dark", "vidro", "escuro", "fosco", "dark-glass")) {
+        $target = "frosted"
+    } elseif ($m -in @("off", "solid", "solido", "opaco", "obsidiana", "0", "false")) {
+        $target = "solid"
+    } elseif ($m -in @("on", "glass", "translucido", "acrylic", "1", "true")) {
+        $target = "glass"
+    } elseif ($m -match '^\d+$') {
         $v = [Math]::Max(40, [Math]::Min(100, [int]$m))
-        $wantGlass = $v -lt 100
+        $target = if ($v -ge 100) { "solid" } else { "glass" }
         $customOp = $v
     } else {
-        Write-Host "Uso: nave-glass [toggle|off|solid|on|glass|wall|status|<40..100>]"
+        Write-Host "Uso: nave-glass [frosted|solid|glass|wall|status|<40..100>]"
         return
     }
 
-    if (-not $wantGlass) {
+    $restoreSh = {
+        if (-not $curSh.ToLowerInvariant().Contains("nave-frosted.hlsl")) {
+            if ($curSh) { return $curSh } else { return $null }
+        }
+        if (Test-Path $prevShFile) {
+            $sv = (Get-Content $prevShFile -Raw).Trim()
+            if ($sv -eq "off") { return $null }
+            if ($sv) { return $sv }
+        }
+        return $defaultSh
+    }
+
+    if ($target -eq "frosted") {
         if ($curOp -lt 100) { Set-Content -Path $opFile -Value $curOp -NoNewline }
-        $newAc = $false; $newOp = 100
-        $msg = "$($script:CH_CHK) Modo translucido: OFF (fundo 100% solido)"
+        if (-not $curSh.ToLowerInvariant().Contains("nave-frosted.hlsl")) {
+            Set-Content -Path $prevShFile -Value $(if ($curSh) { $curSh } else { "off" }) -NoNewline
+        }
+        $newAc = $false; $newOp = 100; $newSh = $frostedSh
+        $msg = "$($script:CH_CHK) Modo Vidro Escuro (Frosted 100%): efeito translucido escuro, imune a tela branca!"
+    } elseif ($target -eq "solid") {
+        if ($curOp -lt 100) { Set-Content -Path $opFile -Value $curOp -NoNewline }
+        $newAc = $false; $newOp = 100; $newSh = & $restoreSh
+        $msg = "$($script:CH_CHK) Modo Obsidiana Solido (100%): sem translucidez"
     } else {
         $newOp = 92
         if ($null -ne $customOp) { $newOp = $customOp }
@@ -343,13 +373,18 @@ function nave-glass {
             if ([int]::TryParse((Get-Content $opFile -Raw).Trim(), [ref]$parsed) -and $parsed -ge 40 -and $parsed -lt 100) { $newOp = $parsed }
         }
         Set-Content -Path $opFile -Value $newOp -NoNewline
-        $newAc = $true
-        $msg = "$($script:CH_CHK) Modo translucido: ON (Acrylic · opacidade ${newOp}%)"
+        $newAc = $true; $newSh = & $restoreSh
+        $msg = "$($script:CH_CHK) Modo Translucido Real (Acrylic · opacidade ${newOp}%)"
     }
 
     foreach ($p in $matched) {
         $p | Add-Member -NotePropertyName 'useAcrylic' -NotePropertyValue $newAc -Force
         $p | Add-Member -NotePropertyName 'opacity' -NotePropertyValue $newOp -Force
+        if ($null -eq $newSh) {
+            $p.PSObject.Properties.Remove('experimental.pixelShaderPath')
+        } else {
+            $p | Add-Member -NotePropertyName 'experimental.pixelShaderPath' -NotePropertyValue $newSh -Force
+        }
     }
     $data | ConvertTo-Json -Depth 12 | Set-Content -Path $wtPath -Encoding UTF8
     Write-Host (_Nave-Fg $script:NaveC.ok $msg -Bold)
@@ -673,8 +708,8 @@ function nave-help {
     Write-Host (_Nave-Fg $c.dir ("$($script:CH_TL)$($script:CH_H) Nave Terminal (PowerShell) — Guia Rapido " + ([string]$script:CH_H * 14)))
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-theme <nome>    ") + "Paleta + fundo ao vivo (cyber|emerald|sunset|nord|stealth|dracula)")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-layout <modo>   ") + "Layout do prompt (framed|rail|hud|compact)")
-    Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-shader <modo>   ") + "Shader GPU Windows Terminal (glow|crt|off)")
-    Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-glass [modo]    ") + "Alterna fundo translucido/solido (off|on|wall|40..100)")
+    Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-shader <modo>   ") + "Shader GPU Windows Terminal (glow|crt|frosted|off)")
+    Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-glass [modo]    ") + "Fundo: glass / frosted (vidro escuro) / solid / wall")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-bg / welcome    ") + "Liga/desliga fundo OSC 11 ou welcome bar")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "sysinfo / hr [tit]   ") + "Arte gradiente + sistema / regua divisoria")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-hud / nave-warp ") + "Cockpit em tempo real / starfield 3D")

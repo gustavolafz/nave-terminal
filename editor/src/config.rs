@@ -285,21 +285,46 @@ fn parse_json_u8_field(slice: &str, key: &str) -> Option<u8> {
     digits.parse::<u8>().ok()
 }
 
-/// Fast (<0.1ms) read of Windows Terminal translucency state: `(is_translucent, opacity)`.
-pub fn wt_glass_state() -> Option<(bool, u8)> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WtBgMode {
+    Glass(u8),
+    Frosted,
+    Solid,
+}
+
+fn parse_json_str_field<'a>(slice: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!("\"{}\"", key);
+    let idx = slice.find(&needle)?;
+    let rest = slice[idx + needle.len()..].trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start();
+    let rest = rest.strip_prefix('"')?;
+    let end = rest.find('"')?;
+    Some(&rest[..end])
+}
+
+/// Fast (<0.1ms) read of Windows Terminal background mode: Glass / Frosted / Solid.
+pub fn wt_bg_mode() -> Option<WtBgMode> {
     let path = find_wt_settings_json()?;
     let raw = fs::read_to_string(path).ok()?;
     let region = raw
         .find("\"defaults\"")
-        .map(|i| &raw[i..(i + 1500).min(raw.len())])
+        .map(|i| &raw[i..(i + 1800).min(raw.len())])
         .unwrap_or(&raw);
     let ac = parse_json_bool_field(region, "useAcrylic").unwrap_or(false);
     let op = parse_json_u8_field(region, "opacity").unwrap_or(100);
-    Some((ac || op < 100, op))
+    let sh = parse_json_str_field(region, "experimental.pixelShaderPath").unwrap_or("");
+    if ac || op < 100 {
+        Some(WtBgMode::Glass(op))
+    } else if sh.to_ascii_lowercase().contains("nave-frosted.hlsl") {
+        Some(WtBgMode::Frosted)
+    } else {
+        Some(WtBgMode::Solid)
+    }
 }
 
-/// Toggles Windows Terminal translucent background (`useAcrylic` + `opacity` 92 <-> 100) live.
-pub fn toggle_wt_glass() -> Result<(bool, u8), String> {
+/// Cycles (`target = None`: Glass -> Frosted -> Solid -> Glass) or sets (`Some("frosted"|"solid"|"glass")`)
+/// Windows Terminal background mode live.
+pub fn set_wt_bg_mode(target: Option<&str>) -> Result<WtBgMode, String> {
     let wt_path = find_wt_settings_json()
         .ok_or_else(|| "settings.json do Windows Terminal nao encontrado".to_string())?;
     let cfg_dir = EditorConfig::config_path()
@@ -307,11 +332,27 @@ pub fn toggle_wt_glass() -> Result<(bool, u8), String> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     let _ = fs::create_dir_all(&cfg_dir);
+    let mode_arg = target.unwrap_or("cycle");
 
     let py = r#"
 import json, pathlib, sys
 wt_path = pathlib.Path(sys.argv[1])
-op_file = pathlib.Path(sys.argv[2]) / "glass_opacity"
+cfg_dir = pathlib.Path(sys.argv[2])
+req = sys.argv[3].lower()
+op_file = cfg_dir / "glass_opacity"
+prev_sh_file = cfg_dir / "prev_shader"
+
+# Derive Windows user folder from settings.json path if under /mnt/c/Users/<user>/...
+parts = wt_path.parts
+win_user = "gusta"
+for i, part in enumerate(parts):
+    if part.lower() == "users" and i + 1 < len(parts):
+        win_user = parts[i + 1]
+        break
+shader_dir = f"C:\\Users\\{win_user}\\.config\\nave\\shaders"
+frosted_sh = f"{shader_dir}\\nave-frosted.hlsl"
+default_sh = f"{shader_dir}\\nave-glow.hlsl"
+
 data = json.loads(wt_path.read_text(encoding="utf-8"))
 profiles = data.setdefault("profiles", {})
 defaults = profiles.setdefault("defaults", {})
@@ -322,12 +363,39 @@ sources = ("Microsoft.WSL", "Windows.Terminal.PowershellCore")
 ref = next((p for p in plist if p.get("name") == "Ubuntu"), defaults)
 ac = bool(ref.get("useAcrylic", defaults.get("useAcrylic", False)))
 op = int(ref.get("opacity", defaults.get("opacity", 100)))
+cur_sh = str(ref.get("experimental.pixelShaderPath", defaults.get("experimental.pixelShaderPath", "")) or "")
 is_glass = ac or op < 100
+is_frosted = (not ac and op >= 100 and "nave-frosted.hlsl" in cur_sh.lower())
+cur_mode = "glass" if is_glass else ("frosted" if is_frosted else "solid")
 
-if is_glass:
+if req == "cycle":
+    tgt = {"glass": "frosted", "frosted": "solid", "solid": "glass"}[cur_mode]
+else:
+    tgt = req
+
+def restore_shader():
+    if "nave-frosted.hlsl" not in cur_sh.lower():
+        return cur_sh if cur_sh else None
+    try:
+        saved = prev_sh_file.read_text(encoding="utf-8").strip()
+        if saved == "off":
+            return None
+        if saved:
+            return saved
+    except Exception:
+        pass
+    return default_sh
+
+if tgt == "frosted":
     if op < 100:
         op_file.write_text(f"{op}\n", encoding="utf-8")
-    new_ac, new_op = False, 100
+    if "nave-frosted.hlsl" not in cur_sh.lower():
+        prev_sh_file.write_text((cur_sh if cur_sh else "off") + "\n", encoding="utf-8")
+    new_ac, new_op, new_sh = False, 100, frosted_sh
+elif tgt == "solid":
+    if op < 100:
+        op_file.write_text(f"{op}\n", encoding="utf-8")
+    new_ac, new_op, new_sh = False, 100, restore_shader()
 else:
     try:
         saved = int(op_file.read_text(encoding="utf-8").strip())
@@ -335,18 +403,28 @@ else:
     except Exception:
         new_op = 92
     op_file.write_text(f"{new_op}\n", encoding="utf-8")
-    new_ac = True
+    new_ac, new_sh = True, restore_shader()
 
 matched = [defaults]
 for p in plist:
-    if p.get("name") in targets or p.get("source") in sources or "useAcrylic" in p or "opacity" in p:
+    if (
+        p.get("name") in targets
+        or p.get("source") in sources
+        or "useAcrylic" in p
+        or "opacity" in p
+        or "experimental.pixelShaderPath" in p
+    ):
         matched.append(p)
 for p in matched:
     p["useAcrylic"] = new_ac
     p["opacity"] = new_op
+    if new_sh is None:
+        p.pop("experimental.pixelShaderPath", None)
+    else:
+        p["experimental.pixelShaderPath"] = new_sh
 
 wt_path.write_text(json.dumps(data, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
-print(f"{1 if new_ac else 0} {new_op}")
+print(f"{tgt} {new_op}")
 "#;
 
     let out = Command::new("python3")
@@ -354,6 +432,7 @@ print(f"{1 if new_ac else 0} {new_op}")
         .arg(py)
         .arg(&wt_path)
         .arg(&cfg_dir)
+        .arg(mode_arg)
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("Falha ao rodar python3: {}", e))?;
@@ -368,9 +447,13 @@ print(f"{1 if new_ac else 0} {new_op}")
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut parts = stdout.split_whitespace();
-    let is_glass = parts.next() == Some("1");
-    let op = parts.next().and_then(|s| s.parse::<u8>().ok()).unwrap_or(if is_glass { 92 } else { 100 });
-    Ok((is_glass, op))
+    let kind = parts.next().unwrap_or("solid");
+    let op = parts.next().and_then(|s| s.parse::<u8>().ok()).unwrap_or(92);
+    Ok(match kind {
+        "glass" => WtBgMode::Glass(op),
+        "frosted" => WtBgMode::Frosted,
+        _ => WtBgMode::Solid,
+    })
 }
 
 #[cfg(test)]
@@ -378,7 +461,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wt_glass_toggles_acrylic_and_restores_saved_opacity() {
+    fn wt_bg_mode_cycles_glass_frosted_solid_and_restores_shader_and_opacity() {
         let dir = std::env::temp_dir().join(format!("nave_wt_glass_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -390,10 +473,15 @@ mod tests {
         "defaults": {
             "opacity": 88,
             "useAcrylic": true,
-            "backgroundImageOpacity": 0.68
+            "experimental.pixelShaderPath": "C:\\Users\\gusta\\.config\\nave\\shaders\\nave-glow.hlsl"
         },
         "list": [
-            { "name": "Ubuntu", "opacity": 88, "useAcrylic": true }
+            {
+                "name": "Ubuntu",
+                "opacity": 88,
+                "useAcrylic": true,
+                "experimental.pixelShaderPath": "C:\\Users\\gusta\\.config\\nave\\shaders\\nave-glow.hlsl"
+            }
         ]
     }
 }
@@ -404,16 +492,17 @@ mod tests {
         std::env::set_var("NAVE_WT_SETTINGS", &wt_p);
         std::env::set_var("XDG_CONFIG_HOME", &dir);
 
-        assert_eq!(wt_glass_state(), Some((true, 88)));
-        let (glass1, op1) = toggle_wt_glass().unwrap();
-        assert!(!glass1);
-        assert_eq!(op1, 100);
-        assert_eq!(wt_glass_state(), Some((false, 100)));
+        assert_eq!(wt_bg_mode(), Some(WtBgMode::Glass(88)));
+        assert_eq!(set_wt_bg_mode(None).unwrap(), WtBgMode::Frosted);
+        assert_eq!(wt_bg_mode(), Some(WtBgMode::Frosted));
 
-        let (glass2, op2) = toggle_wt_glass().unwrap();
-        assert!(glass2);
-        assert_eq!(op2, 88);
-        assert_eq!(wt_glass_state(), Some((true, 88)));
+        assert_eq!(set_wt_bg_mode(None).unwrap(), WtBgMode::Solid);
+        assert_eq!(wt_bg_mode(), Some(WtBgMode::Solid));
+        let solid_raw = fs::read_to_string(&wt_p).unwrap();
+        assert!(solid_raw.contains("nave-glow.hlsl"));
+
+        assert_eq!(set_wt_bg_mode(None).unwrap(), WtBgMode::Glass(88));
+        assert_eq!(wt_bg_mode(), Some(WtBgMode::Glass(88)));
 
         std::env::remove_var("NAVE_WT_SETTINGS");
         std::env::remove_var("XDG_CONFIG_HOME");

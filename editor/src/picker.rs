@@ -18,7 +18,10 @@ pub enum PickerAction {
     JumpToLine(usize),
     InsertSnippet(String),
     ToggleVimVisual,
-    ToggleWtGlass,
+    CycleWtBgMode,
+    SetWtBgFrosted,
+    SetWtBgSolid,
+    SetWtBgGlass,
     ToggleOpaqueBg,
     ToggleRelativeNumbers,
     ToggleBlockCursor,
@@ -262,19 +265,36 @@ impl Picker {
     pub fn command_palette(
         cfg: &crate::config::EditorConfig,
         eol: &str,
-        wt_glass: Option<(bool, u8)>,
+        wt_mode: Option<crate::config::WtBgMode>,
     ) -> Self {
+        use crate::config::WtBgMode;
         let onoff = |b: bool| if b { "ON" } else { "OFF" };
-        let wt_lbl = match wt_glass {
-            Some((true, op)) => format!("Fundo Translucido (Terminal) [ON · {}%]", op),
-            Some((false, _)) => "Fundo Translucido (Terminal) [OFF · Solido]".into(),
-            None => "Alternar Fundo Translucido (Terminal)".into(),
+        let wt_lbl = match wt_mode {
+            Some(WtBgMode::Glass(op)) => format!("Modo de Fundo (Terminal) [Acrylic {}%]", op),
+            Some(WtBgMode::Frosted) => "Modo de Fundo (Terminal) [Vidro Escuro]".into(),
+            Some(WtBgMode::Solid) => "Modo de Fundo (Terminal) [Solido 100%]".into(),
+            None => "Alternar Modo de Fundo (Terminal)".into(),
         };
         let items = vec![
             PickerItem {
                 label: wt_lbl,
-                detail: "Alt+O · Acrylic".into(),
-                action: PickerAction::ToggleWtGlass,
+                detail: "Alt+O · cicla 3 modos".into(),
+                action: PickerAction::CycleWtBgMode,
+            },
+            PickerItem {
+                label: "Fundo: Vidro Escuro (Frosted 100%)".into(),
+                detail: "imune a tela branca".into(),
+                action: PickerAction::SetWtBgFrosted,
+            },
+            PickerItem {
+                label: "Fundo: Obsidiana Solido (100%)".into(),
+                detail: "sem translucidez".into(),
+                action: PickerAction::SetWtBgSolid,
+            },
+            PickerItem {
+                label: "Fundo: Translucido Real (Acrylic)".into(),
+                detail: "transparencia real".into(),
+                action: PickerAction::SetWtBgGlass,
             },
             PickerItem {
                 label: format!("Fundo Solido no Editor [{}]", onoff(cfg.opaque_bg)),

@@ -2546,7 +2546,7 @@ impl App {
                     return;
                 }
                 KeyCode::Char('o') => {
-                    self.toggle_wt_glass();
+                    self.apply_wt_bg_mode(None);
                     return;
                 }
                 KeyCode::Char('i') => {
@@ -3060,20 +3060,23 @@ impl App {
 
     fn open_command_palette(&mut self) {
         self.pending_pane_pickers.clear();
-        let pk = Picker::command_palette(&self.cfg, self.doc().eol.label(), config::wt_glass_state());
+        let pk = Picker::command_palette(&self.cfg, self.doc().eol.label(), config::wt_bg_mode());
         self.mode = Mode::Picker(pk);
     }
 
-    fn toggle_wt_glass(&mut self) {
-        match config::toggle_wt_glass() {
-            Ok((true, op)) => {
+    fn apply_wt_bg_mode(&mut self, target: Option<&str>) {
+        match config::set_wt_bg_mode(target) {
+            Ok(config::WtBgMode::Frosted) => {
+                self.set_status("✓ Fundo: Vidro Escuro (Frosted 100% · imune a tela branca · Alt+O cicla)");
+            }
+            Ok(config::WtBgMode::Solid) => {
+                self.set_status("✓ Fundo: Obsidiana Solido (100% · Alt+O cicla)");
+            }
+            Ok(config::WtBgMode::Glass(op)) => {
                 self.set_status(format!(
-                    "✓ Fundo translucido ON (Acrylic · {}% · Alt+O alterna)",
+                    "✓ Fundo: Translucido Real (Acrylic {}% · Alt+O cicla)",
                     op
                 ));
-            }
-            Ok((false, _)) => {
-                self.set_status("✓ Fundo translucido OFF (solido 100% · Alt+O alterna)");
             }
             Err(_) => {
                 // Non-WSL / non-Windows-Terminal fallback: toggle solid editor canvas
@@ -3355,7 +3358,10 @@ impl App {
                     let st = if self.cfg.autocomplete { "ON" } else { "OFF" };
                     self.set_status(format!("Autocomplete Inteligente: {}", st));
                 }
-                PickerAction::ToggleWtGlass => self.toggle_wt_glass(),
+                PickerAction::CycleWtBgMode => self.apply_wt_bg_mode(None),
+                PickerAction::SetWtBgFrosted => self.apply_wt_bg_mode(Some("frosted")),
+                PickerAction::SetWtBgSolid => self.apply_wt_bg_mode(Some("solid")),
+                PickerAction::SetWtBgGlass => self.apply_wt_bg_mode(Some("glass")),
                 PickerAction::ToggleOpaqueBg => {
                     self.cfg.opaque_bg = !self.cfg.opaque_bg;
                     self.cfg.save();

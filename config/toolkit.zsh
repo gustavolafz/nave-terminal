@@ -158,8 +158,8 @@ if mode == "status":
         if p.get("name") in targets:
             print(f"  {p.get('name'):20s} -> {p.get('experimental.pixelShaderPath', 'off')}")
     sys.exit(0)
-if mode not in ("glow", "crt", "off"):
-    print("Uso: nave-shader <glow|crt|off|status>")
+if mode not in ("glow", "crt", "frosted", "off"):
+    print("Uso: nave-shader <glow|crt|frosted|off|status>")
     sys.exit(1)
 val = None if mode == "off" else f"{sdir}\\nave-{mode}.hlsl"
 for p in data.get("profiles", {}).get("list", []):
@@ -173,15 +173,16 @@ print(f"✓ Windows Terminal shader alterado para: {mode}")
 PY
 }
 
-# Toggle Windows Terminal translucent background (Acrylic/Opacity) & optional wallpaper live:
-#   nave-glass             -> alterna Translucido (Acrylic 92%) <-> Solido (100%)
-#   nave-glass off|solid   -> tira translucidez (useAcrylic=false, opacity=100)
-#   nave-glass on|glass    -> ativa translucidez (restaura opacidade salva, padrao 92%)
-#   nave-glass <40..100>   -> define opacidade exata (100 = solido, <100 = acrylic)
-#   nave-glass wall        -> alterna imagem de fundo (backgroundImageOpacity 0.68 <-> 0)
-#   nave-glass status      -> mostra estado atual
+# Toggle Windows Terminal background mode (Glass Acrylic / Frosted Dark Glass / Obsidian Solid):
+#   nave-glass                    -> cicla: Translucido (Acrylic) -> Vidro Escuro (100%) -> Solido (100%)
+#   nave-glass frosted|dark|vidro -> Vidro Escuro 100% opaco (efeito translucido imune a tela branca!)
+#   nave-glass off|solid|obsidiana-> Obsidiana Solido 100% (sem translucidez)
+#   nave-glass on|glass|acrylic   -> Translucido Real (restaura opacidade salva, padrao 92%)
+#   nave-glass <40..100>          -> define opacidade exata (100 = solido, <100 = acrylic)
+#   nave-glass wall               -> alterna imagem de fundo (backgroundImageOpacity 0.68 <-> 0)
+#   nave-glass status             -> mostra estado atual
 function nave-glass {
-  local mode="${1:-toggle}"
+  local mode="${1:-cycle}"
   local wt_json="${NAVE_WT_SETTINGS:-}"
   if [[ -z "$wt_json" ]]; then
     wt_json=$(ls /mnt/c/Users/*/AppData/Local/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json 2>/dev/null | head -n 1)
@@ -190,16 +191,23 @@ function nave-glass {
     print -P "%F{${_NAVE_C[warn]:-215}}settings.json do Windows Terminal nao encontrado.%f"
     return 1
   fi
+  local win_user
+  win_user=$(basename "$(dirname "$(dirname "$(dirname "$(dirname "$(dirname "$wt_json")")")")")")
+  local shader_dir="C:\\Users\\${win_user}\\.config\\nave\\shaders"
   local cfg_dir="${XDG_CONFIG_HOME:-$HOME/.config}/nave"
   mkdir -p "$cfg_dir" 2>/dev/null
 
-  python3 - "$wt_json" "$mode" "$cfg_dir" <<'PY'
+  python3 - "$wt_json" "$mode" "$cfg_dir" "$shader_dir" <<'PY'
 import json, pathlib, sys
 wt_path = pathlib.Path(sys.argv[1])
 mode = sys.argv[2].lower()
 cfg_dir = pathlib.Path(sys.argv[3])
+shader_dir = sys.argv[4]
 op_file = cfg_dir / "glass_opacity"
 wall_file = cfg_dir / "wall_opacity"
+prev_shader_file = cfg_dir / "prev_shader"
+frosted_shader = f"{shader_dir}\\nave-frosted.hlsl"
+default_shader = f"{shader_dir}\\nave-glow.hlsl"
 
 data = json.loads(wt_path.read_text(encoding="utf-8"))
 profiles = data.setdefault("profiles", {})
@@ -217,6 +225,7 @@ def matched_profiles():
             or "useAcrylic" in p
             or "opacity" in p
             or "backgroundImageOpacity" in p
+            or "experimental.pixelShaderPath" in p
         ):
             res.append(p)
     return res
@@ -226,16 +235,24 @@ def cur_state():
     ac = bool(ref.get("useAcrylic", defaults.get("useAcrylic", False)))
     op = int(ref.get("opacity", defaults.get("opacity", 100)))
     wop = float(ref.get("backgroundImageOpacity", defaults.get("backgroundImageOpacity", 0.0)))
-    return ac, op, wop
+    sh = str(ref.get("experimental.pixelShaderPath", defaults.get("experimental.pixelShaderPath", "")) or "")
+    return ac, op, wop, sh
 
-ac, op, wop = cur_state()
+ac, op, wop, cur_sh = cur_state()
+is_frosted = (not ac and op >= 100 and "nave-frosted.hlsl" in cur_sh.lower())
 is_glass = ac or op < 100
+cur_mode = "glass" if is_glass else ("frosted" if is_frosted else "solid")
 
 if mode == "status":
-    g_lbl = f"ON (Acrylic · {op}%)" if is_glass else f"OFF (Solido · {op}%)"
+    if cur_mode == "glass":
+        g_lbl = f"Translucido Real (Acrylic · {op}%)"
+    elif cur_mode == "frosted":
+        g_lbl = "Vidro Escuro (Frosted 100% · imune a tela branca)"
+    else:
+        g_lbl = f"Obsidiana Solido ({op}%)"
     w_lbl = f"ON ({wop:.2f})" if wop > 0.01 else "OFF (0.00)"
-    print(f"  Fundo translucido : {g_lbl}")
-    print(f"  Wallpaper         : {w_lbl}")
+    print(f"  Modo de fundo : {g_lbl}")
+    print(f"  Wallpaper     : {w_lbl}")
     sys.exit(0)
 
 if mode in ("wall", "wallpaper"):
@@ -257,28 +274,48 @@ if mode in ("wall", "wallpaper"):
     print(msg)
     sys.exit(0)
 
-if mode == "toggle":
-    want_glass = not is_glass
-    custom_op = None
-elif mode in ("off", "solid", "solido", "opaco", "0", "false"):
-    want_glass = False
-    custom_op = None
+custom_op = None
+if mode in ("cycle", "toggle"):
+    target = {"glass": "frosted", "frosted": "solid", "solid": "glass"}[cur_mode]
+elif mode in ("frosted", "dark", "vidro", "escuro", "fosco", "dark-glass"):
+    target = "frosted"
+elif mode in ("off", "solid", "solido", "opaco", "obsidiana", "0", "false"):
+    target = "solid"
 elif mode in ("on", "glass", "translucido", "acrylic", "1", "true"):
-    want_glass = True
-    custom_op = None
+    target = "glass"
 elif mode.isdigit():
     val = max(40, min(100, int(mode)))
-    want_glass = val < 100
+    target = "solid" if val >= 100 else "glass"
     custom_op = val
 else:
-    print("Uso: nave-glass [toggle|off|solid|on|glass|wall|status|<40..100>]")
+    print("Uso: nave-glass [frosted|solid|glass|wall|status|<40..100>]")
     sys.exit(1)
 
-if not want_glass:
+def restore_shader():
+    if "nave-frosted.hlsl" not in cur_sh.lower():
+        return cur_sh if cur_sh else None
+    try:
+        saved = prev_shader_file.read_text(encoding="utf-8").strip()
+        if saved == "off":
+            return None
+        if saved:
+            return saved
+    except Exception:
+        pass
+    return default_shader
+
+if target == "frosted":
     if op < 100:
         op_file.write_text(f"{op}\n", encoding="utf-8")
-    new_ac, new_op = False, 100
-    msg = "✓ Modo translucido: OFF (fundo 100% solido)"
+    if "nave-frosted.hlsl" not in cur_sh.lower():
+        prev_shader_file.write_text((cur_sh if cur_sh else "off") + "\n", encoding="utf-8")
+    new_ac, new_op, new_sh = False, 100, frosted_shader
+    msg = "✓ Modo Vidro Escuro (Frosted 100%): efeito translucido escuro, imune a tela branca!"
+elif target == "solid":
+    if op < 100:
+        op_file.write_text(f"{op}\n", encoding="utf-8")
+    new_ac, new_op, new_sh = False, 100, restore_shader()
+    msg = "✓ Modo Obsidiana Solido (100%): sem translucidez"
 else:
     if custom_op is not None:
         new_op = custom_op
@@ -289,12 +326,16 @@ else:
         except Exception:
             new_op = 92
     op_file.write_text(f"{new_op}\n", encoding="utf-8")
-    new_ac = True
-    msg = f"✓ Modo translucido: ON (Acrylic · opacidade {new_op}%)"
+    new_ac, new_sh = True, restore_shader()
+    msg = f"✓ Modo Translucido Real (Acrylic · opacidade {new_op}%)"
 
 for p in matched_profiles():
     p["useAcrylic"] = new_ac
     p["opacity"] = new_op
+    if new_sh is None:
+        p.pop("experimental.pixelShaderPath", None)
+    else:
+        p["experimental.pixelShaderPath"] = new_sh
 
 wt_path.write_text(json.dumps(data, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
 print(msg)
@@ -1118,8 +1159,8 @@ function nave-help {
   print -P "%F{${c_frm}}│%f %F{${c_lbl}}%BEstilo, Arte & Cockpit%b%f"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-theme <nome>%f      Paleta + ne sync (cyber|emerald|sunset|nord|stealth|dracula)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-layout <modo>%f     Layout do prompt (framed|rail|hud|compact)"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-shader <modo>%f     Shader GPU Windows Terminal (glow|crt|off)"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-glass [modo]%f      Alterna fundo translucido/solido (off|on|wall|40..100)"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-shader <modo>%f     Shader GPU Windows Terminal (glow|crt|frosted|off)"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-glass [modo]%f      Fundo: glass / frosted (vidro escuro) / solid / wall"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-bg / transient%f    Liga/desliga fundo OSC 11 ou transient prompt"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}sysinfo / hr [titulo]%f  Arte + barras de sistema / regua divisoria"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-hud / nave-warp%f   Cockpit tempo real ([1-6],[p]) / starfield 3D"
