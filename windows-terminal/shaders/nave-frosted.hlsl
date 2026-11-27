@@ -49,17 +49,17 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_TARGET
     // 2. Mask targeting background & deep shadow regions (keeps text/syntax 100% sharp)
     float3 diff = abs(base.rgb - Background.rgb);
     float distBg = max(diff.r, max(diff.g, diff.b));
-    float pureBg = 1.0 - smoothstep(0.012, 0.095, distBg);
+    float pureBg = 1.0 - smoothstep(0.010, 0.080, distBg);
     float baseLum = dot(base.rgb, float3(0.299, 0.587, 0.114));
-    float darkZone = 1.0 - smoothstep(0.055, 0.22, baseLum);
-    float glassMask = max(pureBg, darkZone * 0.52);
+    float darkZone = 1.0 - smoothstep(0.045, 0.19, baseLum);
+    float glassMask = max(pureBg, darkZone * 0.36);
 
-    // 3. Synthetic "dark screen behind frosted acrylic" atmospheric backdrop
-    //    Adapts hue automatically to the active Nave palette's Background color
-    float3 bgSeed = max(Background.rgb, float3(0.028, 0.032, 0.052));
-    float3 baseTint = lerp(float3(0.036, 0.042, 0.062), bgSeed * 1.15 + float3(0.022, 0.026, 0.038), 0.55);
+    // 3. Deep smoked-obsidian "dark screen behind 92% Acrylic" atmospheric backdrop
+    //    Stays close to obsidian (#0C0F1A-#121625) while preserving frosted glass depth
+    float3 bgSeed = max(Background.rgb, float3(0.025, 0.028, 0.046));
+    float3 baseTint = lerp(float3(0.013, 0.015, 0.024), bgSeed * 0.42 + float3(0.008, 0.010, 0.016), 0.55);
 
-    // Soft blurred ambient pools (recreates a blurred dark desktop/IDE behind glass)
+    // Subtle blurred dark ambient pools (mimics dark IDE/desktop softly blurred behind glass)
     float2 aspect = float2(res.x / res.y, 1.0);
     float2 d1 = (tex - float2(0.20, 0.24)) * aspect;
     float2 d2 = (tex - float2(0.78, 0.70)) * aspect;
@@ -69,22 +69,22 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_TARGET
     float pool3 = exp(-dot(d3, d3) * 3.0);
 
     float3 ambient =
-        pool1 * float3(0.020, 0.026, 0.042) +
-        pool2 * float3(0.022, 0.016, 0.036) +
-        pool3 * float3(0.012, 0.022, 0.030);
+        pool1 * float3(0.009, 0.012, 0.020) +
+        pool2 * float3(0.010, 0.007, 0.017) +
+        pool3 * float3(0.005, 0.009, 0.014);
 
-    // Subtle top-left glass specular sheen (fluent frosted glass feel)
-    float sheen = smoothstep(1.15, 0.0, tex.x * 0.55 + tex.y * 0.95) * 0.018;
+    // Whisper-soft top-left glass specular sheen
+    float sheen = smoothstep(1.15, 0.0, tex.x * 0.55 + tex.y * 0.95) * 0.007;
 
-    // Static matte acrylic micro-grain (tactile frosted glass texture, zero flicker)
-    float grain = acrylicGrain(floor(pos.xy)) * 0.024;
+    // Fine static matte acrylic micro-grain (silky frosted texture, zero chalkiness)
+    float grain = acrylicGrain(floor(pos.xy)) * 0.016;
 
     float3 frostedLift = baseTint + ambient + float3(sheen * 0.85, sheen * 0.95, sheen * 1.25) + grain;
     float3 color = base.rgb + frostedLift * glassMask + glow;
 
     // 4. Gentle cockpit vignette
     float2 centered = tex - 0.5;
-    float vignette = 1.0 - smoothstep(0.24, 0.80, dot(centered, centered)) * 0.15;
+    float vignette = 1.0 - smoothstep(0.22, 0.78, dot(centered, centered)) * 0.18;
 
     return float4(saturate(color * vignette), base.a);
 }
