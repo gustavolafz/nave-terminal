@@ -278,27 +278,29 @@ pub fn render_editor(
             if is_hot {
                 push_fg(&mut out, pal.grad[0], true);
             } else {
-                push_fg(&mut out, pal.border, false);
+                push_fg(&mut out, pal.dim, false);
             }
             match d.axis {
                 SplitAxis::Horizontal => {
+                    let glyph = if is_hot { '┃' } else { '│' };
                     for r in d.y..(d.y + d.len) {
-                        let _ = write!(out, "\x1b[{};{}H│", r + 1, d.x + 1);
+                        let _ = write!(out, "\x1b[{};{}H{}", r + 1, d.x + 1, glyph);
                     }
                 }
                 SplitAxis::Vertical => {
+                    let glyph = if is_hot { '━' } else { '─' };
                     let _ = write!(out, "\x1b[{};{}H", d.y + 1, d.x + 1);
                     for _ in 0..d.len {
-                        out.push('─');
+                        out.push(glyph);
                     }
                 }
             }
         }
         if !computed.junctions.is_empty() {
-            if highlight_all_dividers {
+            if highlight_all_dividers || active_divider.is_some() {
                 push_fg(&mut out, pal.grad[0], true);
             } else {
-                push_fg(&mut out, pal.border, false);
+                push_fg(&mut out, pal.dim, false);
             }
             for &(jx, jy, jch) in &computed.junctions {
                 let _ = write!(out, "\x1b[{};{}H{}", jy + 1, jx + 1, jch);

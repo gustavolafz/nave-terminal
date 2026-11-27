@@ -812,10 +812,18 @@ impl App {
                 }
             }
             MouseKind::LeftDown => {
-                // 1. Check split dividers first for live drag-resizing
-                if let Some(div) = self.layout.dividers.iter().copied().find(|d| d.hits(m.col, m.row)) {
+                // 1. Check split dividers first for live drag-resizing (generous grab zone!)
+                let has_sb = self.cfg.scrollbar;
+                if let Some(div) = self
+                    .layout
+                    .dividers
+                    .iter()
+                    .copied()
+                    .find(|d| d.hits(m.col, m.row, has_sb))
+                {
                     self.drag = DragState::Divider(div);
                     self.mode = Mode::Edit;
+                    self.set_status("Arraste para redimensionar a divisoria");
                     return;
                 }
 
@@ -887,7 +895,7 @@ impl App {
             }
             MouseKind::LeftDrag => match self.drag {
                 DragState::Divider(div) => {
-                    let ratio = match div.axis {
+                    let raw_ratio = match div.axis {
                         SplitAxis::Horizontal => {
                             let avail = div.parent_rect.w.saturating_sub(1).max(1);
                             m.col.saturating_sub(div.parent_rect.x) as f32 / avail as f32
@@ -897,7 +905,12 @@ impl App {
                             m.row.saturating_sub(div.parent_rect.y) as f32 / avail as f32
                         }
                     };
-                    self.layout_tree.set_split_ratio(div.split_id, ratio);
+                    let clamped = raw_ratio.clamp(0.15, 0.85);
+                    self.layout_tree.set_split_ratio(div.split_id, clamped);
+                    let pct1 = (clamped * 100.0).round() as usize;
+                    let pct2 = 100usize.saturating_sub(pct1);
+                    let sep = if div.axis == SplitAxis::Horizontal { "│" } else { "─" };
+                    self.set_status(format!("Redimensionando ({}% {} {}%)", pct1, sep, pct2));
                 }
                 DragState::Selection(pid) => {
                     if pid == self.active_pane {
