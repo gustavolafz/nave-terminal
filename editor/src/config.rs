@@ -21,6 +21,11 @@ pub struct EditorConfig {
     pub comment_badges: bool,
     pub show_trailing: bool,
     pub color_column: usize, // 0 = off, else 80 / 100 / 120
+    pub autocomplete: bool,
+    pub autocomplete_min_len: usize, // min identifier length for auto suggestions (default 4)
+    pub cp_radar: bool,
+    pub exam_mode: bool,
+    pub judge_timeout_ms: u64,
 }
 
 impl Default for EditorConfig {
@@ -44,6 +49,11 @@ impl Default for EditorConfig {
             comment_badges: true,
             show_trailing: true,
             color_column: 120,
+            autocomplete: true,
+            autocomplete_min_len: 4,
+            cp_radar: true,
+            exam_mode: false,
+            judge_timeout_ms: 2000,
         }
     }
 }
@@ -106,6 +116,19 @@ impl EditorConfig {
                         cfg.color_column = n.min(200);
                     }
                 }
+                "autocomplete" => cfg.autocomplete = parse_bool(v),
+                "autocomplete_min_len" => {
+                    if let Ok(n) = v.parse::<usize>() {
+                        cfg.autocomplete_min_len = n.clamp(3, 8);
+                    }
+                }
+                "cp_radar" => cfg.cp_radar = parse_bool(v),
+                "exam_mode" => cfg.exam_mode = parse_bool(v),
+                "judge_timeout_ms" => {
+                    if let Ok(n) = v.parse::<u64>() {
+                        cfg.judge_timeout_ms = n.clamp(500, 30_000);
+                    }
+                }
                 _ => {}
             }
         }
@@ -136,7 +159,12 @@ impl EditorConfig {
              bracket_match={}\n\
              comment_badges={}\n\
              show_trailing={}\n\
-             color_column={}\n",
+             color_column={}\n\
+             autocomplete={}\n\
+             autocomplete_min_len={}\n\
+             cp_radar={}\n\
+             exam_mode={}\n\
+             judge_timeout_ms={}\n",
             self.palette,
             self.vim_visual,
             self.relative_numbers,
@@ -154,9 +182,24 @@ impl EditorConfig {
             self.bracket_match,
             self.comment_badges,
             self.show_trailing,
-            self.color_column
+            self.color_column,
+            self.autocomplete,
+            self.autocomplete_min_len,
+            self.cp_radar,
+            self.exam_mode,
+            self.judge_timeout_ms
         );
         let _ = fs::write(path, body);
+    }
+
+    pub fn cycle_autocomplete_min_len(&mut self) {
+        self.autocomplete_min_len = match self.autocomplete_min_len {
+            3 => 4,
+            4 => 5,
+            5 => 6,
+            _ => 3,
+        };
+        self.save();
     }
 
     pub fn toggle_vim_visual(&mut self) {

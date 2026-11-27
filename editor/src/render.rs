@@ -1,6 +1,8 @@
 use crate::config::EditorConfig;
+use crate::cp_assist::{detect_cp_pitfall, file_has_custom_hash, CompletionKind, CompletionPopup};
 use crate::document::{Document, Selection};
 use crate::git::GutterMark;
+use crate::judge::{DiagSeverity, Diagnostic};
 use crate::layout::{ComputedLayout, DividerHit, PaneId, Rect, SplitAxis};
 use crate::palette::{lerp_grad, push_bg, push_fg, push_fg_styled, push_grad_text, Palette, TokenKind};
 use crate::picker::{Picker, PickerAction};
@@ -247,6 +249,10 @@ pub fn render_editor(
     drop_preview: Option<&DropPreview>,
     term_panel: Option<&TermPanelView<'_>>,
     term_bg_alive: bool,
+    completion: Option<&CompletionPopup>,
+    active_diags: &[Diagnostic],
+    timer_badge: Option<&(String, bool)>,
+    judge_progress: Option<&str>,
     pal: &Palette,
     cols: usize,
     rows: usize,
@@ -283,12 +289,20 @@ pub fn render_editor(
         };
 
         let sb_hot = hot_scrollbar == Some(p.pane_id);
+        let pane_diags: &[Diagnostic] = if p.is_focused { active_diags } else { &[] };
+        let pane_ghost: Option<&str> = if p.is_focused {
+            completion.and_then(|c| c.ghost_suffix())
+        } else {
+            None
+        };
         let (p_layout, p_cursor, sel_chars, cur_row, cur_col, cur_count) = render_pane(
             &mut out,
             doc,
             p,
             multi_pane,
             sb_hot,
+            pane_diags,
+            pane_ghost,
             pal,
             cfg,
         );
@@ -704,7 +718,28 @@ pub fn render_editor(
     out.push_str(&left_disp);
 
     let mut used_s = str_display_width(&left_disp);
-    if let Some(hint) = mode_hint {
+    if let Some((tb, expired)) = timer_badge {
+        let t_str = format!("  │  {}", tb);
+        push_fg(&mut out, if *expired { pal.err } else { pal.warn }, true);
+        let disp = truncate_to_cols(&t_str, cols.saturating_sub(used_s));
+        out.push_str(&disp);
+        used_s += str_display_width(&disp);
+    }
+    if cfg.exam_mode {
+        let em = " [PROVA]";
+        if used_s + str_display_width(em) < cols {
+            push_fg(&mut out, pal.err, true);
+            out.push_str(em);
+            used_s += str_display_width(em);
+        }
+    }
+    if let Some(jp) = judge_progress {
+        let m = format!("  │  ⚡ {}", jp);
+        push_fg(&mut out, pal.grad[0], true);
+        let disp = truncate_to_cols(&m, cols.saturating_sub(used_s));
+        out.push_str(&disp);
+        used_s += str_display_width(&disp);
+    } else if let Some(hint) = mode_hint {
         let m = format!("  │  {}", hint);
         push_fg(&mut out, pal.warn, true);
         let disp = truncate_to_cols(&m, cols.saturating_sub(used_s));
@@ -717,7 +752,7 @@ pub fn render_editor(
         out.push_str(&disp);
         used_s += str_display_width(&disp);
     } else if ext_changed {
-        let m = "  │  ⚠ Alterado no disco (F5 recarregar)";
+        let m = "  │  ⚠ Alterado no disco (F9 recarregar)";
         push_fg(&mut out, pal.warn, true);
         let disp = truncate_to_cols(m, cols.saturating_sub(used_s));
         out.push_str(&disp);
@@ -899,6 +934,119 @@ pub fn render_editor(
         out.push_str(RST);
     }
 
+    // -------------------------------------------------------------------------
+    // Compact Floating Autocomplete Popup (anchored below or above cursor)
+    // -------------------------------------------------------------------------
+    if picker.is_none() && !has_prompt {
+        if let (Some(comp), Some((cy, cx))) = (completion, primary_screen_pos) {
+            if !comp.items.is_empty() && rows >= 8 && cols >= 30 {
+                let max_vis = comp.items.len().min(6);
+                let pop_h = max_vis + 2;
+                let max_lbl = comp
+                    .items
+                    .iter()
+                    .map(|it| str_display_width(&it.label) + str_display_width(&it.detail) + 10)
+                    .max()
+                    .unwrap_or(28);
+                let pop_w = max_lbl.clamp(28, 48).min(cols.saturating_sub(2));
+                let px = cx.min(cols.saturating_sub(pop_w + 1));
+                let bottom_lim = term_panel
+                    .map(|t| t.header_row)
+                    .unwrap_or_else(|| rows.saturating_sub(1));
+                let py = if cy + 1 + pop_h <= bottom_lim {
+                    cy + 1
+                } else {
+                    cy.saturating_sub(pop_h)
+                };
+                let inner_w = pop_w.saturating_sub(2);
+                let scroll_off = if comp.selected >= max_vis {
+                    comp.selected + 1 - max_vis
+                } else {
+                    0
+                };
+
+                // Top border
+                let _ = write!(out, "\x1b[{};{}H", py + 1, px + 1);
+                push_bg(&mut out, pal.bar_bg);
+                push_fg(&mut out, pal.border, false);
+                out.push('╭');
+                for _ in 0..inner_w {
+                    out.push('─');
+                }
+                out.push('╮');
+
+                // Candidate rows
+                for vi in 0..max_vis {
+                    let idx = scroll_off + vi;
+                    let item = &comp.items[idx];
+                    let is_sel = idx == comp.selected;
+                    let _ = write!(out, "\x1b[{};{}H", py + 2 + vi, px + 1);
+                    push_bg(&mut out, if is_sel { pal.sel_bg } else { pal.bar_bg });
+                    push_fg(&mut out, pal.border, false);
+                    out.push('│');
+
+                    let tag_col = match item.kind {
+                        CompletionKind::DeclaredVar => pal.ok,
+                        CompletionKind::Identifier => pal.fg,
+                        CompletionKind::Stl => pal.std_bi,
+                        CompletionKind::Snippet => pal.grad[2],
+                    };
+                    let tag = format!(" {:<4} ", item.kind.tag());
+                    push_fg(&mut out, tag_col, true);
+                    out.push_str(&tag);
+                    let mut w = str_display_width(&tag);
+
+                    let det_w = if item.detail.is_empty() {
+                        0
+                    } else {
+                        str_display_width(&item.detail) + 2
+                    };
+                    let lbl_max = inner_w.saturating_sub(w + det_w);
+                    let lbl = truncate_to_cols(&item.label, lbl_max);
+                    push_fg(&mut out, if is_sel { pal.grad[0] } else { pal.fg }, is_sel);
+                    out.push_str(&lbl);
+                    w += str_display_width(&lbl);
+
+                    let before_det = inner_w.saturating_sub(det_w);
+                    while w < before_det {
+                        out.push(' ');
+                        w += 1;
+                    }
+                    if det_w > 0 && w + det_w <= inner_w {
+                        push_fg(&mut out, pal.dim, false);
+                        out.push(' ');
+                        out.push_str(&item.detail);
+                        out.push(' ');
+                        w += det_w;
+                    }
+                    while w < inner_w {
+                        out.push(' ');
+                        w += 1;
+                    }
+                    push_fg(&mut out, pal.border, false);
+                    out.push('│');
+                }
+
+                // Bottom border with concise Tab hint
+                let _ = write!(out, "\x1b[{};{}H", py + 2 + max_vis, px + 1);
+                push_bg(&mut out, pal.bar_bg);
+                let hint = truncate_to_cols(" Tab aceitar · Esc ", inner_w.saturating_sub(1));
+                let hw = str_display_width(&hint);
+                let fill = inner_w.saturating_sub(hw);
+                push_fg(&mut out, pal.border, false);
+                out.push('╰');
+                for _ in 0..fill {
+                    out.push('─');
+                }
+                push_fg(&mut out, pal.dim, false);
+                out.push_str(&hint);
+                push_fg(&mut out, pal.border, false);
+                out.push('╯');
+                out.push_str(RST);
+            }
+        }
+    }
+
     // Position real hardware cursor
     if let Some((cy, cx)) = prompt_cursor_pos.or(term_cursor_pos).or(primary_screen_pos) {
         let _ = write!(out, "\x1b[{};{}H\x1b[?25h", cy + 1, cx + 1);
@@ -916,6 +1064,8 @@ fn render_pane(
     p: &PaneRenderInput,
     multi_pane: bool,
     sb_hot: bool,
+    diagnostics: &[Diagnostic],
+    ghost_suffix: Option<&str>,
     pal: &Palette,
     cfg: &EditorConfig,
 ) -> (PaneLayoutInfo, Option<(usize, usize)>, usize, usize, usize, usize) {
@@ -1098,6 +1248,11 @@ fn render_pane(
         None
     };
     let git_marks: HashMap<usize, GutterMark> = doc.git.snapshot();
+    let has_custom_hash = if cfg.cp_radar && doc.lang == crate::syntax::Language::CLike {
+        file_has_custom_hash(&doc.rope)
+    } else {
+        true
+    };
 
     // Right-edge scrollbar geometry
     let (sb_start, sb_end, sb_cursor_row) = if show_sb && content_h > 0 {
@@ -1226,7 +1381,25 @@ fn render_pane(
                     out.push_str("\x1b[49m");
                 }
                 if seg_idx == 0 {
-                    if is_bookmarked {
+                    let line_diag = diagnostics.iter().find(|d| d.line == doc_row);
+                    let has_radar = cfg.cp_radar
+                        && line_diag.is_none()
+                        && detect_cp_pitfall(&line_text, doc.lang, has_custom_hash).is_some();
+                    if let Some(d) = line_diag {
+                        match d.severity {
+                            DiagSeverity::Error => {
+                                push_fg(out, pal.err, true);
+                                out.push('●');
+                            }
+                            DiagSeverity::Warning => {
+                                push_fg(out, pal.warn, true);
+                                out.push('▲');
+                            }
+                        }
+                    } else if has_radar {
+                        push_fg(out, pal.warn, true);
+                        out.push('!');
+                    } else if is_bookmarked {
                         push_fg(out, pal.grad[2], true);
                         out.push('◆');
                     } else if is_cur_line {
@@ -1467,6 +1640,22 @@ fn render_pane(
                 push_fg(out, pal.bar_bg, true);
                 out.push(' ');
                 drawn_cols += 1;
+            }
+
+            // Inline ghost autocomplete suffix right after primary caret at EOL
+            if is_cur_line && seg_end == char_info.len() && primary_col == char_info.len() {
+                if let Some(ghost) = ghost_suffix {
+                    push_bg(out, pal.cur_line_bg);
+                    push_fg_styled(out, pal.dim, false, true);
+                    for gch in ghost.chars() {
+                        let gw = char_display_width(gch);
+                        if drawn_cols + gw > text_w {
+                            break;
+                        }
+                        out.push(gch);
+                        drawn_cols += gw;
+                    }
+                }
             }
 
             // Fill remaining width to EXACT `text_w` columns (never `\x1b[K`!)

@@ -543,6 +543,54 @@ impl Document {
         self.normalize_cursors();
     }
 
+    pub fn jump_to_matching_bracket(&mut self, block_cursor: bool) -> bool {
+        let head = self.primary_cursor().head;
+        let Some((a, b)) = crate::syntax::find_matching_bracket(&self.rope, head, block_cursor) else {
+            return false;
+        };
+        let target = if head == a || (head > 0 && head - 1 == a) {
+            b
+        } else {
+            a
+        };
+        self.cursors = vec![Selection::caret(target)];
+        self.primary = 0;
+        true
+    }
+
+    /// Replaces `[start_byte .. end_byte]` atomically with `replacement`, recording a clean undo transaction.
+    pub fn replace_byte_range_atomic(&mut self, start_byte: usize, end_byte: usize, replacement: &str) {
+        let s = self.clamp_byte_pos(start_byte);
+        let e = self.clamp_byte_pos(end_byte).max(s);
+        let rep = replacement.to_string();
+        self.record_tx(None, |doc| {
+            if s < e {
+                doc.rope.remove(s, e);
+            }
+            doc.rope.insert(s, &rep);
+            let end_pos = s + rep.len();
+            doc.cursors = vec![Selection::caret(end_pos)];
+            doc.primary = 0;
+        });
+    }
+
+    /// Updates a virtual read-only buffer (e.g. `[Judge]` output) without dirtying undo/save state.
+    pub fn set_virtual_text(&mut self, title_name: &str, text: &str) {
+        self.path = Some(PathBuf::from(title_name));
+        let (rope, eol) = Rope::from_str_detect_eol(text);
+        self.rope = rope;
+        self.eol = eol;
+        self.lang = Language::Plain;
+        self.syntax.set_language(Language::Plain);
+        self.cursors = vec![Selection::caret(0)];
+        self.primary = 0;
+        self.scroll_row = 0;
+        self.scroll_col = 0;
+        self.rev = 0;
+        self.saved_rev = 0;
+        self.external_changed = false;
+    }
+
     pub fn set_cursor_at_line_col(&mut self, row: usize, col: usize, extend: bool) {
         let nb = self.rope.line_col_to_byte(row, col);
         if extend {

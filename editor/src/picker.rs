@@ -15,6 +15,8 @@ pub struct PickerItem {
 pub enum PickerAction {
     OpenFile(PathBuf),
     BrowseDir(PathBuf),
+    JumpToLine(usize),
+    InsertSnippet(String),
     ToggleVimVisual,
     ToggleRelativeNumbers,
     ToggleBlockCursor,
@@ -29,6 +31,25 @@ pub enum PickerAction {
     ToggleCommentBadges,
     ToggleTrailingSpaces,
     CycleColorColumn,
+    ToggleAutocomplete,
+    CycleAutocompleteMinLen,
+    ToggleCpRadar,
+    ToggleExamMode,
+    JudgeRunRelease,
+    JudgeRunDebug,
+    NextDiagnostic,
+    CpLayoutSetup,
+    OpenSnippetsPicker,
+    StressTestRun,
+    StressTestScaffold,
+    StressTestCancel,
+    GotoSymbol,
+    JumpMatchingBracket,
+    CopyLeetCodeSolution,
+    TimerStopwatch,
+    TimerCountdown(u64),
+    TimerTogglePause,
+    TimerStop,
     ToggleWrap,
     ToggleAutoClose,
     ToggleLineEnding,
@@ -188,6 +209,52 @@ impl Picker {
         };
         self.browse_to(&parent);
         true
+    }
+
+    pub fn symbols_picker(symbols: &[crate::cp_assist::SymbolEntry]) -> Self {
+        let items = symbols
+            .iter()
+            .map(|s| PickerItem {
+                label: format!("[{}] {}", s.kind, s.name),
+                detail: format!("Ln {}", s.line),
+                action: PickerAction::JumpToLine(s.line),
+            })
+            .collect();
+        let mut p = Self {
+            title: "Ir para Simbolo (Ctrl+Shift+O)".into(),
+            title_prefix: None,
+            query: String::new(),
+            items,
+            filtered: Vec::new(),
+            selected: 0,
+            browse_dir: None,
+            create_base: None,
+        };
+        p.refilter();
+        p
+    }
+
+    pub fn snippets_picker(snippets: &[crate::cp_assist::Snippet]) -> Self {
+        let items = snippets
+            .iter()
+            .map(|s| PickerItem {
+                label: s.trigger.clone(),
+                detail: s.description.clone(),
+                action: PickerAction::InsertSnippet(s.body.clone()),
+            })
+            .collect();
+        let mut p = Self {
+            title: "Templates / Snippets CP (~/.config/nave/snippets)".into(),
+            title_prefix: None,
+            query: String::new(),
+            items,
+            filtered: Vec::new(),
+            selected: 0,
+            browse_dir: None,
+            create_base: None,
+        };
+        p.refilter();
+        p
     }
 
     pub fn command_palette(cfg: &crate::config::EditorConfig, eol: &str) -> Self {
@@ -367,8 +434,113 @@ impl Picker {
                 action: PickerAction::RestartTerminal,
             },
             PickerItem {
+                label: "CP: Compilar e Julgar Casos (O2 · -DLOCAL)".into(),
+                detail: "F5 (in.txt / in1.txt / ---)".into(),
+                action: PickerAction::JudgeRunRelease,
+            },
+            PickerItem {
+                label: "CP: Compilar e Julgar DEBUG (ASan + UBSan)".into(),
+                detail: "F6 (pega out-of-bounds/UB)".into(),
+                action: PickerAction::JudgeRunDebug,
+            },
+            PickerItem {
+                label: "CP: Proximo Erro / Warning de Compilacao".into(),
+                detail: "F8".into(),
+                action: PickerAction::NextDiagnostic,
+            },
+            PickerItem {
+                label: "CP: Montar Layout Maratona (sol | in.txt / expected.txt)".into(),
+                detail: "ne --cp · 3 paineis".into(),
+                action: PickerAction::CpLayoutSetup,
+            },
+            PickerItem {
+                label: "CP: Inserir Template / Snippet (dsu, segtree, bit, dijk...)".into(),
+                detail: "ou digite gatilho + Tab".into(),
+                action: PickerAction::OpenSnippetsPicker,
+            },
+            PickerItem {
+                label: "CP: Rodar Stress Test (gen.cpp + brute.cpp + sol)".into(),
+                detail: "salva contra-exemplo em in.txt".into(),
+                action: PickerAction::StressTestRun,
+            },
+            PickerItem {
+                label: "CP: Gerar Esqueleto Stress (gen.cpp + brute.cpp)".into(),
+                detail: "cria arquivos na pasta atual".into(),
+                action: PickerAction::StressTestScaffold,
+            },
+            PickerItem {
+                label: "CP: Parar Judge / Stress Test em andamento".into(),
+                detail: "cancela execucao".into(),
+                action: PickerAction::StressTestCancel,
+            },
+            PickerItem {
+                label: "CP: Copiar Solution Limpa p/ LeetCode (Clipboard)".into(),
+                detail: "remove #ifdef LOCAL e dbg()".into(),
+                action: PickerAction::CopyLeetCodeSolution,
+            },
+            PickerItem {
+                label: "Ir para Simbolo / Funcao / Struct".into(),
+                detail: "Ctrl+Shift+O".into(),
+                action: PickerAction::GotoSymbol,
+            },
+            PickerItem {
+                label: "Saltar para Par de Delimitador ({} () [])".into(),
+                detail: "Ctrl+] · Alt+M".into(),
+                action: PickerAction::JumpMatchingBracket,
+            },
+            PickerItem {
+                label: format!("Autocomplete Inteligente de Variaveis/STL [{}]", onoff(cfg.autocomplete)),
+                detail: format!("Tab aceita · Ctrl+Space forca (min {} chars)", cfg.autocomplete_min_len),
+                action: PickerAction::ToggleAutocomplete,
+            },
+            PickerItem {
+                label: format!("Autocomplete: Tamanho Minimo de Variavel [{} chars]", cfg.autocomplete_min_len),
+                detail: "3 / 4 / 5 / 6 caracteres".into(),
+                action: PickerAction::CycleAutocompleteMinLen,
+            },
+            PickerItem {
+                label: format!("CP: Radar Anti-Armadilhas (endl, 1<<31, hash) [{}]", onoff(cfg.cp_radar)),
+                detail: "marca '!' no gutter em 0ms".into(),
+                action: PickerAction::ToggleCpRadar,
+            },
+            PickerItem {
+                label: format!("CP: Modo Prova / ICPC (bloqueia snippets prontos) [{}]", onoff(cfg.exam_mode)),
+                detail: "treino fiel a maratona".into(),
+                action: PickerAction::ToggleExamMode,
+            },
+            PickerItem {
+                label: "Timer CP: Iniciar Cronometro (00:00 ↑)".into(),
+                detail: "barra de status".into(),
+                action: PickerAction::TimerStopwatch,
+            },
+            PickerItem {
+                label: "Timer CP: Contagem Regressiva 25 min (LeetCode)".into(),
+                detail: "simulado rapido".into(),
+                action: PickerAction::TimerCountdown(25),
+            },
+            PickerItem {
+                label: "Timer CP: Contagem Regressiva 45 min (Entrevista)".into(),
+                detail: "simulado medio".into(),
+                action: PickerAction::TimerCountdown(45),
+            },
+            PickerItem {
+                label: "Timer CP: Contagem Regressiva 2h (Codeforces Round)".into(),
+                detail: "120 minutos".into(),
+                action: PickerAction::TimerCountdown(120),
+            },
+            PickerItem {
+                label: "Timer CP: Pausar / Retomar".into(),
+                detail: "alterna pausa".into(),
+                action: PickerAction::TimerTogglePause,
+            },
+            PickerItem {
+                label: "Timer CP: Desligar / Zerar".into(),
+                detail: "oculta da barra".into(),
+                action: PickerAction::TimerStop,
+            },
+            PickerItem {
                 label: "Recarregar arquivo do disco".into(),
-                detail: "F5".into(),
+                detail: "F9 · Shift+F5".into(),
                 action: PickerAction::ReloadFromDisk,
             },
             PickerItem {

@@ -225,7 +225,8 @@ impl InputDecoder {
                     0x09 => KeyEvent::plain(KeyCode::Tab),
                     0x0a | 0x0d => KeyEvent::plain(KeyCode::Enter),
                     0x1c => KeyEvent::ctrl(KeyCode::Char('\\')), // Ctrl+\ (split pane)
-                    0x1f => KeyEvent::ctrl(KeyCode::Char('/')), // Ctrl+/
+                    0x1d => KeyEvent::ctrl(KeyCode::Char(']')),  // Ctrl+] (jump to matching bracket)
+                    0x1f => KeyEvent::ctrl(KeyCode::Char('/')),  // Ctrl+/
                     0x7f => KeyEvent::plain(KeyCode::Backspace),
                     1..=26 => KeyEvent::ctrl(KeyCode::Char((b'a' + (b - 1)) as char)),
                     _ => continue,
@@ -381,6 +382,10 @@ fn decode_csi(params: &str, final_ch: char) -> Option<Event> {
             17 => KeyCode::F(6),
             18 => KeyCode::F(7),
             19 => KeyCode::F(8),
+            20 => KeyCode::F(9),
+            21 => KeyCode::F(10),
+            23 => KeyCode::F(11),
+            24 => KeyCode::F(12),
             _ => return None,
         },
         _ => return None,

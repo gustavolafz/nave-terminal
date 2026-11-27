@@ -1,7 +1,9 @@
 mod config;
+mod cp_assist;
 mod document;
 mod git;
 mod input;
+mod judge;
 mod layout;
 mod palette;
 mod picker;
@@ -13,8 +15,13 @@ mod syntax;
 mod terminal;
 
 use config::EditorConfig;
+use cp_assist::{
+    all_snippets, compute_completions, detect_cp_pitfall, extract_leetcode_solution,
+    extract_symbols, file_has_custom_hash, find_snippet, CompletionKind, CompletionPopup, CpTimer,
+};
 use document::{Document, Motion, Selection};
 use input::{Event, InputDecoder, KeyCode, KeyEvent, MouseKind};
+use judge::{scaffold_stress_files, DiagSeverity, Diagnostic, JudgeRunner};
 use layout::{
     ComputedLayout, Dir, DividerHit, LayoutNode, PaneId, Rect, SplitAxis, MIN_PANE_H, MIN_PANE_W,
 };
@@ -26,13 +33,13 @@ use render::{
     PaneRenderInput, PromptBar, TabBadge, TermPanelView,
 };
 use rope::LineEnding;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use terminal::{copy_to_system_clipboard, paste_from_system_clipboard, PointerShape, Terminal};
 
-const VERSION: &str = "nave-edit 0.2.0 (Rust Native · Multi-Pane · Nave Terminal v4)";
+const VERSION: &str = "nave-edit 0.3.0 (Rust Native · Multi-Pane · PTY Terminal · CP Suite)";
 
 enum Mode {
     Edit,
@@ -135,6 +142,13 @@ struct App {
     term_height: usize,
     hover_term_divider: bool,
     hover_term_close: bool,
+    completion: Option<CompletionPopup>,
+    completion_dismissed_byte: Option<usize>,
+    judge: JudgeRunner,
+    diagnostics: HashMap<PathBuf, Vec<Diagnostic>>,
+    diag_idx: usize,
+    judge_doc_id: Option<usize>,
+    cp_timer: CpTimer,
     should_quit: bool,
     last_mtime_check: Instant,
 }
@@ -213,6 +227,13 @@ impl App {
             term_height: 0,
             hover_term_divider: false,
             hover_term_close: false,
+            completion: None,
+            completion_dismissed_byte: None,
+            judge: JudgeRunner::new(),
+            diagnostics: HashMap::new(),
+            diag_idx: 0,
+            judge_doc_id: None,
+            cp_timer: CpTimer::default(),
             should_quit: false,
             last_mtime_check: Instant::now(),
         }
@@ -453,6 +474,405 @@ impl App {
         self.hover_term_close = false;
         self.hover_shape = PointerShape::Default;
         self.set_status("Terminal fechado");
+    }
+
+    // -------------------------------------------------------------------------
+    // Competitive Programming Suite: Autocomplete, Snippets, Judge, Stress, Symbols, LeetCode
+    // -------------------------------------------------------------------------
+
+    fn clear_completion(&mut self) {
+        self.completion = None;
+    }
+
+    fn refresh_completion(&mut self, forced: bool) {
+        if !matches!(self.mode, Mode::Edit) || (self.term_open && self.term_focused) {
+            self.completion = None;
+            return;
+        }
+        if self.doc().cursors.len() != 1 || !self.doc().primary_cursor().is_empty() {
+            self.completion = None;
+            return;
+        }
+        if !forced && !self.cfg.autocomplete {
+            self.completion = None;
+            return;
+        }
+        let head = self.doc().primary_cursor().head;
+        if !forced && self.completion_dismissed_byte == Some(head) {
+            self.completion = None;
+            return;
+        }
+        self.completion_dismissed_byte = None;
+        self.completion = compute_completions(
+            &self.doc().rope,
+            head,
+            self.doc().lang,
+            self.cfg.autocomplete_min_len,
+            self.cfg.exam_mode,
+            forced,
+        );
+    }
+
+    fn indent_multiline_for_cursor(&self, text: &str) -> String {
+        if !text.contains('\n') {
+            return text.to_string();
+        }
+        let (row, _) = self.doc().primary_line_col();
+        let cur_line = self.doc().rope.line(row);
+        let base_indent: String = cur_line
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .collect();
+        if base_indent.is_empty() {
+            return text.to_string();
+        }
+        let mut out = String::with_capacity(text.len() + 32);
+        for (i, part) in text.split('\n').enumerate() {
+            if i > 0 {
+                out.push('\n');
+                if !part.is_empty() {
+                    out.push_str(&base_indent);
+                }
+            }
+            out.push_str(part);
+        }
+        out
+    }
+
+    fn accept_completion(&mut self) -> bool {
+        let Some(pop) = self.completion.take() else {
+            return false;
+        };
+        let Some(item) = pop.active().cloned() else {
+            return false;
+        };
+        let head = self.doc().primary_cursor().head;
+        let replacement = if item.kind == CompletionKind::Snippet {
+            self.indent_multiline_for_cursor(&item.insert)
+        } else {
+            item.insert.clone()
+        };
+        self.doc_mut()
+            .replace_byte_range_atomic(pop.start_byte, head, &replacement);
+        if item.kind == CompletionKind::Snippet {
+            self.set_status(format!("✓ Snippet expandido: {}", item.detail));
+        }
+        true
+    }
+
+    fn try_expand_exact_snippet_on_tab(&mut self) -> bool {
+        if self.cfg.exam_mode || self.doc().cursors.len() != 1 || !self.doc().primary_cursor().is_empty() {
+            return false;
+        }
+        let head = self.doc().primary_cursor().head;
+        let (row, col) = self.doc().rope.byte_to_line_col(head);
+        let line = self.doc().rope.line(row);
+        let line_start = self.doc().rope.line_start_byte(row);
+        let col_byte = line.char_indices().nth(col).map(|(b, _)| b).unwrap_or(line.len());
+        let before = &line[..col_byte];
+        let bytes = before.as_bytes();
+        let mut s = bytes.len();
+        while s > 0 && (bytes[s - 1].is_ascii_alphanumeric() || bytes[s - 1] == b'_') {
+            s -= 1;
+        }
+        let trigger = &before[s..];
+        if trigger.is_empty() {
+            return false;
+        }
+        let Some(snip) = find_snippet(trigger, self.doc().lang) else {
+            return false;
+        };
+        let body = self.indent_multiline_for_cursor(&snip.body);
+        self.doc_mut()
+            .replace_byte_range_atomic(line_start + s, head, &body);
+        self.set_status(format!("✓ Template '{}' inserido", snip.trigger));
+        true
+    }
+
+    fn insert_snippet_at_cursor(&mut self, body: &str) {
+        let indented = self.indent_multiline_for_cursor(body);
+        let head = self.doc().primary_cursor().head;
+        self.doc_mut().replace_byte_range_atomic(head, head, &indented);
+        self.set_status("✓ Template CP inserido");
+    }
+
+    fn active_doc_key(&self) -> Option<PathBuf> {
+        self.doc()
+            .path
+            .as_ref()
+            .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
+    }
+
+    fn run_judge(&mut self, debug_mode: bool) {
+        self.clear_completion();
+        if self.doc().path.is_none() {
+            self.set_status("Salve o arquivo primeiro (Ctrl+S) antes de compilar/julgar");
+            return;
+        }
+        if self.doc().is_dirty() && !self.try_save_active() {
+            return;
+        }
+        let Some(src_path) = self.doc().path.clone() else { return };
+        let key = src_path.canonicalize().unwrap_or_else(|_| src_path.clone());
+        self.diagnostics.remove(&key);
+        self.diag_idx = 0;
+        self.judge
+            .start_judge(src_path, debug_mode, self.cfg.judge_timeout_ms);
+    }
+
+    fn run_stress_test(&mut self) {
+        self.clear_completion();
+        if self.doc().path.is_none() {
+            self.set_status("Abra e salve sol.cpp primeiro para rodar Stress Test");
+            return;
+        }
+        if self.doc().is_dirty() && !self.try_save_active() {
+            return;
+        }
+        let Some(src_path) = self.doc().path.clone() else { return };
+        self.judge
+            .start_stress_test(src_path, self.cfg.judge_timeout_ms, 500);
+    }
+
+    fn scaffold_stress_in_current_dir(&mut self) {
+        let dir = self.base_dir();
+        match scaffold_stress_files(&dir) {
+            Ok((gen_p, brute_p)) => {
+                self.set_status(format!(
+                    "✓ Criados {} e {} (use Ctrl+P p/ abrir e F1 -> Stress Test)",
+                    gen_p.file_name().and_then(|s| s.to_str()).unwrap_or("gen.cpp"),
+                    brute_p.file_name().and_then(|s| s.to_str()).unwrap_or("brute.cpp")
+                ));
+            }
+            Err(e) => self.set_status(format!("Erro ao gerar esqueleto stress: {}", e)),
+        }
+    }
+
+    fn show_judge_report_pane(&mut self, report: &str, cols: usize, rows: usize) {
+        let orig_pane = self.active_pane;
+        self.sync_active_to_tab();
+
+        // Reuse or allocate virtual `[Judge]` document
+        let j_did = if let Some(did) = self.judge_doc_id.filter(|&id| self.docs.get(id).and_then(|d| d.as_ref()).is_some()) {
+            if let Some(doc) = self.docs[did].as_mut() {
+                doc.set_virtual_text("[Judge]", report);
+            }
+            did
+        } else {
+            let mut d = Document::new_empty();
+            d.set_virtual_text("[Judge]", report);
+            let did = self.alloc_doc(d);
+            self.judge_doc_id = Some(did);
+            did
+        };
+
+        // Pick a non-focused pane (last pane in layout) or create a right split if single-pane
+        let order = self.layout_tree.pane_order();
+        let target_pane = if let Some(&other) = order.iter().rev().find(|&&pid| pid != orig_pane) {
+            other
+        } else if cols >= MIN_PANE_W * 2 + 1 {
+            let new_pid = self.next_pane_id;
+            self.next_pane_id += 1;
+            let split_id = self.next_split_id;
+            self.next_split_id += 1;
+            let tv = TabView::from_doc(j_did, self.docs[j_did].as_ref().unwrap());
+            self.panes.push(Pane {
+                id: new_pid,
+                tabs: vec![tv],
+                active_tab: 0,
+            });
+            self.layout_tree
+                .split_pane(orig_pane, new_pid, split_id, SplitAxis::Horizontal, false);
+            self.layout_tree.set_split_ratio(split_id, 0.62);
+            let _ = rows;
+            return;
+        } else {
+            return;
+        };
+
+        let tv = TabView::from_doc(j_did, self.docs[j_did].as_ref().unwrap());
+        let p = self.pane_mut(target_pane);
+        if let Some(tidx) = p.tabs.iter().position(|t| t.doc_id == j_did) {
+            p.tabs[tidx] = tv;
+            p.active_tab = tidx;
+        } else {
+            p.tabs.push(tv);
+            p.active_tab = p.tabs.len() - 1;
+        }
+        // Keep focus strictly on original coding pane!
+        self.active_pane = orig_pane;
+        self.load_active_from_tab();
+    }
+
+    fn poll_judge_updates(&mut self, cols: usize, rows: usize) -> bool {
+        if !self.judge.take_dirty() {
+            return false;
+        }
+        if let Some(res) = self.judge.take_result() {
+            let key = res
+                .src_path
+                .canonicalize()
+                .unwrap_or_else(|_| res.src_path.clone());
+            if res.diagnostics.is_empty() {
+                self.diagnostics.remove(&key);
+            } else {
+                self.diagnostics.insert(key, res.diagnostics.clone());
+            }
+            self.diag_idx = 0;
+
+            // If Stress Test saved a counterexample to `in.txt`, live-reload any open `in.txt` buffer!
+            if let Some(ref in_p) = res.updated_in_txt {
+                let canon_in = in_p.canonicalize().unwrap_or_else(|_| in_p.clone());
+                for d in self.docs.iter_mut().flatten() {
+                    if let Some(ref dp) = d.path {
+                        if dp.canonicalize().unwrap_or_else(|_| dp.clone()) == canon_in {
+                            let _ = d.reload_from_disk();
+                        }
+                    }
+                }
+            }
+
+            self.show_judge_report_pane(&res.report, cols, rows);
+            self.set_status(res.summary);
+        }
+        true
+    }
+
+    fn jump_next_diagnostic(&mut self) {
+        let Some(key) = self.active_doc_key() else {
+            self.set_status("Nenhum diagnostico neste arquivo");
+            return;
+        };
+        let Some(list) = self.diagnostics.get(&key).filter(|v| !v.is_empty()).cloned() else {
+            self.set_status("✓ Nenhum erro ou warning de compilacao");
+            return;
+        };
+        let idx = self.diag_idx % list.len();
+        self.diag_idx = (idx + 1) % list.len();
+        let d = &list[idx];
+        self.doc_mut().goto_line(d.line + 1);
+        let tag = match d.severity {
+            DiagSeverity::Error => "● Erro",
+            DiagSeverity::Warning => "▲ Warn",
+        };
+        self.set_status(format!(
+            "{} {}/{} (Ln {}): {}",
+            tag,
+            idx + 1,
+            list.len(),
+            d.line + 1,
+            d.message
+        ));
+    }
+
+    fn setup_cp_layout(&mut self, cols: usize, rows: usize) {
+        self.clear_completion();
+        self.sync_active_to_tab();
+        let dir = self.base_dir();
+
+        // Ensure active tab has a source file (if blank untitled, open/create sol.cpp)
+        if self.doc().path.is_none() && self.doc().rope.is_empty() {
+            let sol_p = dir.join("sol.cpp");
+            self.open_or_focus_file(&sol_p, None);
+        }
+        let main_tv = self.pane(self.active_pane).active_view().clone();
+
+        // Open `in.txt` and `expected.txt` (or existing `out.txt`)
+        let in_path = dir.join("in.txt");
+        let exp_path = if dir.join("expected.txt").exists() || !dir.join("out.txt").exists() {
+            dir.join("expected.txt")
+        } else {
+            dir.join("out.txt")
+        };
+
+        let open_or_alloc = |docs: &mut Vec<Option<Document>>, cfg_ac: bool, path: &Path| -> usize {
+            let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            if let Some((id, _)) = docs.iter().enumerate().find(|(_, d)| {
+                d.as_ref()
+                    .and_then(|x| x.path.as_ref())
+                    .is_some_and(|p| p.canonicalize().unwrap_or_else(|_| p.clone()) == canon)
+            }) {
+                return id;
+            }
+            let mut d = Document::open(path, None).unwrap_or_else(|_| Document::new_empty());
+            d.auto_close = cfg_ac;
+            if let Some(slot) = docs.iter().position(|x| x.is_none()) {
+                docs[slot] = Some(d);
+                slot
+            } else {
+                let id = docs.len();
+                docs.push(Some(d));
+                id
+            }
+        };
+
+        let in_did = open_or_alloc(&mut self.docs, self.cfg.auto_close, &in_path);
+        let exp_did = open_or_alloc(&mut self.docs, self.cfg.auto_close, &exp_path);
+        let in_tv = TabView::from_doc(in_did, self.docs[in_did].as_ref().unwrap());
+        let exp_tv = TabView::from_doc(exp_did, self.docs[exp_did].as_ref().unwrap());
+
+        let p_code = self.next_pane_id;
+        let p_in = p_code + 1;
+        let p_exp = p_code + 2;
+        self.next_pane_id += 3;
+        let s_main = self.next_split_id;
+        let s_right = s_main + 1;
+        self.next_split_id += 2;
+
+        self.panes = vec![
+            Pane { id: p_code, tabs: vec![main_tv], active_tab: 0 },
+            Pane { id: p_in, tabs: vec![in_tv], active_tab: 0 },
+            Pane { id: p_exp, tabs: vec![exp_tv], active_tab: 0 },
+        ];
+        let mut tree = LayoutNode::leaf(p_code);
+        tree.split_pane(p_code, p_in, s_main, SplitAxis::Horizontal, false);
+        tree.set_split_ratio(s_main, 0.62);
+        tree.split_pane(p_in, p_exp, s_right, SplitAxis::Vertical, false);
+        tree.set_split_ratio(s_right, 0.50);
+        self.layout_tree = tree;
+        self.active_pane = p_code;
+        self.load_active_from_tab();
+        let _ = (cols, rows);
+        self.set_status("✓ Layout CP montado: ① codigo | ② in.txt / ③ expected.txt (F5 julgar · F6 debug)");
+    }
+
+    fn open_symbol_picker(&mut self) {
+        self.clear_completion();
+        self.pending_pane_pickers.clear();
+        let syms = extract_symbols(&self.doc().rope, self.doc().lang);
+        if syms.is_empty() {
+            self.set_status("Nenhum simbolo (funcao/struct/class) encontrado neste arquivo");
+            return;
+        }
+        self.mode = Mode::Picker(Picker::symbols_picker(&syms));
+    }
+
+    fn open_snippets_picker(&mut self) {
+        self.clear_completion();
+        if self.cfg.exam_mode {
+            self.set_status("Modo Prova [ON]: snippets bloqueados (desative em F1 para usar)");
+            return;
+        }
+        self.pending_pane_pickers.clear();
+        let snips = all_snippets(self.doc().lang);
+        self.mode = Mode::Picker(Picker::snippets_picker(&snips));
+    }
+
+    fn copy_leetcode_solution(&mut self) {
+        match extract_leetcode_solution(&self.doc().rope, self.doc().lang) {
+            Some(sol) => {
+                let lines = sol.lines().count();
+                self.clipboard = sol.clone();
+                copy_to_system_clipboard(&sol);
+                self.set_status(format!(
+                    "✓ Solution limpa copiada p/ clipboard ({} linhas · pronto p/ LeetCode)",
+                    lines
+                ));
+            }
+            None => {
+                self.set_status("Nenhuma 'class Solution' ou 'struct Solution' encontrada neste arquivo");
+            }
+        }
     }
 
     fn group_number_of(&self, pane_id: PaneId) -> usize {
@@ -1219,6 +1639,7 @@ impl App {
                 true
             }
             MouseKind::LeftDown => {
+                self.clear_completion();
                 // 0. Check integrated terminal header/divider/close button & body
                 if let Some((header_row, body_h)) = self.term_layout(rows) {
                     if m.row == header_row {
@@ -1981,6 +2402,10 @@ impl App {
                     self.open_command_palette();
                     return;
                 }
+                KeyCode::Char('o') => {
+                    self.open_symbol_picker();
+                    return;
+                }
                 KeyCode::PageUp => {
                     self.reorder_active_tab(-1);
                     return;
@@ -2058,6 +2483,14 @@ impl App {
         // Alt combinations
         if k.alt && !k.ctrl && !k.shift {
             match k.code {
+                KeyCode::Char('m') => {
+                    self.clear_completion();
+                    let bc = self.cfg.block_cursor;
+                    if !self.doc_mut().jump_to_matching_bracket(bc) {
+                        self.set_status("Posicione o cursor em um delimitador (), [] ou {}");
+                    }
+                    return;
+                }
                 KeyCode::Up => {
                     self.doc_mut().move_lines(true);
                     return;
@@ -2110,17 +2543,6 @@ impl App {
                     self.term_sync_needed = true;
                     let st = if self.cfg.vim_visual { "ON (relnum + scroll cursor)" } else { "OFF (VS Code padrao)" };
                     self.set_status(format!("Estilo Vim Visual: {}", st));
-                    return;
-                }
-                KeyCode::Char('m') => {
-                    let head = self.doc().primary_cursor().head;
-                    let at_cursor = self.cfg.block_cursor;
-                    if let Some((_a, b)) = syntax::find_matching_bracket(&self.doc().rope, head, at_cursor) {
-                        let doc = self.doc_mut();
-                        let target = if at_cursor { b } else { (b + 1).min(doc.rope.len_bytes()) };
-                        doc.cursors = vec![document::Selection::caret(target)];
-                        doc.primary = 0;
-                    }
                     return;
                 }
                 KeyCode::Char('i') => {
@@ -2214,6 +2636,33 @@ impl App {
                         self.mode = Mode::ConfirmCloseTab;
                     } else {
                         self.close_active_tab_force();
+                    }
+                    return;
+                }
+                KeyCode::Char(' ') => {
+                    self.refresh_completion(true);
+                    if self.completion.is_none() {
+                        self.set_status("Nenhuma sugestao neste ponto");
+                    }
+                    return;
+                }
+                KeyCode::Char(']') => {
+                    self.clear_completion();
+                    let bc = self.cfg.block_cursor;
+                    if !self.doc_mut().jump_to_matching_bracket(bc) {
+                        self.set_status("Posicione o cursor em um delimitador (), [] ou {}");
+                    }
+                    return;
+                }
+                KeyCode::Char('n') if self.completion.is_some() => {
+                    if let Some(ref mut c) = self.completion {
+                        c.move_sel(1);
+                    }
+                    return;
+                }
+                KeyCode::Char('p') if self.completion.is_some() => {
+                    if let Some(ref mut c) = self.completion {
+                        c.move_sel(-1);
                     }
                     return;
                 }
@@ -2332,7 +2781,13 @@ impl App {
         // Plain & Shift keys
         match k.code {
             KeyCode::Esc => {
-                if !matches!(self.drag, DragState::None) {
+                if self.completion.is_some() {
+                    self.completion_dismissed_byte = Some(self.doc().primary_cursor().head);
+                    self.completion = None;
+                } else if self.judge.is_running() {
+                    self.judge.cancel();
+                    self.set_status("Cancelando execucao...");
+                } else if !matches!(self.drag, DragState::None) {
                     self.drag = DragState::None;
                     self.set_status("Arrasto cancelado");
                 } else if !self.doc_mut().collapse_cursors() && !self.doc().search.query.is_empty() {
@@ -2341,7 +2796,10 @@ impl App {
                     self.doc_mut().search.active_idx = None;
                 }
             }
-            KeyCode::F(1) => self.open_command_palette(),
+            KeyCode::F(1) => {
+                self.clear_completion();
+                self.open_command_palette();
+            }
             KeyCode::F(2) => {
                 let next_idx = palette::PALETTES
                     .iter()
@@ -2351,6 +2809,7 @@ impl App {
                 self.set_palette_index(next_idx);
             }
             KeyCode::F(3) => {
+                self.clear_completion();
                 let m = if k.shift {
                     self.doc_mut().search.prev_match()
                 } else {
@@ -2361,6 +2820,7 @@ impl App {
                 }
             }
             KeyCode::F(4) => {
+                self.clear_completion();
                 if let Some((idx, tot, ln)) = self.doc_mut().jump_bookmark(!k.shift) {
                     self.set_status(format!("◆ Bookmark {}/{} (Ln {})", idx, tot, ln));
                 } else {
@@ -2368,32 +2828,111 @@ impl App {
                 }
             }
             KeyCode::F(5) => {
+                if k.shift {
+                    if let Err(e) = self.doc_mut().reload_from_disk() {
+                        self.set_status(format!("Erro ao recarregar: {}", e));
+                    } else {
+                        self.set_status("Recarregado do disco");
+                    }
+                } else {
+                    self.run_judge(false);
+                }
+            }
+            KeyCode::F(6) => {
+                self.run_judge(true);
+            }
+            KeyCode::F(8) => {
+                self.clear_completion();
+                self.jump_next_diagnostic();
+            }
+            KeyCode::F(9) => {
                 if let Err(e) = self.doc_mut().reload_from_disk() {
                     self.set_status(format!("Erro ao recarregar: {}", e));
                 } else {
                     self.set_status("Recarregado do disco");
                 }
             }
-            KeyCode::Left => self.doc_mut().move_cursors(Motion::Left, k.shift),
-            KeyCode::Right => self.doc_mut().move_cursors(Motion::Right, k.shift),
-            KeyCode::Up => self.doc_mut().move_cursors(Motion::Up, k.shift),
-            KeyCode::Down => self.doc_mut().move_cursors(Motion::Down, k.shift),
-            KeyCode::Home => self.doc_mut().move_cursors(Motion::Home, k.shift),
-            KeyCode::End => self.doc_mut().move_cursors(Motion::End, k.shift),
-            KeyCode::PageUp => self.doc_mut().move_cursors(Motion::PageUp(page_step), k.shift),
-            KeyCode::PageDown => self.doc_mut().move_cursors(Motion::PageDown(page_step), k.shift),
-            KeyCode::Enter => {
-                if k.shift {
-                    self.doc_mut().insert_line_below();
+            KeyCode::Left => {
+                self.clear_completion();
+                self.doc_mut().move_cursors(Motion::Left, k.shift);
+            }
+            KeyCode::Right => {
+                self.clear_completion();
+                self.doc_mut().move_cursors(Motion::Right, k.shift);
+            }
+            KeyCode::Up => {
+                if !k.shift && self.completion.is_some() {
+                    if let Some(ref mut c) = self.completion {
+                        c.move_sel(-1);
+                    }
                 } else {
-                    self.doc_mut().insert_newline();
+                    self.clear_completion();
+                    self.doc_mut().move_cursors(Motion::Up, k.shift);
                 }
             }
-            KeyCode::Tab => self.doc_mut().indent(false),
-            KeyCode::BackTab => self.doc_mut().indent(true),
-            KeyCode::Backspace => self.doc_mut().backspace(false),
-            KeyCode::Delete => self.doc_mut().delete(false),
-            KeyCode::Char(ch) if !k.ctrl && !k.alt => self.doc_mut().insert_char(ch),
+            KeyCode::Down => {
+                if !k.shift && self.completion.is_some() {
+                    if let Some(ref mut c) = self.completion {
+                        c.move_sel(1);
+                    }
+                } else {
+                    self.clear_completion();
+                    self.doc_mut().move_cursors(Motion::Down, k.shift);
+                }
+            }
+            KeyCode::Home => {
+                self.clear_completion();
+                self.doc_mut().move_cursors(Motion::Home, k.shift);
+            }
+            KeyCode::End => {
+                self.clear_completion();
+                self.doc_mut().move_cursors(Motion::End, k.shift);
+            }
+            KeyCode::PageUp => {
+                self.clear_completion();
+                self.doc_mut().move_cursors(Motion::PageUp(page_step), k.shift);
+            }
+            KeyCode::PageDown => {
+                self.clear_completion();
+                self.doc_mut().move_cursors(Motion::PageDown(page_step), k.shift);
+            }
+            KeyCode::Enter => {
+                if !k.shift && self.completion.as_ref().is_some_and(|c| c.user_navigated) {
+                    self.accept_completion();
+                } else {
+                    self.clear_completion();
+                    if k.shift {
+                        self.doc_mut().insert_line_below();
+                    } else {
+                        self.doc_mut().insert_newline();
+                    }
+                }
+            }
+            KeyCode::Tab => {
+                if !self.accept_completion() && !self.try_expand_exact_snippet_on_tab() {
+                    self.doc_mut().indent(false);
+                }
+            }
+            KeyCode::BackTab => {
+                self.clear_completion();
+                self.doc_mut().indent(true);
+            }
+            KeyCode::Backspace => {
+                self.doc_mut().backspace(false);
+                self.refresh_completion(false);
+            }
+            KeyCode::Delete => {
+                self.clear_completion();
+                self.doc_mut().delete(false);
+            }
+            KeyCode::Char(ch) if !k.ctrl && !k.alt => {
+                self.doc_mut().insert_char(ch);
+                if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' || ch == ':' || ch == '>' {
+                    self.refresh_completion(false);
+                } else {
+                    self.clear_completion();
+                }
+            }
             _ => {}
         }
     }
@@ -2777,6 +3316,80 @@ impl App {
             match act {
                 PickerAction::OpenFile(path) => self.open_or_focus_file(&path, None),
                 PickerAction::BrowseDir(_) => {}
+                PickerAction::JumpToLine(ln) => {
+                    self.doc_mut().goto_line(ln);
+                    self.set_status(format!("Simbolo na linha {}", ln));
+                }
+                PickerAction::InsertSnippet(body) => self.insert_snippet_at_cursor(&body),
+                PickerAction::ToggleAutocomplete => {
+                    self.cfg.autocomplete = !self.cfg.autocomplete;
+                    self.cfg.save();
+                    if !self.cfg.autocomplete {
+                        self.clear_completion();
+                    }
+                    let st = if self.cfg.autocomplete { "ON" } else { "OFF" };
+                    self.set_status(format!("Autocomplete Inteligente: {}", st));
+                }
+                PickerAction::CycleAutocompleteMinLen => {
+                    self.cfg.cycle_autocomplete_min_len();
+                    self.set_status(format!(
+                        "Autocomplete min_len: {} caracteres",
+                        self.cfg.autocomplete_min_len
+                    ));
+                }
+                PickerAction::ToggleCpRadar => {
+                    self.cfg.cp_radar = !self.cfg.cp_radar;
+                    self.cfg.save();
+                    let st = if self.cfg.cp_radar { "ON" } else { "OFF" };
+                    self.set_status(format!("Radar Anti-Armadilhas CP: {}", st));
+                }
+                PickerAction::ToggleExamMode => {
+                    self.cfg.exam_mode = !self.cfg.exam_mode;
+                    self.cfg.save();
+                    self.clear_completion();
+                    let st = if self.cfg.exam_mode {
+                        "ON (snippets prontos bloqueados)"
+                    } else {
+                        "OFF"
+                    };
+                    self.set_status(format!("Modo Prova / ICPC: {}", st));
+                }
+                PickerAction::JudgeRunRelease => self.run_judge(false),
+                PickerAction::JudgeRunDebug => self.run_judge(true),
+                PickerAction::NextDiagnostic => self.jump_next_diagnostic(),
+                PickerAction::CpLayoutSetup => self.setup_cp_layout(cols, rows),
+                PickerAction::OpenSnippetsPicker => self.open_snippets_picker(),
+                PickerAction::StressTestRun => self.run_stress_test(),
+                PickerAction::StressTestScaffold => self.scaffold_stress_in_current_dir(),
+                PickerAction::StressTestCancel => {
+                    self.judge.cancel();
+                    self.set_status("Execucao do Judge/Stress cancelada");
+                }
+                PickerAction::GotoSymbol => self.open_symbol_picker(),
+                PickerAction::JumpMatchingBracket => {
+                    let bc = self.cfg.block_cursor;
+                    if !self.doc_mut().jump_to_matching_bracket(bc) {
+                        self.set_status("Posicione o cursor em um delimitador (), [] ou {}");
+                    }
+                }
+                PickerAction::CopyLeetCodeSolution => self.copy_leetcode_solution(),
+                PickerAction::TimerStopwatch => {
+                    self.cp_timer.start_stopwatch();
+                    self.set_status("⏱ Cronometro CP iniciado");
+                }
+                PickerAction::TimerCountdown(mins) => {
+                    self.cp_timer.start_countdown(mins);
+                    self.set_status(format!("⏳ Contagem regressiva CP: {} min iniciada", mins));
+                }
+                PickerAction::TimerTogglePause => {
+                    self.cp_timer.toggle_pause();
+                    let st = if self.cp_timer.running { "retomado" } else { "pausado" };
+                    self.set_status(format!("Timer CP {}", st));
+                }
+                PickerAction::TimerStop => {
+                    self.cp_timer.stop();
+                    self.set_status("Timer CP desligado");
+                }
                 PickerAction::ToggleVimVisual => {
                     self.cfg.toggle_vim_visual();
                     self.term_sync_needed = true;
@@ -3194,6 +3807,34 @@ impl App {
             })
         });
         let term_bg_alive = self.term_panel.as_ref().is_some_and(|t| t.alive);
+        let active_diags: Vec<Diagnostic> = self
+            .active_doc_key()
+            .and_then(|k| self.diagnostics.get(&k).cloned())
+            .unwrap_or_default();
+        let timer_badge = self.cp_timer.badge();
+        let judge_progress = self.judge.current_progress();
+
+        // Surface current line's compiler diagnostic or CP Pitfall Radar warning if no status msg active
+        let cur_line_warning: Option<String> = if status.is_none() && mode_hint.is_none() && !(self.term_open && self.term_focused) {
+            let (cur_r, _) = self.doc().primary_line_col();
+            if let Some(d) = active_diags.iter().find(|d| d.line == cur_r) {
+                Some(format!("{} (F8 prox)", d.message))
+            } else if cfg.cp_radar && self.doc().lang == syntax::Language::CLike {
+                let has_hash = file_has_custom_hash(&self.doc().rope);
+                let ltxt = self.doc().rope.line(cur_r);
+                detect_cp_pitfall(&ltxt, self.doc().lang, has_hash).map(str::to_string)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let eff_mode_hint = mode_hint.or(cur_line_warning.as_deref());
+        let comp_ref = if matches!(self.mode, Mode::Edit) && !(self.term_open && self.term_focused) {
+            self.completion.as_ref()
+        } else {
+            None
+        };
 
         let (frame, layout_info) = render_editor(
             &mut self.docs,
@@ -3206,6 +3847,10 @@ impl App {
             drop_preview.as_ref(),
             term_view.as_ref(),
             term_bg_alive,
+            comp_ref,
+            &active_diags,
+            timer_badge.as_ref(),
+            judge_progress.as_deref(),
             self.palette,
             cols,
             rows,
@@ -3213,7 +3858,7 @@ impl App {
             prompt,
             picker_ref,
             status.as_deref(),
-            mode_hint,
+            eff_mode_hint,
             synced,
         );
         self.layout = layout_info;
@@ -3237,7 +3882,7 @@ fn parse_file_arg(arg: &str) -> (PathBuf, Option<usize>) {
 
 fn print_help() {
     println!(
-        "{}\n\nUso:\n  nave-edit [opcoes] [arquivo[:linha] ...]\n  nave-edit +<linha> <arquivo>\n\nOpcoes:\n  -h, --help          Mostra esta ajuda\n  -v, --version       Mostra versao\n  -O                  Abre multiplos arquivos lado a lado (│)\n  -o                  Abre multiplos arquivos acima/abaixo (─)\n  --render-once <f>   Renderiza 1 frame estatico e sai\n\nAtalhos principais (VS Code + Multi-Janela):\n  Ctrl+S salvar · Ctrl+Q sair · Ctrl+W fechar aba · Ctrl+P abrir arquivo · F1 comandos\n  Ctrl+\\ dividir lado a lado · Ctrl+K - dividir topo/base · Ctrl+K o / Shift+Alt+0 inverter │/─\n  Ctrl+PgUp/PgDn viajar entre abas e paineis · Ctrl+1..4 focar painel · Ctrl+Alt+←/→ mover aba\n  Alt+=/Alt+- redimensionar painel · Ctrl+K r modo redimensionar 2D · Ctrl+K = igualar 50/50\n  Ctrl+D multi-cursor · Ctrl+Shift+L todas ocorrencias · Ctrl+F buscar · Alt+1..6 paletas",
+        "{}\n\nUso:\n  nave-edit [opcoes] [arquivo[:linha] ...]\n  nave-edit +<linha> <arquivo>\n\nOpcoes:\n  -h, --help          Mostra esta ajuda\n  -v, --version       Mostra versao\n  --cp                Abre layout Maratona 3 paineis (codigo | in.txt / expected.txt)\n  -O                  Abre multiplos arquivos lado a lado (│)\n  -o                  Abre multiplos arquivos acima/abaixo (─)\n  --render-once <f>   Renderiza 1 frame estatico e sai\n\nAtalhos principais (VS Code + Multi-Janela + CP Suite):\n  Ctrl+S salvar · Ctrl+Q sair · Ctrl+W fechar aba · Ctrl+P abrir arquivo · F1 comandos\n  F5 compilar+julgar (O2) · F6 debug (ASan+UBSan) · F8 prox erro · Ctrl+Space autocomplete\n  Ctrl+Shift+O ir p/ simbolo · Ctrl+] / Alt+M pular par {{}} · Ctrl+' terminal integrado\n  Ctrl+\\ dividir lado a lado · Ctrl+K - dividir topo/base · Ctrl+1..9 focar/criar painel\n  Ctrl+PgUp/PgDn viajar abas · Alt+=/Alt+- redimensionar · Ctrl+D multi-cursor · Alt+1..6 paletas",
         VERSION
     );
 }
@@ -3245,6 +3890,7 @@ fn print_help() {
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let mut render_once = false;
+    let mut cp_layout = false;
     let mut initial_split: Option<SplitAxis> = None;
     let mut pending_line: Option<usize> = None;
     let mut docs: Vec<Document> = Vec::new();
@@ -3258,6 +3904,9 @@ fn main() {
             "-v" | "--version" => {
                 println!("{}", VERSION);
                 return;
+            }
+            "--cp" => {
+                cp_layout = true;
             }
             "-O" => {
                 initial_split = Some(SplitAxis::Horizontal);
@@ -3288,6 +3937,10 @@ fn main() {
     let cfg = EditorConfig::load();
     let pal = Palette::load_for_editor(&cfg.palette);
     let mut app = App::new(docs, initial_split, pal, cfg);
+    if cp_layout {
+        let (cols, rows) = Terminal::size();
+        app.setup_cp_layout(cols, rows);
+    }
 
     if render_once {
         let (cols, rows) = Terminal::size();
@@ -3313,12 +3966,23 @@ fn main() {
     let mut last_activity = Instant::now();
     let mut standby_blink = false;
     let mut esc_pending_since: Option<Instant> = None;
+    let mut last_timer_tick: u64 = 0;
 
     while !app.should_quit {
         let (cols, rows) = Terminal::size();
 
         if app.drain_terminal_output() {
             needs_redraw = true;
+        }
+        if app.poll_judge_updates(cols, rows) {
+            needs_redraw = true;
+        }
+        if app.cp_timer.active && app.cp_timer.running {
+            let cur_s = app.cp_timer.elapsed_secs();
+            if cur_s != last_timer_tick {
+                last_timer_tick = cur_s;
+                needs_redraw = true;
+            }
         }
 
         if app.term_sync_needed {
