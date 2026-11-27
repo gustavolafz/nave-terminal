@@ -26,6 +26,7 @@ pub struct TestCase {
     pub label: String,
     pub input: String,
     pub expected: Option<String>,
+    pub expected_name: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -291,68 +292,173 @@ fn split_multi_cases(raw: &str) -> Vec<String> {
     }
 }
 
-pub fn discover_test_cases(dir: &Path) -> Vec<TestCase> {
-    // 1. Numbered cases: in1.txt / out1.txt (or expected1.txt / ans1.txt)
-    let mut numbered = Vec::new();
-    for idx in 1..=20 {
-        let in_p = dir.join(format!("in{}.txt", idx));
-        if !in_p.is_file() {
-            if idx == 1 {
-                break;
-            }
-            continue;
-        }
-        let input = fs::read_to_string(&in_p).unwrap_or_default();
-        let expected = [
-            format!("expected{}.txt", idx),
-            format!("ans{}.txt", idx),
-            format!("out{}.txt", idx),
-        ]
-        .iter()
-        .map(|n| dir.join(n))
-        .find(|p| p.is_file())
-        .and_then(|p| fs::read_to_string(p).ok());
-        numbered.push(TestCase {
-            label: format!("Case #{} (in{}.txt)", idx, idx),
-            input,
-            expected,
-        });
-    }
-    if !numbered.is_empty() {
-        return numbered;
-    }
+pub fn is_runnable_source(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(ext.as_str(), "cpp" | "cc" | "cxx" | "c" | "rs" | "py" | "js" | "mjs" | "sh" | "zsh")
+}
 
-    // 2. Single `in.txt` (optionally multi-case split by `---` lines!) + `expected.txt` / `ans.txt` / `out.txt`
+/// Resolve the true working directory of `src_path`, avoiding Rust's `Path::new("sol.cpp").parent() == Some("")` pitfall.
+pub fn resolve_src_dir(src_path: &Path) -> PathBuf {
+    if let Some(parent) = src_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if parent.is_absolute() {
+            parent.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(parent))
+                .unwrap_or_else(|_| parent.to_path_buf())
+        }
+    } else {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    }
+}
+
+fn read_non_empty(path: &Path) -> Option<String> {
+    let raw = fs::read_to_string(path).ok()?;
+    if raw.trim().is_empty() {
+        None
+    } else {
+        Some(raw)
+    }
+}
+
+fn first_diff_line(actual: &str, expected: &str) -> Option<usize> {
+    let a = normalize_judge_output(actual);
+    let e = normalize_judge_output(expected);
+    let n = a.len().max(e.len());
+    for i in 0..n {
+        if a.get(i) != e.get(i) {
+            return Some(i + 1);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+pub fn discover_test_cases(dir: &Path) -> Vec<TestCase> {
+    discover_test_cases_for(dir, None)
+}
+
+pub fn discover_test_cases_for(dir: &Path, src_stem: Option<&str>) -> Vec<TestCase> {
+    let mut cases: Vec<TestCase> = Vec::new();
+
+    // 1. Primary `in.txt` (supports multi-case `---` splits!) + `expected.txt` (or `ans.txt` / `out.txt`)
     let in_p = dir.join("in.txt");
-    let exp_raw = ["expected.txt", "ans.txt", "out.txt"]
+    let exp_txt = dir.join("expected.txt");
+    let (exp_name, exp_raw): (Option<String>, Option<String>) = if exp_txt.is_file() {
+        // When `expected.txt` exists, prefer it strictly over stale `out.txt`; if blank, treat as no expected yet.
+        (Some("expected.txt".into()), read_non_empty(&exp_txt))
+    } else if let Some((name, content)) = ["ans.txt", "out.txt"]
         .iter()
-        .map(|n| dir.join(n))
-        .find(|p| p.is_file())
-        .and_then(|p| fs::read_to_string(p).ok());
+        .find_map(|&n| read_non_empty(&dir.join(n)).map(|c| (n.to_string(), c)))
+    {
+        (Some(name), Some(content))
+    } else {
+        (None, None)
+    };
 
     if in_p.is_file() {
         let raw_in = fs::read_to_string(&in_p).unwrap_or_default();
         let ins = split_multi_cases(&raw_in);
         let exps = exp_raw.as_deref().map(split_multi_cases);
-        return ins
-            .into_iter()
-            .enumerate()
-            .map(|(i, inp)| {
-                let exp = exps.as_ref().and_then(|v| v.get(i).cloned());
-                TestCase {
-                    label: format!("Case #{}", i + 1),
-                    input: inp,
-                    expected: exp,
-                }
-            })
-            .collect();
+        let multi = ins.len() > 1;
+        for (i, inp) in ins.into_iter().enumerate() {
+            let exp = exps
+                .as_ref()
+                .and_then(|v| v.get(i))
+                .filter(|s| !s.trim().is_empty())
+                .cloned();
+            let label = match (&exp, &exp_name) {
+                (Some(_), Some(en)) if multi => format!("Case #{} (in.txt ↔ {})", i + 1, en),
+                (Some(_), Some(en)) => format!("Case #1 (in.txt ↔ {})", en),
+                _ if multi => format!("Case #{} (in.txt)", i + 1),
+                _ => "Case #1 (in.txt)".into(),
+            };
+            cases.push(TestCase {
+                label,
+                input: inp,
+                expected: exp,
+                expected_name: exp_name.clone(),
+            });
+        }
     }
 
-    // 3. No input file -> single empty-stdin execution
+    // 2. Numbered cases: in1.txt..in20.txt + expected{i}.txt / ans{i}.txt / out{i}.txt
+    for idx in 1..=20 {
+        let in_num = dir.join(format!("in{}.txt", idx));
+        if !in_num.is_file() {
+            continue;
+        }
+        let input = fs::read_to_string(&in_num).unwrap_or_default();
+        let exp_found = [
+            format!("expected{}.txt", idx),
+            format!("ans{}.txt", idx),
+            format!("out{}.txt", idx),
+        ]
+        .into_iter()
+        .find_map(|n| read_non_empty(&dir.join(&n)).map(|c| (n, c)));
+        let (ename, exp) = match exp_found {
+            Some((n, c)) => (Some(n), Some(c)),
+            None => (None, None),
+        };
+        let label = match &ename {
+            Some(en) => format!("Case #{} (in{}.txt ↔ {})", cases.len() + 1, idx, en),
+            None => format!("Case #{} (in{}.txt)", cases.len() + 1, idx),
+        };
+        cases.push(TestCase {
+            label,
+            input,
+            expected: exp,
+            expected_name: ename,
+        });
+    }
+
+    if !cases.is_empty() {
+        return cases;
+    }
+
+    // 3. Stem-based files (e.g. `A.in` + `A.expected` / `A.ans` / `A.out`)
+    if let Some(stem) = src_stem {
+        let stem_in = dir.join(format!("{}.in", stem));
+        if stem_in.is_file() {
+            let input = fs::read_to_string(&stem_in).unwrap_or_default();
+            let exp_found = [
+                format!("{}.expected", stem),
+                format!("{}.ans", stem),
+                format!("{}.out", stem),
+            ]
+            .into_iter()
+            .find_map(|n| read_non_empty(&dir.join(&n)).map(|c| (n, c)));
+            let (ename, exp) = match exp_found {
+                Some((n, c)) => (Some(n), Some(c)),
+                None => (None, None),
+            };
+            let label = match &ename {
+                Some(en) => format!("Case #1 ({}.in ↔ {})", stem, en),
+                None => format!("Case #1 ({}.in)", stem),
+            };
+            return vec![TestCase {
+                label,
+                input,
+                expected: exp,
+                expected_name: ename,
+            }];
+        }
+    }
+
+    // 4. Fallback: no input file -> single empty-stdin execution (still checks expected.txt if filled!)
+    let label = match (&exp_raw, &exp_name) {
+        (Some(_), Some(en)) => format!("Run #1 (sem in.txt ↔ {})", en),
+        _ => "Run #1 (sem in.txt)".into(),
+    };
     vec![TestCase {
-        label: "Run #1 (sem in.txt)".into(),
+        label,
         input: String::new(),
         expected: exp_raw,
+        expected_name: exp_name,
     }]
 }
 
@@ -545,8 +651,10 @@ fn run_judge_sync(
     dirty: &Arc<AtomicBool>,
     cancel: &AtomicBool,
 ) -> JudgeResult {
-    let dir = src_path.parent().unwrap_or_else(|| Path::new("."));
+    let dir_owned = resolve_src_dir(src_path);
+    let dir = dir_owned.as_path();
     let src_name = src_path.file_name().and_then(|s| s.to_str()).unwrap_or("source");
+    let src_stem = src_path.file_stem().and_then(|s| s.to_str());
     let ext = src_path
         .extension()
         .and_then(|e| e.to_str())
@@ -607,7 +715,19 @@ fn run_judge_sync(
         }
     }
 
-    let cases = discover_test_cases(dir);
+    // Discover cases in the source file's directory; if no in.txt/in1.txt there, also check CWD
+    let mut cases = discover_test_cases_for(dir, src_stem);
+    let found_in_src_dir = !cases.first().is_some_and(|c| c.label.starts_with("Run #1 (sem in.txt"));
+    if !found_in_src_dir {
+        if let Ok(cwd) = std::env::current_dir() {
+            if cwd != dir {
+                let cwd_cases = discover_test_cases_for(&cwd, src_stem);
+                if !cwd_cases.first().is_some_and(|c| c.label.starts_with("Run #1 (sem in.txt")) {
+                    cases = cwd_cases;
+                }
+            }
+        }
+    }
     let mut ac_count = 0usize;
     let mut run_ok_count = 0usize;
     let mut max_ms = 0.0f64;
@@ -680,22 +800,46 @@ fn run_judge_sync(
                                 "✓ AC · {:.1} ms · {:.1} MB\n",
                                 out.elapsed_ms, mem_mb
                             ));
+                            let out_lines: Vec<&str> = out.stdout.trim_end().lines().collect();
+                            if !out_lines.is_empty() {
+                                for ln in out_lines.iter().take(12) {
+                                    report.push_str("  ");
+                                    report.push_str(ln);
+                                    report.push('\n');
+                                }
+                                if out_lines.len() > 12 {
+                                    report.push_str(&format!("  … (+{} linhas)\n", out_lines.len() - 12));
+                                }
+                            }
                         } else {
                             any_fail = true;
+                            let diff_hint = first_diff_line(&out.stdout, exp)
+                                .map(|n| format!(" · divergencia na linha {}", n))
+                                .unwrap_or_default();
                             report.push_str(&format!(
-                                "× WA · {:.1} ms · {:.1} MB\n",
-                                out.elapsed_ms, mem_mb
+                                "× WA{} · {:.1} ms · {:.1} MB\n",
+                                diff_hint, out.elapsed_ms, mem_mb
                             ));
-                            report.push_str("Esperado:\n");
+                            let exp_hdr = tc
+                                .expected_name
+                                .as_deref()
+                                .map(|n| format!("Esperado ({}):\n", n))
+                                .unwrap_or_else(|| "Esperado:\n".into());
+                            report.push_str(&exp_hdr);
                             report.push_str(exp.trim_end());
                             report.push_str("\nObtido:\n");
                             report.push_str(out.stdout.trim_end());
                             report.push('\n');
                         }
                     } else {
+                        let empty_note = if tc.expected_name.as_deref() == Some("expected.txt") {
+                            " (expected.txt vazio)"
+                        } else {
+                            ""
+                        };
                         report.push_str(&format!(
-                            "✓ OK · {:.1} ms · {:.1} MB\n",
-                            out.elapsed_ms, mem_mb
+                            "✓ OK{} · {:.1} ms · {:.1} MB\n",
+                            empty_note, out.elapsed_ms, mem_mb
                         ));
                         report.push_str(&out.stdout);
                         if !out.stdout.ends_with('\n') && !out.stdout.is_empty() {
@@ -806,7 +950,8 @@ fn run_stress_sync(
     dirty: &Arc<AtomicBool>,
     cancel: &AtomicBool,
 ) -> JudgeResult {
-    let dir = sol_path.parent().unwrap_or_else(|| Path::new("."));
+    let dir_owned = resolve_src_dir(sol_path);
+    let dir = dir_owned.as_path();
     let gen_path = dir.join("gen.cpp");
     let brute_path = dir.join("brute.cpp");
 
@@ -977,9 +1122,21 @@ mod tests {
 
         let cases = discover_test_cases(&dir);
         assert_eq!(cases.len(), 2);
+        assert!(cases[0].label.contains("in.txt ↔ expected.txt"));
         assert!(outputs_match("3\n", cases[0].expected.as_deref().unwrap()));
         assert!(outputs_match("30", cases[1].expected.as_deref().unwrap()));
         assert!(!outputs_match("31", cases[1].expected.as_deref().unwrap()));
+        assert_eq!(first_diff_line("3\n31\n", "3\n30\n"), Some(2));
+
+        // Empty expected.txt must NOT trigger a false WA against empty string or stale out.txt
+        fs::write(dir.join("expected.txt"), "   \n").unwrap();
+        fs::write(dir.join("out.txt"), "stale\n").unwrap();
+        let cases_empty_exp = discover_test_cases(&dir);
+        assert!(cases_empty_exp[0].expected.is_none());
+
+        // Relative bare filename `sol.cpp` must NEVER resolve to empty dir ""
+        let resolved = resolve_src_dir(Path::new("sol.cpp"));
+        assert!(!resolved.as_os_str().is_empty());
 
         let _ = fs::remove_dir_all(&dir);
     }

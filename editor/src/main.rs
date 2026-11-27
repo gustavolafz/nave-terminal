@@ -22,7 +22,10 @@ use cp_assist::{
 };
 use document::{Document, Motion, Selection};
 use input::{Event, InputDecoder, KeyCode, KeyEvent, MouseKind};
-use judge::{scaffold_stress_files, DiagSeverity, Diagnostic, JudgeRunner};
+use judge::{
+    is_runnable_source, resolve_src_dir, scaffold_stress_files, DiagSeverity, Diagnostic,
+    JudgeRunner,
+};
 use layout::{
     ComputedLayout, Dir, DividerHit, LayoutNode, PaneId, Rect, SplitAxis, MIN_PANE_H, MIN_PANE_W,
 };
@@ -790,16 +793,83 @@ impl App {
             .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
     }
 
+    fn resolve_judge_target_path(&self) -> Option<PathBuf> {
+        let abs_of = |p: &Path| -> PathBuf {
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(p))
+                    .unwrap_or_else(|_| p.to_path_buf())
+            }
+        };
+
+        // 1. Active document if it is already a runnable source file (.cpp/.py/.rs/etc.)
+        if let Some(p) = self.doc().path.as_ref() {
+            if is_runnable_source(p) {
+                return Some(abs_of(p));
+            }
+        }
+
+        // 2. If user hit F5/F6 while focused on in.txt / expected.txt / [Judge], pick the open source file!
+        let cur_dir = self
+            .doc()
+            .path
+            .as_deref()
+            .map(resolve_src_dir)
+            .unwrap_or_else(|| self.base_dir());
+        let mut fallback: Option<PathBuf> = None;
+        for pid in self.layout_tree.pane_order() {
+            if let Some(pane) = self.panes.iter().find(|p| p.id == pid) {
+                // Check active tab of each pane first, then remaining tabs
+                let mut indices: Vec<usize> = vec![pane.active_tab];
+                for i in 0..pane.tabs.len() {
+                    if i != pane.active_tab {
+                        indices.push(i);
+                    }
+                }
+                for ti in indices {
+                    if let Some(did) = pane.tabs.get(ti).map(|t| t.doc_id) {
+                        if let Some(p) = self.docs.get(did).and_then(|d| d.as_ref()).and_then(|d| d.path.as_ref()) {
+                            if is_runnable_source(p) {
+                                let ap = abs_of(p);
+                                if resolve_src_dir(&ap) == cur_dir {
+                                    return Some(ap);
+                                }
+                                if fallback.is_none() {
+                                    fallback = Some(ap);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if fallback.is_some() {
+            return fallback;
+        }
+
+        // 3. Fallback: conventional source file sitting in the same folder as in.txt / expected.txt
+        for name in ["sol.cpp", "main.cpp", "a.cpp", "sol.py", "main.py", "main.rs", "main.c"] {
+            let cand = cur_dir.join(name);
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+        None
+    }
+
     fn run_judge(&mut self, debug_mode: bool) {
         self.clear_completion();
-        if self.doc().path.is_none() {
-            self.set_status("Salve o arquivo primeiro (Ctrl+S) antes de compilar/julgar");
+        // Flush ALL open dirty buffers (sol.cpp, in.txt, expected.txt, etc.) so Judge reads fresh edits!
+        self.flush_auto_save();
+        if self.doc().path.is_some() && self.doc().is_dirty() && !self.try_save_active() {
             return;
         }
-        if self.doc().is_dirty() && !self.try_save_active() {
+        let Some(src_path) = self.resolve_judge_target_path() else {
+            self.set_status("Abra/salve um arquivo de codigo (.cpp/.py/.rs) antes de julgar (F5)");
             return;
-        }
-        let Some(src_path) = self.doc().path.clone() else { return };
+        };
         let key = src_path.canonicalize().unwrap_or_else(|_| src_path.clone());
         self.diagnostics.remove(&key);
         self.diag_idx = 0;
@@ -809,14 +879,14 @@ impl App {
 
     fn run_stress_test(&mut self) {
         self.clear_completion();
-        if self.doc().path.is_none() {
+        self.flush_auto_save();
+        if self.doc().path.is_some() && self.doc().is_dirty() && !self.try_save_active() {
+            return;
+        }
+        let Some(src_path) = self.resolve_judge_target_path() else {
             self.set_status("Abra e salve sol.cpp primeiro para rodar Stress Test");
             return;
-        }
-        if self.doc().is_dirty() && !self.try_save_active() {
-            return;
-        }
-        let Some(src_path) = self.doc().path.clone() else { return };
+        };
         self.judge
             .start_stress_test(src_path, self.cfg.judge_timeout_ms, 500);
     }
