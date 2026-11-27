@@ -24,6 +24,7 @@ use render::{
     PaneRenderInput, PromptBar, TabBadge,
 };
 use rope::LineEnding;
+use std::collections::VecDeque;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -124,6 +125,7 @@ struct App {
     hover_shape: PointerShape,
     follow_cursor: bool,
     last_click: Option<(Instant, usize, usize, u8)>,
+    pending_pane_pickers: VecDeque<(PaneId, PathBuf, usize, usize)>,
     should_quit: bool,
     last_mtime_check: Instant,
 }
@@ -195,6 +197,7 @@ impl App {
             hover_shape: PointerShape::Default,
             follow_cursor: true,
             last_click: None,
+            pending_pane_pickers: VecDeque::new(),
             should_quit: false,
             last_mtime_check: Instant::now(),
         }
@@ -580,6 +583,7 @@ impl App {
         self.sync_active_to_tab();
 
         let to_create = target_total - order.len();
+        let mut created_pids = Vec::with_capacity(to_create);
         for _ in 0..to_create {
             let last_pid = self
                 .layout_tree
@@ -604,21 +608,49 @@ impl App {
             });
             self.layout_tree
                 .split_pane(last_pid, new_pid, split_id, SplitAxis::Horizontal, false);
+            created_pids.push(new_pid);
         }
 
         self.layout_tree.equalize_all();
-        let new_order = self.layout_tree.pane_order();
-        if let Some(&target_pid) = new_order.get(target_total - 1) {
-            self.active_pane = target_pid;
-            self.load_active_from_tab();
+        self.pending_pane_pickers.clear();
+        let total_steps = created_pids.len();
+        for (i, pid) in created_pids.into_iter().enumerate() {
+            self.pending_pane_pickers
+                .push_back((pid, origin_dir.clone(), i + 1, total_steps));
         }
         let _ = rows;
-        let prefix = format!("Painel {}", target_total);
-        self.mode = Mode::Picker(Picker::quick_open_titled(&origin_dir, Some(&prefix)));
-        self.set_status(format!(
-            "Painel {} aberto · escolha/digite arquivo ou Esc p/ vazio",
-            target_total
-        ));
+        self.open_next_pending_pane_picker();
+    }
+
+    fn open_next_pending_pane_picker(&mut self) -> bool {
+        while let Some((pid, origin_dir, step, total_steps)) = self.pending_pane_pickers.pop_front()
+        {
+            if !self.panes.iter().any(|p| p.id == pid) {
+                continue;
+            }
+            self.focus_pane(pid);
+            let num = self.group_number_of(pid);
+            let prefix = if total_steps > 1 {
+                format!("Painel {} ({}/{})", num, step, total_steps)
+            } else {
+                format!("Painel {}", num)
+            };
+            self.mode = Mode::Picker(Picker::quick_open_titled(&origin_dir, Some(&prefix)));
+            if let Some(&(next_pid, _, _, _)) = self.pending_pane_pickers.front() {
+                let next_num = self.group_number_of(next_pid);
+                self.set_status(format!(
+                    "Painel {} ({}/{}) · Enter abrir · Esc pular p/ Painel {}",
+                    num, step, total_steps, next_num
+                ));
+            } else {
+                self.set_status(format!(
+                    "Painel {} aberto · escolha/digite arquivo ou Esc p/ vazio",
+                    num
+                ));
+            }
+            return true;
+        }
+        false
     }
 
     fn move_active_tab(&mut self, dir: Dir, cols: usize, rows: usize) {
@@ -1919,6 +1951,7 @@ impl App {
                     return;
                 }
                 KeyCode::Char('p') => {
+                    self.pending_pane_pickers.clear();
                     let base = self.base_dir();
                     self.mode = Mode::Picker(Picker::quick_open(&base));
                     return;
@@ -2208,6 +2241,7 @@ impl App {
     }
 
     fn open_command_palette(&mut self) {
+        self.pending_pane_pickers.clear();
         let pk = Picker::command_palette(&self.cfg, self.doc().eol.label());
         self.mode = Mode::Picker(pk);
     }
@@ -2407,6 +2441,7 @@ impl App {
             match k.code {
                 KeyCode::Esc => {
                     self.mode = Mode::Edit;
+                    self.open_next_pending_pane_picker();
                     return;
                 }
                 KeyCode::Up => {
@@ -2603,6 +2638,9 @@ impl App {
                 PickerAction::ClosePane => self.close_active_pane(),
                 PickerAction::SetPalette(idx) => self.set_palette_index(idx),
             }
+        }
+        if matches!(self.mode, Mode::Edit) {
+            self.open_next_pending_pane_picker();
         }
     }
 

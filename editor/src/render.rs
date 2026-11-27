@@ -612,8 +612,10 @@ pub fn render_editor(
         // Top border
         let _ = write!(out, "\x1b[{};{}H", y0 + 1, x0 + 1);
         push_bg(&mut out, pal.bar_bg);
-        let title_str = format!(" {} ", pk.title);
-        let fill = modal_w.saturating_sub(title_str.chars().count() + 3);
+        let max_title_w = modal_w.saturating_sub(6);
+        let title_trimmed = truncate_to_cols(&pk.title, max_title_w);
+        let title_str = format!(" {} ", title_trimmed);
+        let fill = modal_w.saturating_sub(str_display_width(&title_str) + 3);
         let top = format!("╭─{}{}╮", title_str, "─".repeat(fill));
         push_grad_text(&mut out, &top, pal.grad, true);
 
