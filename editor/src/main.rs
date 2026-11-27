@@ -918,13 +918,13 @@ impl App {
                     .map(|pl| pl.pane_id)
                     .unwrap_or(self.active_pane);
                 if self.cfg.wheel_moves_cursor {
-                    // Fast cursor-driven scrolling (3 lines/notch, follows cursor with scrolloff!)
+                    // Move cursor 1 line per wheel tick (smooth line-by-line tracking with scrolloff)
                     self.focus_pane(target_pid);
                     self.follow_cursor = true;
                     let motion = if m.kind == MouseKind::WheelUp {
-                        Motion::PageUp(3)
+                        Motion::Up
                     } else {
-                        Motion::PageDown(3)
+                        Motion::Down
                     };
                     self.doc_mut().move_cursors(motion, m.shift);
                 } else if target_pid == self.active_pane {
@@ -2416,7 +2416,7 @@ impl App {
                     self.cfg.wheel_moves_cursor = !self.cfg.wheel_moves_cursor;
                     self.cfg.save();
                     let st = if self.cfg.wheel_moves_cursor {
-                        "ON (move o cursor ±3 linhas)"
+                        "ON (move o cursor linha a linha)"
                     } else {
                         "OFF (rola a pagina)"
                     };

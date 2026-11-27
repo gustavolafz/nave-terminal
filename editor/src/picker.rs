@@ -116,7 +116,7 @@ impl Picker {
             },
             PickerItem {
                 label: format!("Scroll do Mouse Move o Cursor [{}]", onoff(cfg.wheel_moves_cursor)),
-                detail: "ON = cursor veloz (±3 ln) · OFF = rola pagina".into(),
+                detail: "ON = move cursor (1 ln) · OFF = rola pagina".into(),
                 action: PickerAction::ToggleWheelMovesCursor,
             },
             PickerItem {
