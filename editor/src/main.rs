@@ -29,9 +29,9 @@ use palette::Palette;
 use picker::{Picker, PickerAction};
 use pty_term::IntegratedTerminal;
 use render::{
-    build_trail_map, char_col_at_visual, ensure_cursor_visible, predict_primary_screen_pos,
-    render_editor, CursorTrail, DropPreview, DropZone, LayoutInfo, PaneRenderInput, PromptBar,
-    TabBadge, TermPanelView,
+    build_trail_map, char_col_at_visual, ensure_cursor_visible, pane_content_height,
+    predict_primary_screen_pos, render_editor, CursorTrail, DropPreview, DropZone, LayoutInfo,
+    PaneRenderInput, PromptBar, TabBadge, TermPanelView,
 };
 use rope::LineEnding;
 use std::collections::{HashMap, VecDeque};
@@ -65,6 +65,12 @@ enum DragState {
         pane_id: PaneId,
         start_row: usize,
         height: usize,
+    },
+    HScrollbar {
+        pane_id: PaneId,
+        start_col: usize,
+        track_w: usize,
+        max_scroll_col: usize,
     },
     Tab {
         src_pane: PaneId,
@@ -133,6 +139,7 @@ struct App {
     drag: DragState,
     hover_divider: Option<usize>,
     hover_scrollbar: Option<PaneId>,
+    hover_hscrollbar: Option<PaneId>,
     hover_shape: PointerShape,
     follow_cursor: bool,
     last_click: Option<(Instant, usize, usize, u8)>,
@@ -223,6 +230,7 @@ impl App {
             drag: DragState::None,
             hover_divider: None,
             hover_scrollbar: None,
+            hover_hscrollbar: None,
             hover_shape: PointerShape::Default,
             follow_cursor: true,
             last_click: None,
@@ -1473,17 +1481,20 @@ impl App {
     fn update_hover(&mut self, col: usize, row: usize, cols: usize, rows: usize) -> bool {
         let prev_div = self.hover_divider;
         let prev_sb = self.hover_scrollbar;
+        let prev_hsb = self.hover_hscrollbar;
         let prev_tdiv = self.hover_term_divider;
         let prev_tclose = self.hover_term_close;
 
         if matches!(self.mode, Mode::Picker(_)) {
             self.hover_divider = None;
             self.hover_scrollbar = None;
+            self.hover_hscrollbar = None;
             self.hover_term_divider = false;
             self.hover_term_close = false;
             self.hover_shape = PointerShape::Default;
             return prev_div != self.hover_divider
                 || prev_sb != self.hover_scrollbar
+                || prev_hsb != self.hover_hscrollbar
                 || prev_tdiv != self.hover_term_divider
                 || prev_tclose != self.hover_term_close;
         }
@@ -1492,6 +1503,7 @@ impl App {
             if row == header_row {
                 self.hover_divider = None;
                 self.hover_scrollbar = None;
+                self.hover_hscrollbar = None;
                 if cols >= 3 && col >= cols - 3 {
                     self.hover_term_close = true;
                     self.hover_term_divider = false;
@@ -1503,6 +1515,7 @@ impl App {
                 }
                 return prev_div != self.hover_divider
                     || prev_sb != self.hover_scrollbar
+                    || prev_hsb != self.hover_hscrollbar
                     || prev_tdiv != self.hover_term_divider
                     || prev_tclose != self.hover_term_close;
             }
@@ -1513,6 +1526,7 @@ impl App {
         if let Some(d) = self.layout.dividers.iter().copied().find(|d| d.hits(col, row)) {
             self.hover_divider = Some(d.split_id);
             self.hover_scrollbar = None;
+            self.hover_hscrollbar = None;
             self.hover_shape = match d.axis {
                 SplitAxis::Horizontal => PointerShape::ResizeH,
                 SplitAxis::Vertical => PointerShape::ResizeV,
@@ -1524,6 +1538,14 @@ impl App {
         }) {
             self.hover_divider = None;
             self.hover_scrollbar = Some(pl.pane_id);
+            self.hover_hscrollbar = None;
+            self.hover_shape = PointerShape::Grab;
+        } else if let Some(pl) = self.layout.panes.iter().find(|pl| {
+            pl.hscrollbar.is_some_and(|(hrow, _, _, _)| row == hrow && col >= pl.rect.x && col < pl.rect.x + pl.rect.w)
+        }) {
+            self.hover_divider = None;
+            self.hover_scrollbar = None;
+            self.hover_hscrollbar = Some(pl.pane_id);
             self.hover_shape = PointerShape::Grab;
         } else if self.layout.panes.iter().any(|pl| {
             row == pl.tab_bar_row
@@ -1534,17 +1556,96 @@ impl App {
         }) {
             self.hover_divider = None;
             self.hover_scrollbar = None;
+            self.hover_hscrollbar = None;
             self.hover_shape = PointerShape::Grab;
         } else {
             self.hover_divider = None;
             self.hover_scrollbar = None;
+            self.hover_hscrollbar = None;
             self.hover_shape = PointerShape::Default;
         }
 
         prev_div != self.hover_divider
             || prev_sb != self.hover_scrollbar
+            || prev_hsb != self.hover_hscrollbar
             || prev_tdiv != self.hover_term_divider
             || prev_tclose != self.hover_term_close
+    }
+
+    fn scroll_pane_from_hscrollbar(
+        &mut self,
+        pane_id: PaneId,
+        mouse_col: usize,
+        start_col: usize,
+        track_w: usize,
+        max_scroll_col: usize,
+    ) {
+        if track_w == 0 {
+            return;
+        }
+        let tot_w = (max_scroll_col + track_w).max(1);
+        let thumb_w = ((track_w * track_w) / tot_w).clamp(3.min(track_w), track_w.max(1));
+        let travel = track_w.saturating_sub(thumb_w);
+        let rel = mouse_col.saturating_sub(start_col).min(track_w.saturating_sub(1));
+        let centered = rel.saturating_sub(thumb_w / 2).min(travel);
+        let target = if travel == 0 || max_scroll_col == 0 {
+            0
+        } else {
+            (centered * max_scroll_col) / travel
+        };
+        if pane_id == self.active_pane {
+            self.doc_mut().scroll_col = target;
+            self.follow_cursor = false;
+        } else if self.panes.iter().any(|p| p.id == pane_id) {
+            self.pane_mut(pane_id).active_view_mut().scroll_col = target;
+        }
+    }
+
+    fn scroll_pane_horizontal(&mut self, pane_id: PaneId, delta: isize) {
+        if self.cfg.wrap {
+            return;
+        }
+        let max_sc = self
+            .layout
+            .panes
+            .iter()
+            .find(|pl| pl.pane_id == pane_id)
+            .and_then(|pl| pl.hscrollbar.map(|(_, _, _, m)| m))
+            .unwrap_or_else(|| {
+                let Some(rect) = self.last_computed.rect_of(pane_id) else {
+                    return 0;
+                };
+                let (did, sr, sc) = if pane_id == self.active_pane {
+                    (self.active_doc_id(), self.doc().scroll_row, self.doc().scroll_col)
+                } else {
+                    let tv = self.pane(pane_id).active_view();
+                    (tv.doc_id, tv.scroll_row, tv.scroll_col)
+                };
+                self.docs
+                    .get(did)
+                    .and_then(|d| d.as_ref())
+                    .and_then(|d| pane_content_height(d, rect.w, rect.h, sr, sc, &self.cfg).1)
+                    .unwrap_or(0)
+            });
+
+        if pane_id == self.active_pane {
+            let cur = self.doc().scroll_col;
+            let next = if delta < 0 {
+                cur.saturating_sub((-delta) as usize)
+            } else {
+                cur.saturating_add(delta as usize).min(max_sc)
+            };
+            self.doc_mut().scroll_col = next;
+            self.follow_cursor = false;
+        } else if self.panes.iter().any(|p| p.id == pane_id) {
+            let tv = self.pane_mut(pane_id).active_view_mut();
+            let cur = tv.scroll_col;
+            tv.scroll_col = if delta < 0 {
+                cur.saturating_sub((-delta) as usize)
+            } else {
+                cur.saturating_add(delta as usize).min(max_sc)
+            };
+        }
     }
 
     fn scroll_pane_from_scrollbar(
@@ -1612,6 +1713,18 @@ impl App {
             MouseKind::Move => {
                 return self.update_hover(m.col, m.row, cols, rows);
             }
+            MouseKind::WheelLeft | MouseKind::WheelRight => {
+                let target_pid = self
+                    .layout
+                    .panes
+                    .iter()
+                    .find(|pl| pl.rect.contains(m.col, m.row))
+                    .map(|pl| pl.pane_id)
+                    .unwrap_or(self.active_pane);
+                let delta = if m.kind == MouseKind::WheelLeft { -4 } else { 4 };
+                self.scroll_pane_horizontal(target_pid, delta);
+                true
+            }
             MouseKind::WheelUp | MouseKind::WheelDown => {
                 if let Some((header_row, body_h)) = self.term_layout(rows) {
                     if m.row > header_row && m.row < header_row + 1 + body_h {
@@ -1629,6 +1742,12 @@ impl App {
                     .find(|pl| pl.rect.contains(m.col, m.row))
                     .map(|pl| pl.pane_id)
                     .unwrap_or(self.active_pane);
+                // Shift + vertical wheel/touchpad scroll -> smooth horizontal pan (VS Code standard!)
+                if m.shift && !self.cfg.wrap {
+                    let delta = if m.kind == MouseKind::WheelUp { -6 } else { 6 };
+                    self.scroll_pane_horizontal(target_pid, delta);
+                    return true;
+                }
                 if self.cfg.wheel_moves_cursor {
                     // Move cursor 1 line per wheel tick (smooth line-by-line tracking with scrolloff)
                     self.focus_pane(target_pid);
@@ -1724,6 +1843,37 @@ impl App {
                     self.hover_scrollbar = Some(pid);
                     self.hover_shape = PointerShape::Grab;
                     self.scroll_pane_from_scrollbar(pid, m.row, start_row, height);
+                    return true;
+                }
+
+                // 2b. Check bottom horizontal scrollbars (click/drag track or click ◀ / ▶ arrows)
+                let hit_hsb = self.layout.panes.iter().find_map(|pl| {
+                    let (hrow, start_col, track_w, max_sc) = pl.hscrollbar?;
+                    if m.row == hrow && m.col >= pl.rect.x && m.col < pl.rect.x + pl.rect.w {
+                        Some((pl.pane_id, start_col, track_w, max_sc))
+                    } else {
+                        None
+                    }
+                });
+                if let Some((pid, start_col, track_w, max_sc)) = hit_hsb {
+                    self.mode = Mode::Edit;
+                    self.hover_hscrollbar = Some(pid);
+                    self.hover_shape = PointerShape::Grab;
+                    if m.col < start_col {
+                        self.scroll_pane_horizontal(pid, -8);
+                        self.drag = DragState::None;
+                    } else if m.col >= start_col + track_w {
+                        self.scroll_pane_horizontal(pid, 8);
+                        self.drag = DragState::None;
+                    } else {
+                        self.drag = DragState::HScrollbar {
+                            pane_id: pid,
+                            start_col,
+                            track_w,
+                            max_scroll_col: max_sc,
+                        };
+                        self.scroll_pane_from_hscrollbar(pid, m.col, start_col, track_w, max_sc);
+                    }
                     return true;
                 }
 
@@ -1848,6 +1998,15 @@ impl App {
                     height,
                 } => {
                     self.scroll_pane_from_scrollbar(pane_id, m.row, start_row, height);
+                    true
+                }
+                DragState::HScrollbar {
+                    pane_id,
+                    start_col,
+                    track_w,
+                    max_scroll_col,
+                } => {
+                    self.scroll_pane_from_hscrollbar(pane_id, m.col, start_col, track_w, max_scroll_col);
                     true
                 }
                 DragState::Tab {
@@ -3851,8 +4010,11 @@ impl App {
         // Keep active pane's cursor visible unless user explicitly scrolled via scrollbar/wheel
         if self.follow_cursor {
             if let Some(active_rect) = computed.rect_of(self.active_pane) {
-                let content_h = active_rect.h.saturating_sub(1).max(1);
-                ensure_cursor_visible(self.doc_mut(), active_rect.w, content_h, &cfg);
+                let (content_h, _) = {
+                    let d = self.doc();
+                    pane_content_height(d, active_rect.w, active_rect.h, d.scroll_row, d.scroll_col, &cfg)
+                };
+                ensure_cursor_visible(self.doc_mut(), active_rect.w, content_h.max(1), &cfg);
             }
         }
         self.sync_active_to_tab();
@@ -3981,6 +4143,10 @@ impl App {
             DragState::Scrollbar { pane_id, .. } => Some(pane_id),
             _ => self.hover_scrollbar,
         };
+        let hot_hscrollbar = match self.drag {
+            DragState::HScrollbar { pane_id, .. } => Some(pane_id),
+            _ => self.hover_hscrollbar,
+        };
         let highlight_all_dividers = matches!(self.mode, Mode::ResizePane);
 
         // Keep integrated PTY dimensions synced with live drawer geometry
@@ -4081,6 +4247,7 @@ impl App {
             active_divider,
             self.hover_divider,
             hot_scrollbar,
+            hot_hscrollbar,
             highlight_all_dividers,
             drop_preview.as_ref(),
             term_view.as_ref(),

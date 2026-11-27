@@ -40,6 +40,7 @@ pub struct PaneLayoutInfo {
     pub content_start_row: usize,
     pub content_height: usize,
     pub scrollbar_col: Option<usize>,
+    pub hscrollbar: Option<(usize, usize, usize, usize)>, // (row, track_start_col, track_w, max_scroll_col)
     pub visual_rows: Vec<VisualRowInfo>,
     pub tab_bar_row: usize,
     pub tab_hitboxes: Vec<(usize, usize, usize)>, // (start_col, end_col, tab_idx)
@@ -375,7 +376,7 @@ pub fn predict_primary_screen_pos(
 ) -> Option<(usize, usize)> {
     let rect = p.rect;
     let total_lines = doc.rope.line_count();
-    let content_h = rect.h.saturating_sub(1);
+    let (content_h, _) = pane_content_height(doc, rect.w, rect.h, p.scroll_row, p.scroll_col, cfg);
     let content_start_row = rect.y + 1;
     let raw_gutter_w = compute_gutter_width(total_lines);
     let show_gutter = rect.w >= raw_gutter_w + 4;
@@ -630,6 +631,72 @@ pub fn compute_gutter_width(line_count: usize) -> usize {
     digits + 5 // "▸ 123 ▎ " or "  123 ▎ "
 }
 
+/// Fast max visual line width (full scan up to 2000 lines, windowed sample for huge files).
+pub fn max_visual_line_width(doc: &Document, center_row: usize) -> usize {
+    let total = doc.rope.line_count();
+    let tab_w = doc.tab_width.max(1);
+    let mut max_w = 0usize;
+    let measure = |line: &str| -> usize {
+        if line.is_ascii() && !line.contains('\t') {
+            line.len()
+        } else {
+            let mut v = 0usize;
+            for ch in line.chars() {
+                if ch == '\t' {
+                    v += tab_w - (v % tab_w);
+                } else {
+                    v += char_display_width(ch);
+                }
+            }
+            v
+        }
+    };
+    if total <= 2000 {
+        for r in 0..total {
+            let w = measure(&doc.rope.line(r));
+            if w > max_w {
+                max_w = w;
+            }
+        }
+    } else {
+        let start = center_row.saturating_sub(400);
+        let end = (center_row + 400).min(total);
+        for r in 0..100.min(total) {
+            max_w = max_w.max(measure(&doc.rope.line(r)));
+        }
+        for r in start..end {
+            max_w = max_w.max(measure(&doc.rope.line(r)));
+        }
+    }
+    max_w
+}
+
+/// Computes `(content_h, Option<max_scroll_col>)` for a pane, reserving 1 bottom row for the
+/// horizontal scrollbar ONLY when `!wrap`, `scrollbar` is ON, and lines overflow `text_w` (or `scroll_col > 0`).
+pub fn pane_content_height(
+    doc: &Document,
+    rect_w: usize,
+    rect_h: usize,
+    scroll_row: usize,
+    scroll_col: usize,
+    cfg: &EditorConfig,
+) -> (usize, Option<usize>) {
+    let total_lines = doc.rope.line_count();
+    let raw_gutter_w = compute_gutter_width(total_lines);
+    let gutter_w = if rect_w >= raw_gutter_w + 4 { raw_gutter_w } else { 0 };
+    let sb_w = if cfg.scrollbar && rect_w >= gutter_w + 16 { 1 } else { 0 };
+    let text_w = rect_w.saturating_sub(gutter_w + sb_w);
+
+    if !cfg.wrap && cfg.scrollbar && rect_h >= 4 && text_w >= 8 {
+        let max_vis = max_visual_line_width(doc, scroll_row);
+        if max_vis > text_w || scroll_col > 0 {
+            let max_scroll = max_vis.saturating_add(4).saturating_sub(text_w).max(scroll_col);
+            return (rect_h.saturating_sub(2), Some(max_scroll));
+        }
+    }
+    (rect_h.saturating_sub(1), None)
+}
+
 fn group_badge_glyph(num: usize) -> String {
     match num {
         1 => "①".into(),
@@ -652,6 +719,7 @@ pub fn render_editor(
     active_divider: Option<usize>,
     hover_divider: Option<usize>,
     hot_scrollbar: Option<PaneId>,
+    hot_hscrollbar: Option<PaneId>,
     highlight_all_dividers: bool,
     drop_preview: Option<&DropPreview>,
     term_panel: Option<&TermPanelView<'_>>,
@@ -699,6 +767,7 @@ pub fn render_editor(
         };
 
         let sb_hot = hot_scrollbar == Some(p.pane_id);
+        let hsb_hot = hot_hscrollbar == Some(p.pane_id);
         let pane_diags: &[Diagnostic] = if p.is_focused { active_diags } else { &[] };
         let pane_ghost: Option<&str> = if p.is_focused {
             completion.and_then(|c| c.ghost_suffix())
@@ -711,6 +780,7 @@ pub fn render_editor(
             p,
             multi_pane,
             sb_hot,
+            hsb_hot,
             pane_diags,
             pane_ghost,
             trail_cells,
@@ -1497,6 +1567,7 @@ fn render_pane(
     p: &PaneRenderInput,
     multi_pane: bool,
     sb_hot: bool,
+    hsb_hot: bool,
     diagnostics: &[Diagnostic],
     ghost_suffix: Option<&str>,
     trail_cells: &HashMap<(usize, usize), TrailCell>,
@@ -1506,7 +1577,8 @@ fn render_pane(
     let rect = p.rect;
     let wrap = cfg.wrap;
     let total_lines = doc.rope.line_count();
-    let content_h = rect.h.saturating_sub(1);
+    let (content_h, hsb_max_scroll) =
+        pane_content_height(doc, rect.w, rect.h, p.scroll_row, p.scroll_col, cfg);
     let content_start_row = rect.y + 1;
 
     let raw_gutter_w = compute_gutter_width(total_lines);
@@ -1516,6 +1588,9 @@ fn render_pane(
     let show_sb = cfg.scrollbar && rect.w >= gutter_w + 16;
     let sb_w = if show_sb { 1 } else { 0 };
     let text_w = rect.w.saturating_sub(gutter_w + sb_w);
+    let hscrollbar_info = hsb_max_scroll.map(|max_sc| {
+        (rect.y + rect.h - 1, rect.x + gutter_w, text_w, max_sc)
+    });
 
     let mut p_layout = PaneLayoutInfo {
         pane_id: p.pane_id,
@@ -1528,6 +1603,7 @@ fn render_pane(
         } else {
             None
         },
+        hscrollbar: hscrollbar_info,
         visual_rows: Vec::with_capacity(content_h),
         tab_bar_row: rect.y,
         tab_hitboxes: Vec::new(),
@@ -2205,6 +2281,61 @@ fn render_pane(
         doc_row += 1;
     }
 
+    // Optional bottom horizontal scrollbar row (appears automatically only when lines exceed `text_w`)
+    if let Some((hsb_row, _track_x, track_w, max_sc)) = hscrollbar_info {
+        let _ = write!(out, "\x1b[{};{}H", hsb_row + 1, rect.x + 1);
+        push_base_bg(out, cfg, pal);
+        if show_gutter && gutter_w > 0 {
+            for gx in 0..gutter_w {
+                if gx + 1 == gutter_w && p.scroll_col > 0 {
+                    push_fg(out, pal.grad[0], true);
+                    out.push('◀');
+                } else if gx + 2 == gutter_w {
+                    push_fg(out, pal.border, false);
+                    out.push('└');
+                } else {
+                    push_fg(out, pal.border, false);
+                    out.push(' ');
+                }
+            }
+        }
+        let tot_w = (max_sc + track_w).max(1);
+        let thumb_w = ((track_w * track_w) / tot_w).clamp(3.min(track_w), track_w.max(1));
+        let start = if max_sc == 0 || track_w <= thumb_w {
+            0
+        } else {
+            (p.scroll_col.min(max_sc) * (track_w - thumb_w)) / max_sc
+        };
+        let end = (start + thumb_w).min(track_w);
+        for cx in 0..track_w {
+            let t = cx as f32 / track_w.saturating_sub(1).max(1) as f32;
+            if cx >= start && cx < end {
+                if hsb_hot {
+                    push_bg(out, pal.cur_line_bg);
+                    push_fg(out, pal.grad[0], true);
+                    out.push('━');
+                    push_base_bg(out, cfg, pal);
+                } else {
+                    push_fg(out, lerp_grad(pal.grad, t), false);
+                    out.push('━');
+                }
+            } else {
+                push_fg(out, if hsb_hot { pal.dim } else { pal.border }, false);
+                out.push('─');
+            }
+        }
+        if show_sb {
+            if p.scroll_col < max_sc {
+                push_fg(out, if hsb_hot { pal.grad[0] } else { pal.dim }, hsb_hot);
+                out.push('▶');
+            } else {
+                push_fg(out, pal.border, false);
+                out.push('┘');
+            }
+        }
+        out.push_str(RST);
+    }
+
     (p_layout, primary_screen_pos, sel_chars, primary_row, primary_col, cursors.len())
 }
 
@@ -2489,7 +2620,7 @@ mod tests {
         let pal = &crate::palette::PALETTES[0];
         let cfg = EditorConfig::default();
         let mut out = String::new();
-        render_pane(&mut out, &mut doc, &p, false, false, &[], None, &HashMap::new(), pal, &cfg);
+        render_pane(&mut out, &mut doc, &p, false, false, false, &[], None, &HashMap::new(), pal, &cfg);
         let sel_seq = format!("\x1b[48;2;{};{};{}m ", pal.sel_bg.0, pal.sel_bg.1, pal.sel_bg.2);
         // Row 3 (1-based: row 1 tab bar, row 2 "abc", row 3 blank line!) must contain sel_bg marker
         let row3_marker = "\x1b[3;1H";
@@ -2519,5 +2650,44 @@ mod tests {
 
         // Active scope on blank line 6 inside `while` highlights col 4 across rows 2..=6
         assert_eq!(compute_active_indent_scope(&rope, 6, 4), Some((2, 6, 4)));
+    }
+
+    #[test]
+    fn horizontal_scrollbar_auto_appears_only_for_long_lines() {
+        let pal = &crate::palette::PALETTES[0];
+        let cfg = EditorConfig::default();
+
+        // Short lines -> no horizontal scrollbar (saves full vertical space)
+        let mut short_doc = Document::new_empty();
+        short_doc.rope = crate::rope::Rope::from_str("int x = 1;\nint y = 2;\n");
+        let p = PaneRenderInput {
+            pane_id: 0,
+            group_num: 1,
+            rect: Rect { x: 0, y: 0, w: 50, h: 10 },
+            is_focused: true,
+            doc_id: 0,
+            tabs: vec![TabBadge { name: "s.cpp".into(), dirty: false, active: true }],
+            scroll_row: 0,
+            scroll_col: 0,
+            cursors: vec![Selection::caret(0)],
+            primary: 0,
+        };
+        let mut out1 = String::new();
+        let (l1, _, _, _, _, _) =
+            render_pane(&mut out1, &mut short_doc, &p, false, false, false, &[], None, &HashMap::new(), pal, &cfg);
+        assert!(l1.hscrollbar.is_none());
+        assert_eq!(l1.content_height, 9);
+
+        // Long line (> 50 cols) -> horizontal scrollbar appears on bottom row with thumb `━`!
+        let mut long_doc = Document::new_empty();
+        long_doc.rope = crate::rope::Rope::from_str(&format!("string s = \"{}\";\n", "a".repeat(120)));
+        let mut out2 = String::new();
+        let (l2, _, _, _, _, _) =
+            render_pane(&mut out2, &mut long_doc, &p, false, false, false, &[], None, &HashMap::new(), pal, &cfg);
+        let (hsb_row, _track_x, _track_w, max_sc) = l2.hscrollbar.expect("expected horizontal scrollbar");
+        assert_eq!(hsb_row, 9);
+        assert_eq!(l2.content_height, 8);
+        assert!(max_sc > 80);
+        assert!(out2.contains('━'));
     }
 }

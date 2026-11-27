@@ -64,6 +64,8 @@ pub enum MouseKind {
     Move,
     WheelUp,
     WheelDown,
+    WheelLeft,
+    WheelRight,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -289,12 +291,12 @@ fn decode_csi(params: &str, final_ch: char) -> Option<Event> {
                 let base = btn & 3;
 
                 let kind = if wheel {
-                    if base == 0 {
-                        MouseKind::WheelUp
-                    } else if base == 1 {
-                        MouseKind::WheelDown
-                    } else {
-                        return None;
+                    match base {
+                        0 => MouseKind::WheelUp,
+                        1 => MouseKind::WheelDown,
+                        2 => MouseKind::WheelLeft,
+                        3 => MouseKind::WheelRight,
+                        _ => return None,
                     }
                 } else if final_ch == 'm' {
                     if base == 0 {
@@ -458,8 +460,8 @@ mod tests {
         d.push(b"\x1b[200~hello\r\nworld\x1b[201~");
         assert_eq!(d.next_event(), Some(Event::Paste("hello\nworld".into())));
 
-        // SGR Mouse left click at col=10, row=5 (1-based 11, 6) + hover move (btn=35)
-        d.push(b"\x1b[<0;11;6M\x1b[<35;15;8M");
+        // SGR Mouse left click at col=10, row=5 (1-based 11, 6) + hover move (btn=35) + hwheel (66/67)
+        d.push(b"\x1b[<0;11;6M\x1b[<35;15;8M\x1b[<66;11;6M\x1b[<67;11;6M");
         assert_eq!(
             d.next_event(),
             Some(Event::Mouse(MouseEvent {
@@ -477,6 +479,28 @@ mod tests {
                 kind: MouseKind::Move,
                 col: 14,
                 row: 7,
+                ctrl: false,
+                alt: false,
+                shift: false,
+            }))
+        );
+        assert_eq!(
+            d.next_event(),
+            Some(Event::Mouse(MouseEvent {
+                kind: MouseKind::WheelLeft,
+                col: 10,
+                row: 5,
+                ctrl: false,
+                alt: false,
+                shift: false,
+            }))
+        );
+        assert_eq!(
+            d.next_event(),
+            Some(Event::Mouse(MouseEvent {
+                kind: MouseKind::WheelRight,
+                col: 10,
+                row: 5,
                 ctrl: false,
                 alt: false,
                 shift: false,
