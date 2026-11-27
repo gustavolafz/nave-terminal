@@ -77,215 +77,215 @@ pub struct Palette {
 }
 
 pub const PALETTES: [Palette; 6] = [
-    // 1. Nave Cyber (Obsidian Ciano / Violeta / Magenta — padrão Nave Terminal)
+    // 1. Nave Cyber — Electric Neon Cyberpunk (Ciano · Violeta Elétrico · Menta · Ouro · Magenta)
     Palette {
         name: "cyber",
-        cursor_hex: "#00f0ff",
-        grad: [(0, 245, 255), (124, 77, 255), (255, 46, 151)],
-        fg: (241, 245, 249),
-        dim: (100, 108, 142),
-        line_num: (100, 108, 142),
-        active_line_num: (0, 245, 255),
-        border: (59, 47, 99),
-        indent_guide: (59, 47, 99),
-        indent_active: (124, 77, 255),
+        cursor_hex: "#00f8ff",
+        grad: [(0, 248, 255), (156, 98, 255), (255, 56, 162)],
+        fg: (244, 248, 255),
+        dim: (116, 126, 164),
+        line_num: (112, 122, 158),
+        active_line_num: (0, 248, 255),
+        border: (64, 52, 108),
+        indent_guide: (64, 52, 108),
+        indent_active: (146, 96, 255),
         cur_line_bg: (20, 23, 38),
-        sel_bg: (42, 54, 96),
-        word_hl_bg: (56, 48, 84),
-        match_bg: (56, 48, 84),
-        active_match_bg: (124, 77, 255),
-        bracket_bg: (0, 245, 255),
-        bracket_fg: (16, 18, 30),
+        sel_bg: (44, 56, 102),
+        word_hl_bg: (56, 48, 86),
+        match_bg: (56, 48, 86),
+        active_match_bg: (132, 82, 255),
+        bracket_bg: (0, 248, 255),
+        bracket_fg: (14, 16, 28),
         bar_bg: (16, 18, 30),
         tab_active_bg: (28, 32, 54),
-        ok: (0, 255, 136),
-        warn: (255, 196, 0),
-        err: (255, 30, 102),
-        kw: (192, 132, 252),
+        ok: (48, 255, 168),
+        warn: (255, 214, 0),
+        err: (255, 42, 114),
+        kw: (216, 150, 255),        // #D896FF electric neon violet (bold)
         kw_bold: true,
-        ty: (0, 245, 255),
-        func: (86, 204, 255),
-        str_col: (255, 214, 0),
-        escape: (255, 46, 151),
-        num: (255, 118, 178),
-        constant: (255, 118, 178),
-        param: (255, 176, 92),
-        prop: (125, 249, 255),
-        comment: (106, 114, 148),
-        op: (255, 46, 151),
-        punct: (148, 158, 194),
-        var: (125, 249, 255),
-        attr: (0, 255, 136),
-        key: (0, 240, 255),
-        heading: (0, 245, 255),
+        ty: (0, 248, 255),          // #00F8FF hyper neon cyan
+        func: (48, 255, 168),       // #30FFA8 electric neon mint
+        str_col: (255, 226, 52),    // #FFE234 electric solar gold
+        escape: (255, 56, 162),     // #FF38A2 laser magenta
+        num: (255, 122, 198),       // #FF7AC6 vibrant neon pink
+        constant: (255, 122, 198),  // #FF7AC6 vibrant neon pink
+        param: (255, 184, 77),      // #FFB84D electric amber (italic)
+        prop: (102, 218, 255),      // #66DAFF electric sky azure
+        comment: (124, 134, 174),   // #7C86AE readable cool slate (italic)
+        op: (255, 56, 162),         // #FF38A2 laser magenta
+        punct: (216, 226, 242),     // #D8E2F2 crisp bright silver
+        var: (138, 248, 255),       // #8AF8FF electric ice cyan
+        attr: (176, 255, 78),       // #B0FF4E electric lime
+        key: (102, 218, 255),       // #66DAFF electric sky azure
+        heading: (0, 248, 255),     // #00F8FF hyper cyan (bold)
     },
-    // 2. Nave Emerald (Obsidian Esmeralda / Aqua / Lima)
+    // 2. Nave Emerald — Bioluminescent Tropical (Esmeralda · Aqua · Lima · Ouro · Ametista · Coral)
     Palette {
         name: "emerald",
-        cursor_hex: "#00ff88",
-        grad: [(0, 255, 136), (0, 229, 255), (178, 255, 89)],
-        fg: (236, 253, 245),
-        dim: (78, 126, 98),
-        line_num: (78, 126, 98),
-        active_line_num: (0, 255, 136),
-        border: (31, 89, 59),
-        indent_guide: (31, 89, 59),
-        indent_active: (0, 229, 255),
+        cursor_hex: "#00ff94",
+        grad: [(0, 255, 148), (0, 236, 255), (176, 255, 82)],
+        fg: (240, 254, 248),
+        dim: (94, 144, 116),
+        line_num: (94, 144, 116),
+        active_line_num: (0, 255, 148),
+        border: (36, 98, 66),
+        indent_guide: (36, 98, 66),
+        indent_active: (0, 236, 255),
         cur_line_bg: (14, 29, 20),
-        sel_bg: (26, 72, 48),
-        word_hl_bg: (30, 66, 54),
-        match_bg: (30, 66, 54),
-        active_match_bg: (0, 140, 96),
-        bracket_bg: (0, 255, 136),
+        sel_bg: (28, 76, 52),
+        word_hl_bg: (30, 68, 54),
+        match_bg: (30, 68, 54),
+        active_match_bg: (0, 148, 102),
+        bracket_bg: (0, 255, 148),
         bracket_fg: (11, 22, 16),
         bar_bg: (11, 22, 16),
         tab_active_bg: (20, 44, 30),
-        ok: (0, 255, 136),
-        warn: (255, 234, 0),
-        err: (255, 30, 102),
-        kw: (0, 255, 136),
+        ok: (0, 255, 148),
+        warn: (255, 228, 74),
+        err: (255, 58, 118),
+        kw: (0, 255, 148),          // #00FF94 electric emerald (bold)
         kw_bold: true,
-        ty: (0, 229, 255),
-        func: (120, 255, 180),
-        str_col: (255, 234, 0),
-        escape: (0, 229, 255),
-        num: (178, 255, 89),
-        constant: (178, 255, 89),
-        param: (255, 218, 102),
-        prop: (167, 243, 208),
-        comment: (84, 130, 104),
-        op: (0, 229, 255),
-        punct: (132, 182, 154),
-        var: (167, 243, 208),
-        attr: (178, 255, 89),
-        key: (0, 245, 212),
-        heading: (0, 255, 136),
+        ty: (0, 236, 255),          // #00ECFF electric aqua
+        func: (176, 255, 82),       // #B0FF52 bioluminescent lime
+        str_col: (255, 228, 74),    // #FFE44A vibrant tropical gold
+        escape: (255, 92, 168),     // #FF5CA8 vibrant orchid coral
+        num: (196, 152, 255),       // #C498FF electric amethyst
+        constant: (196, 152, 255),  // #C498FF electric amethyst
+        param: (255, 176, 92),      // #FFB05C warm mango (italic)
+        prop: (94, 242, 224),       // #5EF2E0 bright seafoam teal
+        comment: (102, 152, 124),   // #66987C forest slate (italic)
+        op: (255, 92, 168),         // #FF5CA8 orchid coral contrast
+        punct: (204, 232, 218),     // #CCE8DA crisp mint silver
+        var: (140, 255, 214),       // #8CFFD6 bright mint
+        attr: (255, 138, 198),      // #FF8AC6 orchid blossom
+        key: (94, 242, 224),        // #5EF2E0 seafoam teal
+        heading: (0, 255, 148),     // #00FF94 electric emerald (bold)
     },
-    // 3. Nave Sunset (Obsidian Ouro / Magma / Magenta)
+    // 3. Nave Sunset — Electric Synthwave (Magenta · Magma · Ouro · Ciano Crepúsculo · Violeta · Menta)
     Palette {
         name: "sunset",
         cursor_hex: "#ff5e3a",
-        grad: [(255, 214, 0), (255, 94, 58), (255, 30, 142)],
-        fg: (255, 241, 242),
-        dim: (140, 84, 112),
-        line_num: (140, 84, 112),
-        active_line_num: (255, 214, 0),
-        border: (92, 37, 64),
-        indent_guide: (92, 37, 64),
-        indent_active: (255, 94, 58),
+        grad: [(255, 220, 40), (255, 102, 64), (255, 54, 156)],
+        fg: (255, 244, 246),
+        dim: (158, 102, 130),
+        line_num: (158, 102, 130),
+        active_line_num: (255, 220, 40),
+        border: (98, 42, 70),
+        indent_guide: (98, 42, 70),
+        indent_active: (255, 102, 64),
         cur_line_bg: (30, 16, 24),
-        sel_bg: (82, 32, 56),
-        word_hl_bg: (76, 42, 34),
-        match_bg: (76, 42, 34),
-        active_match_bg: (190, 52, 88),
-        bracket_bg: (255, 214, 0),
+        sel_bg: (86, 34, 60),
+        word_hl_bg: (78, 42, 36),
+        match_bg: (78, 42, 36),
+        active_match_bg: (196, 54, 94),
+        bracket_bg: (255, 220, 40),
         bracket_fg: (22, 12, 18),
         bar_bg: (22, 12, 18),
         tab_active_bg: (48, 22, 36),
-        ok: (0, 255, 136),
-        warn: (255, 214, 0),
-        err: (255, 23, 68),
-        kw: (255, 46, 151),
+        ok: (98, 255, 192),
+        warn: (255, 220, 40),
+        err: (255, 42, 86),
+        kw: (255, 62, 158),         // #FF3E9E electric hot magenta (bold)
         kw_bold: true,
-        ty: (255, 159, 28),
-        func: (255, 118, 82),
-        str_col: (255, 214, 0),
-        escape: (255, 46, 151),
-        num: (255, 94, 178),
-        constant: (255, 94, 178),
-        param: (255, 198, 128),
-        prop: (255, 159, 96),
-        comment: (146, 92, 118),
-        op: (255, 94, 58),
-        punct: (196, 142, 164),
-        var: (255, 198, 128),
-        attr: (255, 214, 0),
-        key: (255, 140, 90),
-        heading: (255, 214, 0),
+        ty: (76, 232, 255),         // #4CE8FF twilight neon cyan
+        func: (255, 178, 56),       // #FFB238 electric golden amber
+        str_col: (255, 236, 92),    // #FFEC5C bright solar yellow
+        escape: (255, 62, 158),     // #FF3E9E hot magenta
+        num: (206, 144, 255),       // #CE90FF synthwave violet
+        constant: (206, 144, 255),  // #CE90FF synthwave violet
+        param: (255, 136, 108),     // #FF886C warm sunset coral (italic)
+        prop: (98, 255, 192),       // #62FFC0 electric oasis mint
+        comment: (164, 108, 136),   // #A46C88 warm rose slate (italic)
+        op: (255, 112, 67),         // #FF7043 vibrant magma
+        punct: (234, 206, 218),     // #EACEDA crisp rose silver
+        var: (255, 202, 138),       // #FFCA8A warm sunset peach
+        attr: (255, 128, 212),      // #FF80D4 neon flamingo
+        key: (98, 255, 192),        // #62FFC0 oasis mint
+        heading: (255, 220, 40),    // #FFDC28 solar gold (bold)
     },
-    // 4. Nave Nord (Obsidian Aurora Gelo / Azul / Violeta)
+    // 4. Nave Nord — Electric Aurora Borealis (Violeta · Ciano Glacial · Menta Aurora · Ouro · Rosa)
     Palette {
         name: "nord",
-        cursor_hex: "#38e8ff",
-        grad: [(56, 232, 255), (108, 140, 255), (192, 132, 252)],
-        fg: (241, 245, 249),
-        dim: (92, 112, 150),
-        line_num: (92, 112, 150),
-        active_line_num: (56, 232, 255),
-        border: (44, 63, 102),
-        indent_guide: (44, 63, 102),
-        indent_active: (108, 140, 255),
+        cursor_hex: "#40eeff",
+        grad: [(64, 238, 255), (112, 152, 255), (204, 146, 255)],
+        fg: (242, 247, 255),
+        dim: (108, 130, 170),
+        line_num: (108, 130, 170),
+        active_line_num: (64, 238, 255),
+        border: (48, 70, 112),
+        indent_guide: (48, 70, 112),
+        indent_active: (112, 152, 255),
         cur_line_bg: (18, 26, 43),
-        sel_bg: (42, 64, 108),
-        word_hl_bg: (46, 58, 92),
-        match_bg: (46, 58, 92),
-        active_match_bg: (90, 116, 210),
-        bracket_bg: (56, 232, 255),
+        sel_bg: (44, 68, 114),
+        word_hl_bg: (46, 60, 96),
+        match_bg: (46, 60, 96),
+        active_match_bg: (94, 122, 218),
+        bracket_bg: (64, 238, 255),
         bracket_fg: (13, 19, 32),
         bar_bg: (13, 19, 32),
         tab_active_bg: (26, 38, 64),
-        ok: (52, 255, 180),
-        warn: (255, 215, 95),
-        err: (255, 95, 115),
-        kw: (192, 132, 252),
+        ok: (74, 255, 188),
+        warn: (255, 224, 102),
+        err: (255, 98, 126),
+        kw: (204, 146, 255),        // #CC92FF electric aurora violet (bold)
         kw_bold: true,
-        ty: (56, 232, 255),
-        func: (108, 168, 255),
-        str_col: (255, 215, 95),
-        escape: (192, 132, 252),
-        num: (165, 180, 252),
-        constant: (165, 180, 252),
-        param: (255, 192, 128),
-        prop: (147, 235, 255),
-        comment: (96, 116, 154),
-        op: (108, 140, 255),
-        punct: (148, 166, 200),
-        var: (147, 235, 255),
-        attr: (52, 255, 180),
-        key: (56, 232, 255),
-        heading: (56, 232, 255),
+        ty: (64, 238, 255),         // #40EEFF glacial neon cyan
+        func: (74, 255, 188),       // #4AFFBC electric aurora green
+        str_col: (255, 224, 102),   // #FFE066 bright aurora gold
+        escape: (255, 114, 156),    // #FF729C arctic rose
+        num: (255, 126, 178),       // #FF7EB2 vibrant aurora pink
+        constant: (255, 126, 178),  // #FF7EB2 vibrant aurora pink
+        param: (255, 186, 116),     // #FFBA74 warm amber (italic)
+        prop: (132, 216, 255),      // #84D8FF frost sky blue
+        comment: (114, 136, 176),   // #7288B0 polar slate (italic)
+        op: (112, 166, 255),        // #70A6FF electric arctic blue
+        punct: (206, 218, 238),     // #CEDAEE crisp glacial silver
+        var: (166, 240, 255),       // #A6F0FF pale ice
+        attr: (168, 255, 120),      // #A8FF78 aurora lime
+        key: (132, 216, 255),       // #84D8FF frost sky blue
+        heading: (64, 238, 255),    // #40EEFF glacial cyan (bold)
     },
-    // 5. Nave Stealth (Obsidian Ametista / Monocromático Violeta)
+    // 5. Nave Stealth — Electric Amethyst Jewel (Ametista · Rubi · Safira · Jade · Ouro · Orquídea)
     Palette {
         name: "stealth",
-        cursor_hex: "#a855f7",
-        grad: [(248, 250, 252), (168, 85, 247), (236, 72, 153)],
-        fg: (244, 244, 248),
-        dim: (112, 98, 138),
-        line_num: (112, 98, 138),
-        active_line_num: (248, 250, 252),
-        border: (76, 40, 117),
-        indent_guide: (76, 40, 117),
-        indent_active: (168, 85, 247),
+        cursor_hex: "#ce8aff",
+        grad: [(246, 245, 252), (192, 112, 255), (255, 86, 172)],
+        fg: (246, 245, 252),
+        dim: (128, 112, 158),
+        line_num: (128, 112, 158),
+        active_line_num: (246, 245, 252),
+        border: (82, 46, 126),
+        indent_guide: (82, 46, 126),
+        indent_active: (184, 102, 255),
         cur_line_bg: (21, 18, 31),
-        sel_bg: (64, 38, 98),
-        word_hl_bg: (58, 40, 82),
-        match_bg: (58, 40, 82),
-        active_match_bg: (148, 68, 224),
-        bracket_bg: (248, 250, 252),
+        sel_bg: (68, 40, 104),
+        word_hl_bg: (60, 42, 86),
+        match_bg: (60, 42, 86),
+        active_match_bg: (156, 74, 232),
+        bracket_bg: (246, 245, 252),
         bracket_fg: (15, 13, 22),
         bar_bg: (15, 13, 22),
         tab_active_bg: (34, 26, 52),
-        ok: (248, 250, 252),
-        warn: (255, 214, 0),
-        err: (255, 30, 102),
-        kw: (192, 132, 252),
+        ok: (104, 255, 198),
+        warn: (255, 220, 112),
+        err: (255, 52, 116),
+        kw: (206, 138, 255),        // #CE8AFF electric amethyst (bold)
         kw_bold: true,
-        ty: (236, 72, 153),
-        func: (248, 250, 252),
-        str_col: (244, 114, 182),
-        escape: (236, 72, 153),
-        num: (168, 85, 247),
-        constant: (168, 85, 247),
-        param: (240, 171, 252),
-        prop: (216, 180, 254),
-        comment: (116, 102, 142),
-        op: (236, 72, 153),
-        punct: (164, 152, 192),
-        var: (216, 180, 254),
-        attr: (248, 250, 252),
-        key: (192, 132, 252),
-        heading: (248, 250, 252),
+        ty: (88, 232, 255),         // #58E8FF electric sapphire cyan
+        func: (104, 255, 198),      // #68FFC6 vibrant jade mint
+        str_col: (255, 220, 112),   // #FFDC70 bright champagne gold
+        escape: (255, 86, 172),     // #FF56AC neon ruby rose
+        num: (255, 138, 216),       // #FF8AD8 vivid orchid pink
+        constant: (255, 138, 216),  // #FF8AD8 vivid orchid pink
+        param: (255, 182, 126),     // #FFB67E warm rose-gold peach (italic)
+        prop: (164, 198, 255),      // #A4C6FF electric periwinkle
+        comment: (134, 118, 166),   // #8676A6 soft amethyst slate (italic)
+        op: (255, 86, 172),         // #FF56AC neon ruby rose
+        punct: (212, 204, 232),     // #D4CCE8 crisp lilac silver
+        var: (222, 190, 255),       // #DEBEFF bright lavender
+        attr: (182, 255, 118),      // #B6FF76 electric chartreuse
+        key: (164, 198, 255),       // #A4C6FF electric periwinkle
+        heading: (216, 170, 255),   // #D8AAFF bright amethyst (bold)
     },
     // 6. Dracula Redefined (VS Code customizado salvo como opção extra — Alt+6)
     Palette {
@@ -427,6 +427,29 @@ pub fn push_grad_text(out: &mut String, text: &str, stops: [Rgb; 3], bold: bool)
             let c = lerp_grad(stops, i as f32 / total);
             push_fg(out, c, bold);
             out.push(ch);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn all_palettes_have_distinct_vibrant_syntax_roles() {
+        for p in &PALETTES {
+            let distinct: HashSet<Rgb> = [
+                p.fg, p.kw, p.ty, p.func, p.str_col, p.num, p.param, p.prop, p.comment, p.punct,
+            ]
+            .into_iter()
+            .collect();
+            assert!(
+                distinct.len() >= 10,
+                "Palette '{}' only has {} distinct colors across 10 core token roles!",
+                p.name,
+                distinct.len()
+            );
         }
     }
 }
