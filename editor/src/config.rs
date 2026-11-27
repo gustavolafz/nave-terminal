@@ -8,7 +8,7 @@ pub struct EditorConfig {
     pub relative_numbers: bool,
     pub block_cursor: bool,
     pub auto_hide_mouse: bool,
-    pub mouse: bool,
+    pub keyboard_only_nav: bool,
     pub scrollbar: bool,
     pub center_scroll: bool,
     pub scrolloff: usize,
@@ -31,7 +31,7 @@ impl Default for EditorConfig {
             relative_numbers: false,
             block_cursor: false,
             auto_hide_mouse: true,
-            mouse: true,
+            keyboard_only_nav: false,
             scrollbar: true,
             center_scroll: false,
             scrolloff: 3,
@@ -84,7 +84,8 @@ impl EditorConfig {
                 "relative_numbers" => cfg.relative_numbers = parse_bool(v),
                 "block_cursor" => cfg.block_cursor = parse_bool(v),
                 "auto_hide_mouse" => cfg.auto_hide_mouse = parse_bool(v),
-                "mouse" => cfg.mouse = parse_bool(v),
+                "keyboard_only_nav" => cfg.keyboard_only_nav = parse_bool(v),
+                "mouse" => cfg.keyboard_only_nav = !parse_bool(v), // legacy config migration
                 "scrollbar" => cfg.scrollbar = parse_bool(v),
                 "center_scroll" => cfg.center_scroll = parse_bool(v),
                 "scrolloff" => {
@@ -123,7 +124,7 @@ impl EditorConfig {
              relative_numbers={}\n\
              block_cursor={}\n\
              auto_hide_mouse={}\n\
-             mouse={}\n\
+             keyboard_only_nav={}\n\
              scrollbar={}\n\
              center_scroll={}\n\
              scrolloff={}\n\
@@ -141,7 +142,7 @@ impl EditorConfig {
             self.relative_numbers,
             self.block_cursor,
             self.auto_hide_mouse,
-            self.mouse,
+            self.keyboard_only_nav,
             self.scrollbar,
             self.center_scroll,
             self.scrolloff,
@@ -163,13 +164,13 @@ impl EditorConfig {
         if self.vim_visual {
             self.relative_numbers = true;
             self.block_cursor = false;
-            self.mouse = false;
+            self.keyboard_only_nav = true;
             self.scrollbar = true;
             self.scrolloff = 8;
         } else {
             self.relative_numbers = false;
             self.block_cursor = false;
-            self.mouse = true;
+            self.keyboard_only_nav = false;
             self.center_scroll = false;
             self.scrolloff = 3;
         }

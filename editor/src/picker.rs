@@ -16,7 +16,7 @@ pub enum PickerAction {
     ToggleRelativeNumbers,
     ToggleBlockCursor,
     ToggleAutoHideMouse,
-    ToggleMouse,
+    ToggleKeyboardOnlyNav,
     ToggleScrollbar,
     ToggleCenterScroll,
     ToggleCursorWord,
@@ -96,7 +96,7 @@ impl Picker {
         let items = vec![
             PickerItem {
                 label: format!("Estilo Vim Visual [{}]", onoff(cfg.vim_visual)),
-                detail: "Alt+V (relnum + bloco + sem mouse + scroll)".into(),
+                detail: "Alt+V (relnum + nav teclado + scroll)".into(),
                 action: PickerAction::ToggleVimVisual,
             },
             PickerItem {
@@ -106,18 +106,18 @@ impl Picker {
             },
             PickerItem {
                 label: format!("Cursor em Bloco Solido [{}]", onoff(cfg.block_cursor)),
-                detail: "█ vs | (auto-hide mouse quando ON)".into(),
+                detail: "█ vs |".into(),
                 action: PickerAction::ToggleBlockCursor,
             },
             PickerItem {
-                label: format!("Auto-Hide Ponteiro do Mouse (modo bloco) [{}]", onoff(cfg.auto_hide_mouse)),
-                detail: "some apos 0.5s ocioso no editor".into(),
+                label: format!("Auto-Hide Ponteiro do Mouse [{}]", onoff(cfg.auto_hide_mouse)),
+                detail: "some ao digitar ou 0.5s ocioso".into(),
                 action: PickerAction::ToggleAutoHideMouse,
             },
             PickerItem {
-                label: format!("Captura de Mouse [{}]", onoff(cfg.mouse)),
-                detail: "teclado puro quando OFF".into(),
-                action: PickerAction::ToggleMouse,
+                label: format!("Navegacao no Texto Apenas por Teclado [{}]", onoff(cfg.keyboard_only_nav)),
+                detail: "mouse sempre ativo p/ abas e divisorias".into(),
+                action: PickerAction::ToggleKeyboardOnlyNav,
             },
             PickerItem {
                 label: format!("Barra de Rolagem Lateral [{}]", onoff(cfg.scrollbar)),

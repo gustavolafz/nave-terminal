@@ -792,6 +792,9 @@ impl App {
 
         match m.kind {
             MouseKind::WheelUp | MouseKind::WheelDown => {
+                if self.cfg.keyboard_only_nav {
+                    return;
+                }
                 let target_pid = self
                     .layout
                     .panes
@@ -878,6 +881,12 @@ impl App {
                 if let Some(pid) = hit_pane {
                     self.focus_pane(pid);
                     self.mode = Mode::Edit;
+                    if self.cfg.keyboard_only_nav {
+                        // Keyboard-only text navigation: allow focusing another pane by click
+                        // without hijacking or moving the text cursor inside the file
+                        self.drag = DragState::None;
+                        return;
+                    }
                     if let Some((doc_row, doc_col)) = self.screen_to_doc_in_pane(pid, m.col, m.row) {
                         let now = Instant::now();
                         let clicks = if let Some((prev_t, pr, pc, cnt)) = self.last_click {
@@ -1573,7 +1582,7 @@ impl App {
                 KeyCode::Char('v') => {
                     self.cfg.toggle_vim_visual();
                     self.term_sync_needed = true;
-                    let st = if self.cfg.vim_visual { "ON (relnum + scrollbar + sem mouse)" } else { "OFF (VS Code padrao)" };
+                    let st = if self.cfg.vim_visual { "ON (relnum + nav teclado)" } else { "OFF (VS Code padrao)" };
                     self.set_status(format!("Estilo Vim Visual: {}", st));
                     return;
                 }
@@ -2214,7 +2223,7 @@ impl App {
                 PickerAction::ToggleVimVisual => {
                     self.cfg.toggle_vim_visual();
                     self.term_sync_needed = true;
-                    let st = if self.cfg.vim_visual { "ON (relnum + bloco + sem mouse)" } else { "OFF (VS Code padrao)" };
+                    let st = if self.cfg.vim_visual { "ON (relnum + nav teclado)" } else { "OFF (VS Code padrao)" };
                     self.set_status(format!("Estilo Vim Visual: {}", st));
                 }
                 PickerAction::ToggleRelativeNumbers => {
@@ -2227,26 +2236,25 @@ impl App {
                     self.cfg.block_cursor = !self.cfg.block_cursor;
                     self.cfg.save();
                     self.term_sync_needed = true;
-                    let st = if self.cfg.block_cursor {
-                        if self.cfg.auto_hide_mouse { "Bloco (█ · auto-hide mouse ON)" } else { "Bloco (█)" }
-                    } else {
-                        "Barra (|)"
-                    };
+                    let st = if self.cfg.block_cursor { "Bloco (█)" } else { "Barra (|)" };
                     self.set_status(format!("Cursor: {}", st));
                 }
                 PickerAction::ToggleAutoHideMouse => {
                     self.cfg.auto_hide_mouse = !self.cfg.auto_hide_mouse;
                     self.cfg.save();
                     self.term_sync_needed = true;
-                    let st = if self.cfg.auto_hide_mouse { "ON (ativo no modo bloco)" } else { "OFF" };
+                    let st = if self.cfg.auto_hide_mouse { "ON (sempre ativo)" } else { "OFF" };
                     self.set_status(format!("Auto-Hide Ponteiro do Mouse: {}", st));
                 }
-                PickerAction::ToggleMouse => {
-                    self.cfg.mouse = !self.cfg.mouse;
+                PickerAction::ToggleKeyboardOnlyNav => {
+                    self.cfg.keyboard_only_nav = !self.cfg.keyboard_only_nav;
                     self.cfg.save();
-                    self.term_sync_needed = true;
-                    let st = if self.cfg.mouse { "ON" } else { "OFF (teclado puro)" };
-                    self.set_status(format!("Mouse: {}", st));
+                    let st = if self.cfg.keyboard_only_nav {
+                        "ON (texto so teclado · mouse p/ abas/divisorias)"
+                    } else {
+                        "OFF (mouse livre no texto)"
+                    };
+                    self.set_status(format!("Navegacao no Texto: {}", st));
                 }
                 PickerAction::ToggleScrollbar => {
                     self.cfg.scrollbar = !self.cfg.scrollbar;
@@ -2694,7 +2702,7 @@ fn main() {
         return;
     }
 
-    let term = match Terminal::enter(app.cfg.mouse, app.cfg.block_cursor, app.palette.cursor_hex) {
+    let term = match Terminal::enter(app.cfg.block_cursor, app.palette.cursor_hex) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("nave-edit: requer um terminal interativo (TTY): {}", e);
@@ -2703,7 +2711,7 @@ fn main() {
     };
 
     let mut mouse_hider = terminal::MouseHider::new();
-    mouse_hider.sync(app.cfg.block_cursor && app.cfg.auto_hide_mouse);
+    mouse_hider.sync(app.cfg.auto_hide_mouse);
 
     let mut decoder = InputDecoder::new();
     let mut read_buf = [0u8; 4096];
@@ -2715,10 +2723,9 @@ fn main() {
         let (cols, rows) = Terminal::size();
 
         if app.term_sync_needed {
-            term.set_mouse(app.cfg.mouse);
             term.set_cursor_style(app.cfg.block_cursor, standby_blink);
             term.set_cursor_color(app.palette.cursor_hex);
-            mouse_hider.sync(app.cfg.block_cursor && app.cfg.auto_hide_mouse);
+            mouse_hider.sync(app.cfg.auto_hide_mouse);
             app.term_sync_needed = false;
             needs_redraw = true;
         }

@@ -18,7 +18,7 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    pub fn enter(mouse_enabled: bool, block_cursor: bool, cursor_hex: &str) -> io::Result<Self> {
+    pub fn enter(block_cursor: bool, cursor_hex: &str) -> io::Result<Self> {
         let fd = libc::STDIN_FILENO;
         let mut orig: libc::termios = unsafe { std::mem::zeroed() };
         if unsafe { libc::tcgetattr(fd, &mut orig) } != 0 {
@@ -47,10 +47,8 @@ impl Terminal {
         }
 
         let mut stdout = io::stdout().lock();
-        stdout.write_all(b"\x1b[?1049h\x1b[?2004h")?;
-        if mouse_enabled {
-            stdout.write_all(b"\x1b[?1000h\x1b[?1002h\x1b[?1006h")?;
-        }
+        // Always enable SGR 1006 button-drag mouse reporting so pane divider resizing & tab drag-and-drop always work
+        stdout.write_all(b"\x1b[?1049h\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h")?;
         stdout.write_all(if block_cursor { b"\x1b[2 q" } else { b"\x1b[6 q" })?;
         if !cursor_hex.is_empty() {
             let _ = write!(stdout, "\x1b]12;{}\x07", cursor_hex);
@@ -71,17 +69,6 @@ impl Terminal {
         }
         let mut stdout = io::stdout().lock();
         let _ = write!(stdout, "\x1b]12;{}\x07", cursor_hex);
-        let _ = stdout.flush();
-    }
-
-    pub fn set_mouse(&self, enabled: bool) {
-        let seq: &[u8] = if enabled {
-            b"\x1b[?1000h\x1b[?1002h\x1b[?1006h"
-        } else {
-            b"\x1b[?1006l\x1b[?1002l\x1b[?1000l"
-        };
-        let mut stdout = io::stdout().lock();
-        let _ = stdout.write_all(seq);
         let _ = stdout.flush();
     }
 
