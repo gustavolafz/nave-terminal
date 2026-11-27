@@ -113,5 +113,28 @@
     "brightPurple": "#F472B6",
     "brightCyan": "#D8B4FE",
     "brightWhite": "#FFFFFF"
+  },
+  {
+    "name": "Nave Dracula",
+    "background": "#10111A",
+    "foreground": "#EBEEF7",
+    "cursorColor": "#FF73C6",
+    "selectionBackground": "#3B2A5E",
+    "black": "#1C1F2E",
+    "red": "#FF617D",
+    "green": "#5CF298",
+    "yellow": "#F2E58F",
+    "blue": "#6BE3F5",
+    "purple": "#C79EFF",
+    "cyan": "#87E6D8",
+    "white": "#EBEEF7",
+    "brightBlack": "#7981A1",
+    "brightRed": "#FF8AA0",
+    "brightGreen": "#89F7B5",
+    "brightYellow": "#F8F0B4",
+    "brightBlue": "#9AEDF8",
+    "brightPurple": "#DBC1FF",
+    "brightCyan": "#B0F0E6",
+    "brightWhite": "#FFFFFF"
   }
 ]

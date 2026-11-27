@@ -1,5 +1,7 @@
 # ==============================================================================
 # ~/.zshrc example for Nave Terminal v4 (100% Standalone — Zero Oh My Zsh)
+# Tip (Ubuntu / WSL2): add `skip_global_compinit=1` to ~/.zshenv to skip
+# /etc/zsh/zshrc's redundant compinit/compaudit (~150ms faster shell startup!).
 # ==============================================================================
 
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"

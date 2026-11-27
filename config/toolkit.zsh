@@ -20,10 +20,12 @@ if command -v fzf >/dev/null 2>&1; then
   export FZF_CTRL_R_OPTS="--preview 'echo {}' --preview-window=down:3:wrap"
 
   local fzf_cache="${NAVE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/nave}/fzf-init.zsh"
-  local fzf_bin="${commands[fzf]:-$(command -v fzf)}"
+  # Avoid `${commands[fzf]}` here: indexing $commands forces Zsh to scan /mnt/c NTFS dirs (~140ms on WSL2!)
+  local fzf_bin="$(command -v fzf)"
   if [[ ! -r "$fzf_cache" || "$fzf_bin" -nt "$fzf_cache" ]]; then
     mkdir -p "${fzf_cache:h}"
     fzf --zsh >| "$fzf_cache" 2>/dev/null
+    { zcompile "$fzf_cache" 2>/dev/null } &!
   fi
   [[ -r "$fzf_cache" ]] && source "$fzf_cache"
 fi
@@ -247,11 +249,28 @@ function ports {
 }
 
 function killport {
-  if [[ -z "$1" ]]; then
-    echo "Uso: killport <porta>"
-    return 1
-  fi
   local port="$1"
+  if [[ -z "$port" ]]; then
+    if command -v fzf >/dev/null 2>&1; then
+      local picked
+      picked=$(ss -tulpnH 2>/dev/null | awk '
+        /pid=/ {
+          proto=$1; addr=$5; proc=$7
+          pid="-"; name="-"
+          if (match(proc, /"([^"]+)"/, m)) name=m[1]
+          if (match(proc, /pid=([0-9]+)/, p)) pid=p[1]
+          split(addr, a, ":")
+          pt=a[length(a)]
+          printf "%-6s %-6s %-22s %-8s %s\n", proto, pt, addr, pid, name
+        }
+      ' | sort -k2,2n -k4,4 -u | fzf --header="killport — Selecione a porta para finalizar (Enter)" --prompt="porta ❯ ")
+      [[ -z "$picked" ]] && return 0
+      port=$(awk '{print $2}' <<< "$picked")
+    else
+      echo "Uso: killport <porta>"
+      return 1
+    fi
+  fi
   local pids
   pids=$(lsof -ti :"$port" 2>/dev/null)
   if [[ -z "$pids" ]]; then
@@ -273,8 +292,38 @@ function killport {
 }
 
 # ------------------------------------------------------------------------------
-# Project Hub: p [projeto]
+# Project Hub: p [projeto] (multi-level project discovery up to depth 3)
 # ------------------------------------------------------------------------------
+function _nave_list_projects {
+  local base="$1"
+  [[ -d "$base" ]] || return 1
+  local -a found=()
+  local -A seen=()
+  local d rel
+
+  # 1. Top-level directories directly inside $NAVE_PROJECTS_DIR
+  for d in "$base"/*(N/); do
+    rel="${d#$base/}"
+    seen[$rel]=1
+    found+=("$rel")
+  done
+
+  # 2. Nested project roots (depth 2..3) identified by git/build markers
+  local marker
+  for marker in "$base"/*/*/{.git,Cargo.toml,package.json,pyproject.toml,CMakeLists.txt,Makefile}(N) \
+                "$base"/*/*/*/{.git,Cargo.toml,package.json,pyproject.toml,CMakeLists.txt,Makefile}(N); do
+    d="${marker:h}"
+    rel="${d#$base/}"
+    [[ "$rel" == *(node_modules|target|.venv|venv|dist|build)* ]] && continue
+    if (( ! ${+seen[$rel]} )); then
+      seen[$rel]=1
+      found+=("$rel")
+    fi
+  done
+
+  (( ${#found} )) && print -rl -- "${(@o)found}"
+}
+
 function p {
   local base="$NAVE_PROJECTS_DIR"
   if [[ ! -d "$base" ]]; then
@@ -282,17 +331,34 @@ function p {
     return 1
   fi
 
+  local -a projects=("${(@f)$(_nave_list_projects "$base")}")
   local target="$1"
   if [[ -z "$target" ]]; then
     if command -v fzf >/dev/null 2>&1; then
-      target=$(find "$base" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | \
-        fzf --header="Projetos em ${base}" \
+      target=$(print -rl -- "${projects[@]}" | \
+        fzf --header="Projetos em ${base} (ate nivel 3)" \
             --preview "dir='$base/{}'; echo '=== ' {} ' ==='; git -C \"\$dir\" status -sb 2>/dev/null; echo; git -C \"\$dir\" log --oneline -n 6 2>/dev/null; echo; eza --color=always --group-directories-first \"\$dir\" 2>/dev/null || ls -la \"\$dir\"")
       [[ -z "$target" ]] && return 0
     else
-      ls "$base"
+      print -rl -- "${projects[@]}"
       return 0
     fi
+  elif [[ ! -d "$base/$target" ]]; then
+    # Smart fuzzy lookup: exact basename -> prefix basename -> substring path (case-insensitive)
+    local q="${target:l}" cand lbase lpath
+    local m_exact="" m_pref="" m_sub=""
+    for cand in "${projects[@]}"; do
+      lpath="${cand:l}"
+      lbase="${cand:t:l}"
+      if [[ "$lbase" == "$q" ]]; then
+        m_exact="$cand"; break
+      elif [[ -z "$m_pref" && "$lbase" == ${q}* ]]; then
+        m_pref="$cand"
+      elif [[ -z "$m_sub" && "$lpath" == *${q}* ]]; then
+        m_sub="$cand"
+      fi
+    done
+    target="${m_exact:-${m_pref:-${m_sub:-$target}}}"
   fi
 
   if [[ -d "$base/$target" ]]; then
@@ -310,9 +376,265 @@ function p {
 }
 
 function _nave_comp_p {
-  [[ -d "$NAVE_PROJECTS_DIR" ]] && _files -W "$NAVE_PROJECTS_DIR" -/
+  [[ -d "$NAVE_PROJECTS_DIR" ]] || return
+  local -a projs=("${(@f)$(_nave_list_projects "$NAVE_PROJECTS_DIR")}")
+  compadd -Q -a projs
 }
 compdef _nave_comp_p p 2>/dev/null
+
+# ------------------------------------------------------------------------------
+# Fuzzy File & Grep Jumpers integrated with nave-edit (ff / fg)
+# ------------------------------------------------------------------------------
+function ff {
+  command -v fzf >/dev/null 2>&1 || { echo "ff requer fzf."; return 1; }
+  local root="${1:-.}"
+  local picked
+  if command -v fd >/dev/null 2>&1; then
+    picked=$(fd --type f --hidden --follow --exclude .git --exclude node_modules --exclude target . "$root" | \
+      fzf --header="ff — Abrir arquivo no ne (Enter)" \
+          --preview 'bat --color=always --style=numbers --line-range=:200 {} 2>/dev/null || head -n 200 {}')
+  else
+    picked=$(find "$root" -type f -not -path '*/.git/*' -not -path '*/node_modules/*' -not -path '*/target/*' | \
+      fzf --header="ff — Abrir arquivo no ne (Enter)" \
+          --preview 'bat --color=always --style=numbers --line-range=:200 {} 2>/dev/null || head -n 200 {}')
+  fi
+  [[ -n "$picked" ]] && "${EDITOR:-nave-edit}" "$picked"
+}
+
+function fg {
+  if [[ "$1" == %* ]]; then
+    builtin fg "$@"
+    return
+  fi
+  command -v fzf >/dev/null 2>&1 && command -v rg >/dev/null 2>&1 || { echo "fg requer rg e fzf."; return 1; }
+  local query="$*"
+  local picked
+  picked=$(rg --line-number --no-heading --color=always --smart-case --hidden \
+    --glob '!.git/*' --glob '!node_modules/*' --glob '!target/*' "${query:-.}" 2>/dev/null | \
+    fzf --ansi --delimiter : --query="$query" \
+        --header="fg — Buscar conteudo e abrir na linha exata no ne (Enter)" \
+        --preview 'bat --color=always --style=numbers --highlight-line {2} --line-range $(( {2} > 10 ? {2} - 10 : 1 )):$(( {2} + 40 )) {1} 2>/dev/null || sed -n "$(( {2} > 5 ? {2} - 5 : 1 )),$(( {2} + 20 ))p" {1}')
+  [[ -n "$picked" ]] || return 0
+  local file line
+  file="${picked%%:*}"
+  local rest="${picked#*:}"
+  line="${rest%%:*}"
+  "${EDITOR:-nave-edit}" "${file}:${line}"
+}
+
+# ------------------------------------------------------------------------------
+# Smart Runner & Watcher: run [-d|--debug] [arquivo] [args...] / watchrun
+# Auto-detects C++/C/Python/Rust/Node, injects in.txt, checks expected.txt, times in ms!
+# ------------------------------------------------------------------------------
+function _nave_run_detect_target {
+  local cand
+  for cand in sol.cpp main.cpp a.cpp main.py sol.py main.c main.rs; do
+    [[ -f "$cand" ]] && { print -r -- "$cand"; return 0; }
+  done
+  [[ -f "Cargo.toml" ]] && { print -r -- "Cargo.toml"; return 0; }
+  [[ -f "package.json" ]] && { print -r -- "package.json"; return 0; }
+  [[ -f "Makefile" ]] && { print -r -- "Makefile"; return 0; }
+  local -a srcs=(*.cpp(N) *.py(N) *.c(N) *.rs(N))
+  if (( ${#srcs} == 1 )); then
+    print -r -- "${srcs[1]}"
+    return 0
+  fi
+  return 1
+}
+
+function _nave_run_exec_timed {
+  local -a cmd=("$@")
+  local in_file="" exp_file=""
+  [[ -t 0 && -f "in.txt" ]] && in_file="in.txt"
+  if [[ -f "expected.txt" ]]; then exp_file="expected.txt"
+  elif [[ -f "ans.txt" ]]; then exp_file="ans.txt"
+  fi
+
+  local c_mut="${_NAVE_C[muted]:-244}" c_ok="${_NAVE_C[ok]:-48}" c_err="${_NAVE_C[err]:-197}" c_info="${_NAVE_C[info]:-51}"
+  [[ -n "$in_file" ]] && print -P "%F{${c_mut}}  ↳ entrada automatica: ${in_file}%f"
+
+  local t0=$EPOCHREALTIME rc=0 out_tmp=""
+  if [[ -n "$exp_file" ]]; then
+    out_tmp="/tmp/nave_run_out_$$.txt"
+    if [[ -n "$in_file" ]]; then
+      "${cmd[@]}" < "$in_file" | tee "$out_tmp"
+      rc=${pipestatus[1]}
+    else
+      "${cmd[@]}" | tee "$out_tmp"
+      rc=${pipestatus[1]}
+    fi
+  else
+    if [[ -n "$in_file" ]]; then
+      "${cmd[@]}" < "$in_file"
+      rc=$?
+    else
+      "${cmd[@]}"
+      rc=$?
+    fi
+  fi
+  local t1=$EPOCHREALTIME
+  local ms=$(( (t1 - t0) * 1000.0 ))
+
+  if (( rc == 0 )); then
+    printf "\e[38;5;%sm✓ exit 0\e[0m  \e[38;5;%sm%.1f ms\e[0m\n" "$c_ok" "$c_info" "$ms"
+  else
+    printf "\e[38;5;%sm× exit %d\e[0m  \e[38;5;%sm%.1f ms\e[0m\n" "$c_err" "$rc" "$c_info" "$ms"
+  fi
+
+  if [[ -n "$exp_file" && -f "$out_tmp" ]]; then
+    if diff -q -Z "$out_tmp" "$exp_file" >/dev/null 2>&1; then
+      print -P "%F{${c_ok}}%B✓ AC%b (match exato com ${exp_file})%f"
+    else
+      print -P "%F{${c_err}}%B× WA%b (diferenca em relacao a ${exp_file}):%f"
+      if command -v delta >/dev/null 2>&1; then
+        diff -u -Z "$exp_file" "$out_tmp" | delta --paging=never 2>/dev/null || diff -u --color=always -Z "$exp_file" "$out_tmp"
+      else
+        diff -u --color=always -Z "$exp_file" "$out_tmp"
+      fi
+    fi
+    rm -f "$out_tmp"
+  fi
+  return $rc
+}
+
+function run {
+  local debug_mode=0
+  if [[ "$1" == "-d" || "$1" == "--debug" ]]; then
+    debug_mode=1
+    shift
+  fi
+
+  local target="$1"
+  if [[ -z "$target" ]]; then
+    target=$(_nave_run_detect_target) || {
+      print -P "%F{${_NAVE_C[warn]:-214}}Uso: run [-d|--debug] <arquivo.cpp|.c|.py|.rs|.js|.sh> [args...]%f"
+      return 1
+    }
+  else
+    shift
+  fi
+
+  local c_dir="${_NAVE_C[dir]:-45}" c_warn="${_NAVE_C[warn]:-214}" c_err="${_NAVE_C[err]:-197}"
+  local bin="/tmp/nave_run_$$"
+
+  case "$target" in
+    *.cpp|*.cc|*.cxx)
+      local -a flags=(-O2 -std=c++20 -Wall -Wextra -DLOCAL)
+      local tag="O2 · C++20 · -DLOCAL"
+      if (( debug_mode )); then
+        flags=(-O1 -g -std=c++20 -Wall -Wextra -DLOCAL -D_GLIBCXX_DEBUG -fsanitize=address,undefined)
+        tag="DEBUG · ASan+UBSan"
+      fi
+      print -P "%F{${c_dir}}▸ g++ [${tag}] %B${target}%b%f"
+      if g++ "${flags[@]}" "$target" -o "$bin"; then
+        _nave_run_exec_timed "$bin" "$@"
+        local rc=$?
+        rm -f "$bin"
+        return $rc
+      else
+        rm -f "$bin"
+        print -P "%F{${c_err}}× Erro de compilacao em ${target}%f"
+        return 1
+      fi
+      ;;
+    *.c)
+      local -a flags=(-O2 -std=c17 -Wall -Wextra -DLOCAL)
+      (( debug_mode )) && flags=(-O1 -g -std=c17 -Wall -Wextra -DLOCAL -fsanitize=address,undefined)
+      print -P "%F{${c_dir}}▸ gcc %B${target}%b%f"
+      if gcc "${flags[@]}" "$target" -o "$bin"; then
+        _nave_run_exec_timed "$bin" "$@"
+        local rc=$?
+        rm -f "$bin"
+        return $rc
+      else
+        rm -f "$bin"
+        return 1
+      fi
+      ;;
+    *.py)
+      print -P "%F{${c_dir}}▸ python3 %B${target}%b%f"
+      _nave_run_exec_timed python3 "$target" "$@"
+      ;;
+    *.rs)
+      print -P "%F{${c_dir}}▸ rustc %B${target}%b%f"
+      if rustc -O "$target" -o "$bin"; then
+        _nave_run_exec_timed "$bin" "$@"
+        local rc=$?
+        rm -f "$bin"
+        return $rc
+      else
+        rm -f "$bin"
+        return 1
+      fi
+      ;;
+    Cargo.toml)
+      print -P "%F{${c_dir}}▸ cargo run%f"
+      cargo run "$@"
+      ;;
+    package.json)
+      local pm="npm"
+      [[ -f "pnpm-lock.yaml" ]] && command -v pnpm >/dev/null 2>&1 && pm="pnpm"
+      local script="dev"
+      grep -q '"dev"' package.json 2>/dev/null || script="start"
+      print -P "%F{${c_dir}}▸ ${pm} run ${script}%f"
+      "$pm" run "$script" "$@"
+      ;;
+    Makefile)
+      print -P "%F{${c_dir}}▸ make%f"
+      make "$@"
+      ;;
+    *.js|*.mjs)
+      print -P "%F{${c_dir}}▸ node %B${target}%b%f"
+      _nave_run_exec_timed node "$target" "$@"
+      ;;
+    *.sh|*.zsh)
+      print -P "%F{${c_dir}}▸ ${target:e} %B${target}%b%f"
+      _nave_run_exec_timed "${target:e}" "$target" "$@"
+      ;;
+    *)
+      if [[ -x "$target" ]]; then
+        _nave_run_exec_timed "./$target" "$@"
+      else
+        print -P "%F{${c_warn}}Formato nao reconhecido para run: ${target}%f"
+        return 1
+      fi
+      ;;
+  esac
+}
+
+function watchrun {
+  local debug_flag=""
+  if [[ "$1" == "-d" || "$1" == "--debug" ]]; then
+    debug_flag="$1"
+    shift
+  fi
+  local target="$1"
+  [[ -n "$target" ]] || target=$(_nave_run_detect_target) || {
+    echo "Uso: watchrun [-d|--debug] <arquivo> [args...]"
+    return 1
+  }
+  [[ "$1" == "$target" ]] && shift
+  [[ -e "$target" ]] || { echo "Arquivo nao encontrado: $target"; return 1; }
+
+  local last_mt="" cur_mt=""
+  trap 'return 0' INT
+  while true; do
+    cur_mt=$(stat -c %Y "$target" 2>/dev/null)
+    [[ -f "in.txt" ]] && cur_mt+=":$(stat -c %Y in.txt 2>/dev/null)"
+    if [[ "$cur_mt" != "$last_mt" ]]; then
+      last_mt="$cur_mt"
+      clear
+      hr "watchrun: ${target}"
+      if [[ -n "$debug_flag" ]]; then
+        run "$debug_flag" "$target" "$@"
+      else
+        run "$target" "$@"
+      fi
+      print -P "%F{${_NAVE_C[muted]:-244}}  [observando ${target} · salve para re-executar · Ctrl+C sair]%f"
+    fi
+    sleep 0.35
+  done
+}
 
 # ------------------------------------------------------------------------------
 # Git Turbo (ginfo, gbf, gwip, gunwip, gbclean)
@@ -380,6 +702,44 @@ function gbclean {
   fi
   print -P "%F{${_NAVE_C[warn]:-215}}Removendo branches ja mergeadas em ${main_br}:%f"
   echo "$merged" | xargs -r git branch -d
+}
+
+function glogf {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "Nao e um repositorio Git."; return 1; }
+  command -v fzf >/dev/null 2>&1 || { git log --oneline --graph -n 25; return 0; }
+  local prev_cmd='sha=$(echo {} | grep -oE "[a-f0-9]{7,}" | head -n1); [ -n "$sha" ] && git show --color=always "$sha" | (delta --paging=never 2>/dev/null || cat)'
+  local picked
+  picked=$(git log --graph --color=always --format="%C(yellow)%h%C(reset) %s %C(dim)(%cr · %an)%C(reset)%C(auto)%d%C(reset)" -n 200 | \
+    fzf --ansi --no-sort --reverse \
+        --header="glogf — Enter abre commit · Ctrl+Y copia SHA" \
+        --preview "$prev_cmd" --preview-window="right:60%" \
+        --expect="ctrl-y")
+  [[ -n "$picked" ]] || return 0
+  local key="${picked%%$'\n'*}"
+  local line="${picked#*$'\n'}"
+  local sha
+  sha=$(grep -oE '[a-f0-9]{7,}' <<< "$line" | head -n 1)
+  [[ -n "$sha" ]] || return 0
+  if [[ "$key" == "ctrl-y" ]]; then
+    if command -v clip.exe >/dev/null 2>&1; then printf '%s' "$sha" | clip.exe; fi
+    print -P "%F{${_NAVE_C[ok]:-48}}✓ SHA copiado:%f %B${sha}%b"
+  else
+    git show "$sha"
+  fi
+}
+
+function gdiff {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "Nao e um repositorio Git."; return 1; }
+  command -v fzf >/dev/null 2>&1 || { git diff; return 0; }
+  local picked
+  picked=$(git status --short | \
+    fzf --header="gdiff — Selecione arquivo modificado (Enter abre no ne)" \
+        --preview 'f=$(echo {} | awk "{print \$NF}"); git diff --color=always -- "$f" | (delta --paging=never 2>/dev/null || cat)' \
+        --preview-window="right:65%")
+  [[ -n "$picked" ]] || return 0
+  local file
+  file=$(awk '{print $NF}' <<< "$picked")
+  [[ -n "$file" ]] && "${EDITOR:-nave-edit}" "$file"
 }
 
 # ------------------------------------------------------------------------------
@@ -522,8 +882,8 @@ function nave-welcome {
 function _nave_show_welcome {
   local enabled="0"
   [[ -r "$NAVE_CONFIG_DIR/welcome" ]] && enabled="$(<"$NAVE_CONFIG_DIR/welcome")"
-  [[ "$enabled" == "1" ]] || return
-  [[ -o interactive && -t 1 ]] || return
+  [[ "$enabled" == "1" ]] || return 0
+  [[ -o interactive && -t 1 ]] || return 0
 
   local mem_pct disk_pct_f disk_pct_i mem_bar disk_bar disk_target="/" win_mem _u _t
   [[ -d /mnt/c ]] && df -k /mnt/c >/dev/null 2>&1 && disk_target="/mnt/c"
@@ -540,28 +900,110 @@ function _nave_show_welcome {
   print -P "%F{${_NAVE_C[frame]:-240}}╭─%f %F{${_NAVE_C[dir]:-39}}%Bnave%b%f  RAM ${mem_bar} ${mem_pct}%%  ·  SSD ${disk_bar} ${disk_pct_f}%%  ·  %F{${_NAVE_C[muted]:-242}}digite 'nave-help' para atalhos%f"
 }
 
+function nave-doctor {
+  local c_dir="${_NAVE_C[dir]:-45}" c_frm="${_NAVE_C[frame]:-240}" c_ok="${_NAVE_C[ok]:-48}" c_warn="${_NAVE_C[warn]:-214}" c_err="${_NAVE_C[err]:-197}" c_mut="${_NAVE_C[muted]:-244}"
+
+  print -P "%F{${c_dir}}╭─ Nave Terminal v4 — Diagnostico (nave-doctor) ──────────────%f"
+
+  # 1. Startup speed
+  local t0=$EPOCHREALTIME
+  zsh -i -c 'exit 0' >/dev/null 2>&1
+  local t1=$EPOCHREALTIME
+  local start_ms=$(( (t1 - t0) * 1000.0 ))
+  local st_col="$c_ok"
+  (( start_ms > 120 )) && st_col="$c_warn"
+  (( start_ms > 250 )) && st_col="$c_err"
+  printf "\e[38;5;%sm│\e[0m  Startup Zsh:   \e[38;5;%sm%.1f ms\e[0m  (skip_global_compinit=%s)\n" \
+    "$c_frm" "$st_col" "$start_ms" "${skip_global_compinit:-off}"
+
+  # 2. History health
+  local h_col="$c_ok"
+  (( HISTSIZE < 10000 || SAVEHIST < 10000 )) && h_col="$c_err"
+  print -P "%F{${c_frm}}│%f  Historico:     %F{${h_col}}HISTSIZE=${HISTSIZE} · SAVEHIST=${SAVEHIST} · ${#history} carregados%f"
+
+  # 3. Bytecode cache (.zwc)
+  local zwc_cnt=0
+  local -a zwcs=("${NAVE_CONFIG_DIR:-$HOME/.config/nave}"/*.zwc(N))
+  zwc_cnt=${#zwcs}
+  print -P "%F{${c_frm}}│%f  Modulos .zwc:  %F{${c_ok}}${zwc_cnt} compilados%f  ·  Paleta: %B${NAVE_PALETTE}%b · Layout: %B${NAVE_LAYOUT}%b"
+
+  # 4. Core binaries & Win32 helpers
+  local ne_st="%F{${c_err}}ausente%f"
+  command -v nave-edit >/dev/null 2>&1 && ne_st="%F{${c_ok}}ok ($(nave-edit --version 2>/dev/null | awk '{print $2}'))%f"
+  local wm_st="%F{${c_warn}}ausente%f" hm_st="%F{${c_warn}}ausente%f"
+  local -a wmh=(/mnt/c/Users/*/.config/nave/nave-winmem.exe(N[1]))
+  local -a hmh=(/mnt/c/Users/*/.config/nave/nave-hidemouse.exe(N[1]))
+  [[ -n "${wmh[1]}" ]] && wm_st="%F{${c_ok}}ok%f"
+  [[ -n "${hmh[1]}" ]] && hm_st="%F{${c_ok}}ok%f"
+  print -P "%F{${c_frm}}│%f  Binarios:      ne=${ne_st}  ·  winmem=${wm_st}  ·  hidemouse=${hm_st}"
+
+  # 5. CLI enhancers
+  local cli_line="" tool
+  for tool in fzf fd rg bat eza delta lazygit btop; do
+    if command -v "$tool" >/dev/null 2>&1; then
+      cli_line+="%F{${c_ok}}✓${tool}%f "
+    else
+      cli_line+="%F{${c_mut}}·${tool}%f "
+    fi
+  done
+  print -P "%F{${c_frm}}│%f  CLI Extras:    ${cli_line}"
+
+  # 6. Windows Terminal settings.json validation
+  local -a wt_arr=(/mnt/c/Users/*/AppData/Local/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json(N[1]))
+  if [[ -n "${wt_arr[1]}" && -f "${wt_arr[1]}" ]]; then
+    local wt_res
+    wt_res=$(python3 - "${wt_arr[1]}" <<'PY' 2>&1
+import json, sys
+try:
+    txt = open(sys.argv[1], encoding="utf-8").read()
+    data = json.loads(txt)
+    keys = {kb.get("keys","") for kb in data.get("keybindings", [])}
+    want = ["ctrl+sc(41)", "ctrl+sc(86)", "ctrl+sc(115)"]
+    missing = [w for w in want if w not in keys]
+    if missing:
+        print("WARN:" + ",".join(missing))
+    else:
+        print("OK")
+except Exception as e:
+    print("ERR:" + str(e))
+PY
+)
+    if [[ "$wt_res" == "OK" ]]; then
+      print -rP "%F{${c_frm}}│%f  Win Terminal:  %F{${c_ok}}JSON valido · atalhos ABNT2 (Ctrl+' / \\ / /) ativos%f"
+    elif [[ "$wt_res" == WARN:* ]]; then
+      print -P "%F{${c_frm}}│%f  Win Terminal:  %F{${c_warn}}JSON valido · faltam bindings: ${wt_res#WARN:}%f"
+    else
+      print -P "%F{${c_frm}}│%f  Win Terminal:  %F{${c_err}}${wt_res}%f"
+    fi
+  fi
+
+  print -P "%F{${c_dir}}╰─────────────────────────────────────────────────────────────%f"
+}
+
 function nave-help {
   local c_dir="${_NAVE_C[dir]:-39}"
   local c_frm="${_NAVE_C[frame]:-240}"
   local c_ok="${_NAVE_C[ok]:-78}"
   local c_lbl="${_NAVE_C[git]:-141}"
 
-  print -P "%F{${c_dir}}╭─ Nave Terminal — Guia Rapido ─────────────────────────────%f"
+  print -P "%F{${c_dir}}╭─ Nave Terminal v4 — Guia Rapido ──────────────────────────%f"
   print -P "%F{${c_frm}}│%f %F{${c_lbl}}%BEstilo, Arte & Cockpit%b%f"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-theme <nome>%f      Paleta + fundo ao vivo (cyber|emerald|sunset|nord|stealth)"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-theme <nome>%f      Paleta + ne sync (cyber|emerald|sunset|nord|stealth|dracula)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-layout <modo>%f     Layout do prompt (framed|rail|hud|compact)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-shader <modo>%f     Shader GPU Windows Terminal (glow|crt|off)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-bg / transient%f    Liga/desliga fundo OSC 11 ou transient prompt"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}sysinfo / hr [titulo]%f  Arte + barras de sistema / regua divisoria"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-hud / nave-warp%f   Cockpit em tempo real / starfield 3D"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}ne <arquivo> (nave-edit)%f Editor nativo Rust estilo VS Code (multi-cursor, Git)"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-hud / nave-warp%f   Cockpit tempo real ([1-6],[p]) / starfield 3D"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}ne <arquivo> (Ctrl+')%f  Editor nativo Rust (multi-painel + terminal integrado)"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-doctor%f            Diagnostico completo (startup, historico, helpers, WT)"
   print -P "%F{${c_frm}}│%f"
-  print -P "%F{${c_frm}}│%f %F{${c_lbl}}%BNavegacao & Busca%b%f"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}p [projeto]%f            Pula para \$NAVE_PROJECTS_DIR (fzf + preview)"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}z <termo> / zi / z -l%f  Salto inteligente nativo (nave-z frecency)"
+  print -P "%F{${c_frm}}│%f %F{${c_lbl}}%BNavegacao, Busca & Execucao%b%f"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}p [projeto]%f            Pula p/ projetos ate nivel 3 em \$NAVE_PROJECTS_DIR"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}ff / fg [termo]%f        Busca fuzzy de arquivos/conteudo abrindo direto no ne"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}run [-d] / watchrun%f    Compila/roda (C++/Py/Rust/Node, in.txt, expected.txt)"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}z <termo> / zi / z<Tab>%f Salto inteligente nativo (nave-z frecency)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}Ctrl+R / Ctrl+T / Alt+C%f Busca fuzzy no historico / arquivos / pastas"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}Esc Esc / ll / lt / b%f  Toggle sudo / eza Git / arvore / bat viewer"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-suggest / highlight%f Liga/desliga sugestoes e cores nativas do Nave"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-suggest / highlight%f Sugestoes v2 (Alt+↓/↑ alterna) e cores v2 nativas"
   print -P "%F{${c_frm}}│%f"
   print -P "%F{${c_frm}}│%f %F{${c_lbl}}%BEdicao Estilo VS Code%b%f"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}Shift+Setas / Ctrl+A/L%f Seleciona texto/linha (digitar/colar substitui)"
@@ -574,9 +1016,10 @@ function nave-help {
   print -P "%F{${c_frm}}│%f"
   print -P "%F{${c_frm}}│%f %F{${c_lbl}}%BGit, Docker, Portas & WSL%b%f"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}lg / ginfo / gbf%f       Lazygit, painel do repo, trocar branch fuzzy"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}glogf / gdiff%f          Explorer interativo de commits e diff (delta -> ne)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}gwip / gunwip / gbclean%f Commit WIP rapido e limpeza de branches"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}dks / dkl / dksh%f       Containers, logs fuzzy e shell fuzzy"
-  print -P "%F{${c_frm}}│%f   %F{${c_ok}}ports / killport <p>%f   Lista portas abertas e mata processo na porta"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}ports / killport [p]%f   Lista portas abertas e mata porta (interativo c/ fzf)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}clip / paste / winopen%f Clipboard Windows e abrir no Explorer"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}notify <cmd> / mon%f     Toast ao terminar comando / monitor btop"
   print -P "%F{${c_dir}}╰───────────────────────────────────────────────────────────%f"

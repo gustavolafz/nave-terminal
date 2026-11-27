@@ -76,26 +76,56 @@ zstyle ':completion:*' special-dirs true
 zstyle ':completion:*' group-name ''
 zstyle ':completion:*:descriptions' format '%F{244}── %d ──%f'
 
-# Clean LS_COLORS (fixes unreadable bright-green blocks on 0777 WSL folders)
-if command -v dircolors >/dev/null 2>&1; then
-  eval "$(dircolors -b)"
-fi
-LS_COLORS="${LS_COLORS:+$(printf '%s' "$LS_COLORS" | sed -E 's/(^|:)(ow|tw|st)=[^:]*//g; s/^://'):}ow=01;34:tw=01;34:st=01;36"
-export LS_COLORS
+# Clean LS_COLORS (cached in ~/.cache/nave/ls_colors.zsh to avoid dircolors+sed forks per tab)
+() {
+  local lsc="${NAVE_CACHE_DIR}/ls_colors.zsh"
+  if [[ ! -r "$lsc" || "$lsc"(#qN.md+7) ]]; then
+    local raw=""
+    if command -v dircolors >/dev/null 2>&1; then
+      eval "$(dircolors -b)"
+      raw="$LS_COLORS"
+    fi
+    raw="${raw:+$(printf '%s' "$raw" | sed -E 's/(^|:)(ow|tw|st)=[^:]*//g; s/^://'):}ow=01;34:tw=01;34:st=01;36"
+    print -r -- "export LS_COLORS=${(qq)raw}" >| "$lsc" 2>/dev/null
+    { zcompile "$lsc" 2>/dev/null } &!
+  fi
+  [[ -r "$lsc" ]] && source "$lsc"
+}
 zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}" 'ma=48;5;238;38;5;81;1'
 
 # Shift+Tab moves backwards inside menu completion
 bindkey -M menuselect "^[[Z" reverse-menu-complete 2>/dev/null
 
 # ------------------------------------------------------------------------------
-# Load Native Nave Modules (in exact dependency order)
+# Load Native Nave Modules (in exact dependency order, auto-compiled to .zwc)
 # ------------------------------------------------------------------------------
 typeset -g _NAVE_INIT_ACTIVE=1
 
 for _nave_mod in theme.zsh z.zsh toolkit.zsh suggest.zsh keybindings.zsh highlight.zsh; do
-  [[ -r "${NAVE_CONFIG_DIR}/${_nave_mod}" ]] && source "${NAVE_CONFIG_DIR}/${_nave_mod}"
+  if [[ -r "${NAVE_CONFIG_DIR}/${_nave_mod}" ]]; then
+    source "${NAVE_CONFIG_DIR}/${_nave_mod}"
+  fi
 done
 unset _nave_mod _NAVE_INIT_ACTIVE
 
-# Welcome status bar
+# Precompile updated Nave modules into Zsh .zwc bytecode asynchronously (0ms cost)
+() {
+  local f need=0
+  for f in "${NAVE_CONFIG_DIR}"/{init,theme,z,toolkit,suggest,keybindings,highlight}.zsh; do
+    if [[ -r "$f" && ( ! -r "${f}.zwc" || "$f" -nt "${f}.zwc" ) ]]; then
+      need=1
+      break
+    fi
+  done
+  if (( need )); then
+    {
+      for f in "${NAVE_CONFIG_DIR}"/{init,theme,z,toolkit,suggest,keybindings,highlight}.zsh; do
+        [[ -r "$f" && ( ! -r "${f}.zwc" || "$f" -nt "${f}.zwc" ) ]] && zcompile "$f" 2>/dev/null
+      done
+    } &!
+  fi
+}
+
+# Welcome status bar (always return 0 so first subshell exit status is clean)
 (( ${+functions[_nave_show_welcome]} )) && _nave_show_welcome
+:

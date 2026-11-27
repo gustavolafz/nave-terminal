@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
-nave-hud — Zero-flicker real-time full-screen terminal cockpit for Nave Terminal.
-Shows live CPU + sparkline, real Windows host RAM (PC), WSL VM RAM, and decimal SSD C:.
+nave-hud v2 — Zero-flicker real-time full-screen terminal cockpit for Nave Terminal.
+Shows live CPU + sparkline, real Windows host RAM (PC), WSL VM RAM, decimal SSD C:,
+live network RX/TX speed + sparkline (/proc/net/dev, 0 subprocesses), and expandable
+[p] live Top Processes + Listening TCP Ports panel.
 Uses DEC 2026 Synchronized Output, in-place line redraw, and background telemetry polling.
-Controls: [1-5] switch palette live, [q/Esc] quit cleanly.
-Supports --once for a single static frame render.
+Controls: [1-6] switch palette live, [p] toggle processes/ports, [q/Esc] quit cleanly.
+Supports --once and --full for static frame renders.
 """
 import datetime
 import glob
 import os
 import pathlib
+import re
 import select
 import shutil
 import socket
@@ -26,8 +29,9 @@ PALETTES = {
     "sunset":  {"grad": [(255, 214, 0),   (255, 94, 58),   (255, 30, 142)], "ok": (0, 255, 136),   "warn": (255, 214, 0),   "err": (255, 23, 68),   "dim": (132, 76, 104),  "fg": (255, 241, 242)},
     "nord":    {"grad": [(56, 232, 255),  (108, 140, 255), (192, 132, 252)],"ok": (52, 255, 180),  "warn": (255, 215, 95),  "err": (255, 95, 115),  "dim": (84, 102, 138),  "fg": (241, 245, 249)},
     "stealth": {"grad": [(248, 250, 252), (168, 85, 247),  (236, 72, 153)], "ok": (248, 250, 252), "warn": (255, 214, 0),   "err": (255, 30, 102),  "dim": (106, 90, 130),  "fg": (244, 244, 248)},
+    "dracula": {"grad": [(255, 115, 198), (184, 130, 255), (107, 227, 245)],"ok": (92, 242, 152),  "warn": (242, 229, 143), "err": (255, 97, 125),  "dim": (121, 129, 161), "fg": (235, 238, 247)},
 }
-PAL_ORDER = ["cyber", "emerald", "sunset", "nord", "stealth"]
+PAL_ORDER = ["cyber", "emerald", "sunset", "nord", "stealth", "dracula"]
 
 DIGITS = {
     "0": ["█████", "█   █", "█   █", "█   █", "█████"],
@@ -72,6 +76,13 @@ def grad_line(text, stops, bold=False):
             out.append(rgb(lerp_grad(stops, i / n), bold) + ch)
     return "".join(out) + RST
 
+def fmt_rate(bps):
+    if bps >= 1048576:
+        return f"{bps / 1048576.0:5.1f} MB/s"
+    if bps >= 1024:
+        return f"{bps / 1024.0:5.1f} KB/s"
+    return f"{int(bps):5d}  B/s"
+
 def read_palette():
     p = pathlib.Path(os.path.expanduser("~/.config/nave/palette"))
     if p.exists():
@@ -86,6 +97,26 @@ def read_cpu_times():
     idle = parts[3] + parts[4]
     total = sum(parts)
     return idle, total
+
+def read_net_bytes():
+    """Reads total non-loopback RX/TX bytes directly from /proc/net/dev (0 subprocesses)."""
+    rx_tot = tx_tot = 0
+    try:
+        with open("/proc/net/dev") as f:
+            for line in f.readlines()[2:]:
+                if ":" not in line:
+                    continue
+                iface, rest = line.split(":", 1)
+                iface = iface.strip()
+                if iface == "lo":
+                    continue
+                cols = rest.split()
+                if len(cols) >= 9:
+                    rx_tot += int(cols[0])
+                    tx_tot += int(cols[8])
+    except Exception:
+        pass
+    return rx_tot, tx_tot
 
 def read_wsl_mem():
     info = {}
@@ -165,9 +196,22 @@ def read_net_docker():
     except Exception:
         pass
     ports = 0
+    port_tags = []
     try:
-        out = subprocess.check_output(["ss", "-tlnH"], stdin=subprocess.DEVNULL, text=True, stderr=subprocess.DEVNULL)
-        ports = len([l for l in out.splitlines() if l.strip()])
+        out = subprocess.check_output(["ss", "-tlnpH"], stdin=subprocess.DEVNULL, text=True, stderr=subprocess.DEVNULL)
+        seen_p = set()
+        for line in out.splitlines():
+            if not line.strip():
+                continue
+            ports += 1
+            parts = line.split()
+            if len(parts) >= 4:
+                pt = parts[3].rsplit(":", 1)[-1]
+                m = re.search(r'"([^"]+)"', line)
+                pname = m.group(1)[:12] if m else ""
+                if pt.isdigit() and pt not in seen_p and pname:
+                    seen_p.add(pt)
+                    port_tags.append(f":{pt} {pname}")
     except Exception:
         pass
     dk = 0
@@ -176,7 +220,28 @@ def read_net_docker():
         dk = len([l for l in out.splitlines() if l.strip()])
     except Exception:
         pass
-    return ip, ports, dk
+    return ip, ports, dk, port_tags[:5]
+
+def read_top_procs(limit=4):
+    """Returns list of (pid, cpu_str, mem_str, comm) for top WSL processes."""
+    procs = []
+    try:
+        out = subprocess.check_output(
+            ["ps", "-eo", "pid=,pcpu=,pmem=,comm=", "--sort=-pcpu"],
+            stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True, timeout=1.0
+        )
+        for line in out.splitlines():
+            parts = line.split(None, 3)
+            if len(parts) == 4:
+                pid, cpu, mem, comm = parts
+                if comm in ("ps", "nave-hud"):
+                    continue
+                procs.append((pid, cpu, mem, comm[:18]))
+                if len(procs) >= limit:
+                    break
+    except Exception:
+        pass
+    return procs
 
 def bar(pct, width, pal):
     pct = max(0.0, min(100.0, float(pct)))
@@ -184,7 +249,7 @@ def bar(pct, width, pal):
     col = pal["ok"] if pct < 70 else (pal["warn"] if pct < 88 else pal["err"])
     return rgb(col) + ("█" * filled) + rgb(pal["dim"]) + ("░" * (width - filled)) + RST
 
-def render_frame(pal_name, cpu_pct, cpu_hist, net_info, win_mem, once=False):
+def render_frame(pal_name, cpu_pct, cpu_hist, net_rates, net_hist, net_info, win_mem, top_procs, show_procs=False, once=False):
     pal = PALETTES[pal_name]
     cols, rows = shutil.get_terminal_size((96, 28))
     box_w = min(max(cols - 4, 66), 84)
@@ -198,7 +263,8 @@ def render_frame(pal_name, cpu_pct, cpu_hist, net_info, win_mem, once=False):
     wsl_u, wsl_t, wsl_p = read_wsl_mem()
     dsk_lbl, dsk_u, dsk_t, dsk_p = read_disk()
     up = read_uptime()
-    ip, ports, dk = net_info
+    ip, ports, dk, port_tags = net_info
+    rx_bps, tx_bps = net_rates
 
     lines = []
     # Top header
@@ -249,10 +315,56 @@ def render_frame(pal_name, cpu_pct, cpu_hist, net_info, win_mem, once=False):
         wsl_txt = f"{rgb(pal['grad'][1], True)}RAM     {RST}{bar(wsl_p, bw, pal)} {rgb(pal['fg'])}{wsl_stat}{RST}"
         lines.append(row(wsl_txt, 8 + bw + 1 + len(wsl_stat)))
 
-    # Disk (1 decimal precision so ~1GB changes show immediately)
+    # Disk
     dsk_stat = f"{dsk_u:5.1f}G  / {dsk_t:5.1f}G  ({dsk_p:4.1f}%)"
     dsk_txt = f"{rgb(pal['grad'][2], True)}{dsk_lbl} {RST}{bar(dsk_p, bw, pal)} {rgb(pal['fg'])}{dsk_stat}{RST}"
     lines.append(row(dsk_txt, 8 + bw + 1 + len(dsk_stat)))
+
+    # Network RX/TX live speed + sparkline
+    max_n = max([10240.0] + net_hist[-24:])
+    nspark = "".join(SPARK[min(7, max(0, int((v / max_n) * 7)))] for v in net_hist[-24:])
+    nspark = nspark.rjust(24, "▁")
+    rx_s = fmt_rate(rx_bps)
+    tx_s = fmt_rate(tx_bps)
+    net_plain_left = f"NET     ↓ {rx_s}  ↑ {tx_s}   "
+    net_col_left = (
+        f"{rgb(pal['ok'], True)}NET     {RST}"
+        f"{rgb(pal['grad'][0])}↓{RST} {rgb(pal['fg'])}{rx_s}{RST}  "
+        f"{rgb(pal['grad'][2])}↑{RST} {rgb(pal['fg'])}{tx_s}{RST}   "
+    )
+    if len(net_plain_left) + 24 <= inner:
+        lines.append(row(net_col_left + grad_line(nspark, pal["grad"]), len(net_plain_left) + 24))
+    else:
+        lines.append(row(net_col_left.rstrip(), len(net_plain_left.rstrip())))
+
+    # Expandable Top Processes & Listening Ports Panel (`[p]` or `--full`)
+    if show_procs and (once or rows >= 26):
+        lines.append(row("", 0))
+        lines.append(rgb(pal["dim"]) + "├" + ("─" * (box_w - 2)) + "┤" + RST)
+        hdr_p = "TOP PROCESSOS (CPU / MEM)"
+        lines.append(row(rgb(pal["grad"][0], True) + hdr_p + RST, len(hdr_p)))
+        if top_procs:
+            for pid, pcpu, pmem, comm in top_procs[:4]:
+                pl = f"  {pid:>7s}  {comm:<18s}  CPU {pcpu:>5s}%   MEM {pmem:>5s}%"
+                pc = (
+                    f"  {rgb(pal['dim'])}{pid:>7s}{RST}  "
+                    f"{rgb(pal['fg'])}{comm:<18s}{RST}  "
+                    f"{rgb(pal['grad'][0])}CPU{RST} {rgb(pal['fg'])}{pcpu:>5s}%{RST}   "
+                    f"{rgb(pal['grad'][1])}MEM{RST} {rgb(pal['fg'])}{pmem:>5s}%{RST}"
+                )
+                lines.append(row(pc, len(pl)))
+        else:
+            empty_p = "  (coletando processos...)"
+            lines.append(row(rgb(pal["dim"]) + empty_p + RST, len(empty_p)))
+
+        if port_tags:
+            pt_str = "  ".join(port_tags)
+            max_pt = max(10, inner - 8)
+            if len(pt_str) > max_pt:
+                pt_str = pt_str[: max_pt - 1] + "…"
+            pt_plain = f"PORTAS  {pt_str}"
+            pt_col = f"{rgb(pal['ok'], True)}PORTAS  {RST}{rgb(pal['fg'])}{pt_str}{RST}"
+            lines.append(row(pt_col, len(pt_plain)))
 
     lines.append(row("", 0))
     lines.append(rgb(pal["dim"]) + "├" + ("─" * (box_w - 2)) + "┤" + RST)
@@ -268,7 +380,8 @@ def render_frame(pal_name, cpu_pct, cpu_hist, net_info, win_mem, once=False):
     t_pad = max(0, (inner - len(tele_plain)) // 2)
     lines.append(row((" " * t_pad) + tele_col, t_pad + len(tele_plain)))
 
-    hint = " [1-5] paleta  ·  [q] sair "
+    p_lbl = "ocultar procs" if show_procs else "processos"
+    hint = f" [1-6] paleta  ·  [p] {p_lbl}  ·  [q] sair "
     b_fill = max(1, box_w - len(hint) - 2)
     bot = "╰" + ("─" * (b_fill // 2)) + hint + ("─" * (b_fill - b_fill // 2)) + "╯"
     lines.append(grad_line(bot, pal["grad"]))
@@ -295,22 +408,29 @@ def render_frame(pal_name, cpu_pct, cpu_hist, net_info, win_mem, once=False):
 def main():
     pal_name = read_palette()
     once = "--once" in sys.argv
+    show_procs = "--full" in sys.argv or "-p" in sys.argv
     for arg in sys.argv[1:]:
         if arg in PALETTES:
             pal_name = arg
 
     if once:
         i1, t1 = read_cpu_times()
+        r1, tx1 = read_net_bytes()
         time.sleep(0.12)
         i2, t2 = read_cpu_times()
+        r2, tx2 = read_net_bytes()
         dt = max(1, t2 - t1)
         cpu = int(round((1.0 - (i2 - i1) / dt) * 100))
+        rx_bps = max(0.0, (r2 - r1) / 0.12)
+        tx_bps = max(0.0, (tx2 - tx1) / 0.12)
         hist = [max(2, min(95, cpu + d)) for d in (-4, -2, 3, 6, 2, -1, 4, 8, 5, 1, -2, 3, 7, 4, 2, 0, -1, 3, 5, 2, 1, 0, -1, 0)]
-        print(render_frame(pal_name, cpu, hist, read_net_docker(), read_win_mem(), once=True))
+        nhist = [0.0] * 23 + [rx_bps + tx_bps]
+        procs = read_top_procs(4) if show_procs else []
+        print(render_frame(pal_name, cpu, hist, (rx_bps, tx_bps), nhist, read_net_docker(), read_win_mem(), procs, show_procs=show_procs, once=True))
         return
 
-    # Background daemon thread refreshes Windows host RAM (~40ms) + net/docker every 2s without blocking UI
-    bg_state = {"net": ("...", 0, 0), "win_mem": read_win_mem(), "ver": 0}
+    # Background daemon thread refreshes Windows host RAM (~40ms) + net/docker + top procs without blocking UI
+    bg_state = {"net": ("...", 0, 0, []), "win_mem": read_win_mem(), "procs": read_top_procs(4), "ver": 0}
     stop_evt = threading.Event()
     def _poll_bg():
         tick = 0
@@ -318,6 +438,7 @@ def main():
             wm = read_win_mem()
             if wm is not None:
                 bg_state["win_mem"] = wm
+            bg_state["procs"] = read_top_procs(4)
             if tick % 2 == 0:
                 bg_state["net"] = read_net_docker()
             bg_state["ver"] += 1
@@ -328,7 +449,11 @@ def main():
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
     cpu_hist = []
+    net_hist = []
     prev_idle, prev_total = read_cpu_times()
+    prev_rx, prev_tx = read_net_bytes()
+    prev_net_t = time.monotonic()
+    cur_rates = (0.0, 0.0)
     last_sec = -1
     last_ver = -1
     last_size = (0, 0)
@@ -350,13 +475,28 @@ def main():
                     cpu_hist.append(cpu)
                     if len(cpu_hist) > 40:
                         cpu_hist = cpu_hist[-40:]
+
+                    now_m = time.monotonic()
+                    ndt = max(0.2, now_m - prev_net_t)
+                    cur_rx, cur_tx = read_net_bytes()
+                    rx_bps = max(0.0, (cur_rx - prev_rx) / ndt)
+                    tx_bps = max(0.0, (cur_tx - prev_tx) / ndt)
+                    prev_rx, prev_tx, prev_net_t = cur_rx, cur_tx, now_m
+                    cur_rates = (rx_bps, tx_bps)
+                    net_hist.append(rx_bps + tx_bps)
+                    if len(net_hist) > 40:
+                        net_hist = net_hist[-40:]
                     last_sec = now_sec
                 else:
                     cpu = cpu_hist[-1]
                 last_ver = cur_ver
                 last_size = cur_size
                 force_redraw = False
-                sys.stdout.write(render_frame(pal_name, cpu, cpu_hist, bg_state["net"], bg_state["win_mem"], once=False))
+                sys.stdout.write(render_frame(
+                    pal_name, cpu, cpu_hist, cur_rates, net_hist,
+                    bg_state["net"], bg_state["win_mem"], bg_state["procs"],
+                    show_procs=show_procs, once=False
+                ))
                 sys.stdout.flush()
 
             wait = max(0.05, min(0.25, 1.0 - (time.time() % 1.0) + 0.01))
@@ -365,8 +505,11 @@ def main():
                 ch = sys.stdin.read(1)
                 if ch in ("q", "Q", "\x1b", "\x03"):
                     break
-                if ch in "12345":
+                if ch in "123456":
                     pal_name = PAL_ORDER[int(ch) - 1]
+                    force_redraw = True
+                elif ch in ("p", "P"):
+                    show_procs = not show_procs
                     force_redraw = True
     except KeyboardInterrupt:
         pass

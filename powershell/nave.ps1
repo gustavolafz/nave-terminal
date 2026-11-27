@@ -96,6 +96,14 @@ $script:NavePalettes = @{
         g1=@(248,250,252); g2=@(168,85,247); g3=@(236,72,153)
         ps_cmd="#F8FAFC"; ps_param="#C084FC"; ps_str="#EC4899"; ps_var="#A855F7"; ps_err="#FF2E63"
     }
+    dracula = @{
+        frame="239"; user="212"; host="183"; dir="117"; git="183"
+        warn="228"; info="117"; ok="84"; err="210"; dur="228"
+        muted="103"; node="84"; docker="117"
+        bg="#10111A"; cursor="#FF73C6"
+        g1=@(255,115,198); g2=@(184,130,255); g3=@(107,227,245)
+        ps_cmd="#5CF298"; ps_param="#6BE3F5"; ps_str="#F2E58F"; ps_var="#C79EFF"; ps_err="#FF617D"
+    }
 }
 
 $script:NaveC = $script:NavePalettes["cyber"]
@@ -135,7 +143,7 @@ function _Nave-GradLine([string]$text, [switch]$Bold) {
 
 function _Nave-ApplyPalette([string]$pal) {
     if (-not $script:NavePalettes.ContainsKey($pal)) {
-        Write-Host (_Nave-Fg "203" "Paleta desconhecida: $pal (opcoes: cyber, emerald, sunset, nord, stealth)")
+        Write-Host (_Nave-Fg "203" "Paleta desconhecida: $pal (opcoes: cyber, emerald, sunset, nord, stealth, dracula)")
         return $false
     }
     $script:NavePalette = $pal
@@ -182,7 +190,7 @@ function nave-theme {
     if ([string]::IsNullOrWhiteSpace($Name) -or $Name -eq "list") {
         $c = $script:NaveC
         Write-Host (_Nave-Fg $c.dir "$($script:CH_TL)$($script:CH_H) Paletas disponiveis (atual: $($script:NavePalette))")
-        foreach ($p in @("cyber", "emerald", "sunset", "nord", "stealth")) {
+        foreach ($p in @("cyber", "emerald", "sunset", "nord", "stealth", "dracula")) {
             $mark = if ($p -eq $script:NavePalette) { "$($script:CH_ARR) " } else { "  " }
             Write-Host ((_Nave-Fg $c.frame "$($script:CH_V) ") + $mark + (_Nave-Fg $c.ok $p -Bold))
         }
@@ -571,7 +579,7 @@ function nave-help {
     $c = $script:NaveC
     $frm = _Nave-Fg $c.frame $script:CH_V
     Write-Host (_Nave-Fg $c.dir ("$($script:CH_TL)$($script:CH_H) Nave Terminal (PowerShell) — Guia Rapido " + ([string]$script:CH_H * 14)))
-    Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-theme <nome>    ") + "Paleta + fundo ao vivo (cyber|emerald|sunset|nord|stealth)")
+    Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-theme <nome>    ") + "Paleta + fundo ao vivo (cyber|emerald|sunset|nord|stealth|dracula)")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-layout <modo>   ") + "Layout do prompt (framed|rail|hud|compact)")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-shader <modo>   ") + "Shader GPU Windows Terminal (glow|crt|off)")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-bg / welcome    ") + "Liga/desliga fundo OSC 11 ou welcome bar")

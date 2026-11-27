@@ -2,11 +2,11 @@
 # ~/.config/nave/theme.zsh
 # Nave Zsh Theme v4 — Standalone, palette-driven, 100% universal (zero Nerd Fonts)
 # Features:
-#   - 5 Obsidian Vibrant palettes + live terminal background/cursor sync (OSC 11 / 12)
+#   - 6 Obsidian Vibrant + Dracula palettes + live OSC 11/12 & nave-edit sync
 #   - 4 prompt layouts: framed | rail | hud | compact (nave-layout <mode>)
-#   - Transient prompt (collapses old prompts to 1 compact line after Enter)
+#   - Transient prompt (collapses old prompts to 1 compact status-aware line)
 #   - Windows native toast notifications for long commands (>= 15s by default)
-#   - Smart directory truncation, rich Git status, venv/node/docker context
+#   - Smart directory truncation, rich Git status, 0ms dev context (venv/node/rust/go/py/c++/docker)
 # ==============================================================================
 
 autoload -Uz add-zsh-hook add-zle-hook-widget
@@ -19,6 +19,9 @@ typeset -g _NAVE_CMD_START=0
 typeset -g _NAVE_CMD_STR=""
 typeset -g _NAVE_CMD_DURATION=""
 typeset -g _NAVE_FIRST_PROMPT=1
+typeset -gi _NAVE_LAST_EXIT=0
+typeset -g _NAVE_CACHE_NODE_PATH=""
+typeset -g _NAVE_CACHE_NODE_VER=""
 typeset -gA _NAVE_C
 
 # Load persisted settings
@@ -93,8 +96,18 @@ function _nave_apply_palette() {
         fzf_hl "#c084fc" fzf_bg "#15121f" fzf_ptr "#a855f7" fzf_info "#ec4899" fzf_border "#4c2875"
       )
       ;;
+    dracula)
+      _NAVE_C=(
+        frame 239  user 212  host 183  dir 117   git 183
+        warn 228   info 117  ok 84     err 210   dur 228
+        muted 103  node 84   docker 117 path 159 str 228
+        bg "#10111A" cursor "#FF73C6"
+        grad1 "255;115;198" grad2 "184;130;255" grad3 "107;227;245"
+        fzf_hl "#ff73c6" fzf_bg "#1c1f2e" fzf_ptr "#b882ff" fzf_info "#6be3f5" fzf_border "#3b2a5e"
+      )
+      ;;
     *)
-      print -P "%F{203}Paleta desconhecida: ${pal}%f (opcoes: cyber, emerald, sunset, nord, stealth)"
+      print -P "%F{203}Paleta desconhecida: ${pal}%f (opcoes: cyber, emerald, sunset, nord, stealth, dracula)"
       return 1
       ;;
   esac
@@ -111,10 +124,22 @@ function _nave_apply_palette() {
   export FZF_DEFAULT_OPTS="--height=60% --layout=reverse --border=rounded --margin=0,1 --info=inline-right --prompt='❯ ' --pointer='›' --marker='*' --color=hl:${_NAVE_C[fzf_hl]},hl+:${_NAVE_C[fzf_hl]},bg+:${_NAVE_C[fzf_bg]},pointer:${_NAVE_C[fzf_ptr]},prompt:${_NAVE_C[fzf_ptr]},info:${_NAVE_C[fzf_info]},border:${_NAVE_C[fzf_border]}"
 }
 
+function _nave_sync_edit_palette() {
+  local pal="$1"
+  local conf="$NAVE_CONFIG_DIR/edit.conf"
+  [[ -f "$conf" ]] || return 0
+  local tmp="${conf}.tmp.$$"
+  if grep -q '^palette=' "$conf" 2>/dev/null; then
+    sed "s/^palette=.*/palette=${pal}/" "$conf" >| "$tmp" && command mv -f "$tmp" "$conf"
+  else
+    { cat "$conf"; print -r -- "palette=${pal}"; } >| "$tmp" && command mv -f "$tmp" "$conf"
+  fi
+}
+
 function nave-theme() {
   if [[ -z "$1" || "$1" == "list" ]]; then
     print -P "%F{${_NAVE_C[dir]}}╭─ Paletas disponiveis (atual: %B${NAVE_PALETTE}%b)%f"
-    for p in cyber emerald sunset nord stealth; do
+    for p in cyber emerald sunset nord stealth dracula; do
       local mark="  "
       [[ "$p" == "$NAVE_PALETTE" ]] && mark="❯ "
       print -P "%F{${_NAVE_C[frame]}}│%f ${mark}%B${p}%b"
@@ -123,8 +148,9 @@ function nave-theme() {
     return 0
   fi
   if _nave_apply_palette "$1"; then
-    print -r -- "$1" > "$NAVE_CONFIG_DIR/palette"
-    print -P "%F{${_NAVE_C[ok]}}✓ Paleta alterada para %B${1}%b%f %F{${_NAVE_C[muted]}}(bg ${_NAVE_C[bg]})%f"
+    print -r -- "$1" >| "$NAVE_CONFIG_DIR/palette"
+    _nave_sync_edit_palette "$1"
+    print -P "%F{${_NAVE_C[ok]}}✓ Paleta alterada para %B${1}%b%f %F{${_NAVE_C[muted]}}(bg ${_NAVE_C[bg]} · ne sincronizado)%f"
   fi
 }
 
@@ -309,16 +335,48 @@ function _nave_git_info() {
 
 function _nave_context_info() {
   local ctx=""
-  if [[ -n "$VIRTUAL_ENV" ]]; then
-    ctx+=" %F{${_NAVE_C[ok]}}venv:${VIRTUAL_ENV:t}%f"
-  elif [[ -n "$CONDA_DEFAULT_ENV" ]]; then
-    ctx+=" %F{${_NAVE_C[ok]}}conda:${CONDA_DEFAULT_ENV}%f"
+  local has_lang=0
+
+  if [[ -n "$NAVE_INTEGRATED" ]]; then
+    ctx+=" %F{${_NAVE_C[info]}}[ne]%f"
   fi
 
-  if [[ -f "package.json" ]] && command -v node >/dev/null 2>&1; then
-    local nver
-    nver=$(node -v 2>/dev/null)
-    [[ -n "$nver" ]] && ctx+=" %F{${_NAVE_C[node]}}node:${nver}%f"
+  if [[ -n "$VIRTUAL_ENV" ]]; then
+    ctx+=" %F{${_NAVE_C[ok]}}venv:${VIRTUAL_ENV:t}%f"
+    has_lang=1
+  elif [[ -n "$CONDA_DEFAULT_ENV" ]]; then
+    ctx+=" %F{${_NAVE_C[ok]}}conda:${CONDA_DEFAULT_ENV}%f"
+    has_lang=1
+  elif [[ -f "pyproject.toml" || -f "requirements.txt" ]]; then
+    ctx+=" %F{${_NAVE_C[ok]}}py%f"
+    has_lang=1
+  fi
+
+  if [[ -f "Cargo.toml" ]]; then
+    ctx+=" %F{${_NAVE_C[warn]}}rust%f"
+    has_lang=1
+  fi
+
+  if [[ -f "go.mod" ]]; then
+    ctx+=" %F{${_NAVE_C[info]}}go%f"
+    has_lang=1
+  fi
+
+  if [[ -f "package.json" ]]; then
+    if [[ "$_NAVE_CACHE_NODE_PATH" != "$PATH" ]]; then
+      _NAVE_CACHE_NODE_PATH="$PATH"
+      if command -v node >/dev/null 2>&1; then
+        _NAVE_CACHE_NODE_VER="$(node -v 2>/dev/null)"
+      else
+        _NAVE_CACHE_NODE_VER=""
+      fi
+    fi
+    [[ -n "$_NAVE_CACHE_NODE_VER" ]] && ctx+=" %F{${_NAVE_C[node]}}node:${_NAVE_CACHE_NODE_VER}%f"
+    has_lang=1
+  fi
+
+  if (( ! has_lang )) && [[ -f "CMakeLists.txt" || -f "Makefile" ]]; then
+    ctx+=" %F{${_NAVE_C[path]}}c/c++%f"
   fi
 
   if [[ -f "Dockerfile" || -f "docker-compose.yml" || -f "docker-compose.yaml" || -f "compose.yaml" ]]; then
@@ -338,6 +396,7 @@ function _nave_visible_len() {
 
 function _nave_precmd() {
   local last_exit=$?
+  _NAVE_LAST_EXIT=$last_exit
 
   if (( _NAVE_FIRST_PROMPT )); then
     _NAVE_FIRST_PROMPT=0
@@ -352,7 +411,7 @@ function _nave_precmd() {
     local cmd_first="${_NAVE_CMD_STR%% *}"
     if (( NAVE_NOTIFY_THRESHOLD > 0 && elapsed >= NAVE_NOTIFY_THRESHOLD )); then
       case "$cmd_first" in
-        vim|nvim|nano|less|man|top|htop|btop|lazygit|lg|ssh|tmux|python|python3|node|ipython|claude|codex|gemini|grok|nave-hud|nave-warp) ;;
+        vim|nvim|nano|ne|nave-edit|less|man|top|htop|btop|lazygit|lg|ssh|tmux|python|python3|node|ipython|claude|codex|gemini|grok|nave-hud|nave-warp|watchrun) ;;
         *)
           local status_lbl="Concluido (${_NAVE_CMD_DURATION})"
           (( last_exit != 0 )) && status_lbl="Falhou [exit ${last_exit}] (${_NAVE_CMD_DURATION})"
@@ -439,7 +498,9 @@ function _nave_precmd() {
 
 function _nave_transient_prompt() {
   (( _NAVE_TRANSIENT )) || return
-  PROMPT="%F{${_NAVE_C[muted]}}%D{%H:%M}%f %F{${_NAVE_C[ok]}}❯%f "
+  local arr_c="${_NAVE_C[ok]}"
+  (( _NAVE_LAST_EXIT != 0 )) && arr_c="${_NAVE_C[err]}"
+  PROMPT="%F{${_NAVE_C[muted]}}%D{%H:%M}%f %F{${arr_c}}❯%f "
   RPROMPT=""
   zle .reset-prompt
 }

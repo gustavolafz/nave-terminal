@@ -64,18 +64,30 @@ else
   echo "│ [info] Rust/cargo nao encontrado — pulei nave-edit (instale via https://rustup.rs)"
 fi
 
-# 1c. On WSL, compile tiny native Windows host RAM helper (~4.5 KB, ~40ms) via built-in .NET csc.exe
-CSC_EXE="/mnt/c/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe"
-if [[ -x "$CSC_EXE" && -f "$REPO_DIR/windows-terminal/nave-winmem.cs" ]]; then
-  WIN_PROFILE="$(cmd.exe /C 'echo %USERPROFILE%' </dev/null 2>/dev/null | tr -d '\r\n' || true)"
+# 1c. On WSL, compile native Windows helpers (nave-winmem.exe + nave-hidemouse.exe) via PowerShell + .NET csc.exe
+PS_EXE="/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+CSC_WIN='C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+if [[ -x "$PS_EXE" && -f "/mnt/c/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe" ]]; then
+  WIN_PROFILE="$("$PS_EXE" -NoProfile -NonInteractive -Command '$env:USERPROFILE' </dev/null 2>/dev/null | tr -d '\r\n' || true)"
   if [[ -n "$WIN_PROFILE" ]]; then
     WIN_NAVE_WSL="$(wslpath -u "$WIN_PROFILE" 2>/dev/null)/.config/nave"
-    mkdir -p "$WIN_NAVE_WSL"
-    cp "$REPO_DIR/windows-terminal/nave-winmem.cs" "$WIN_NAVE_WSL/nave-winmem.cs"
-    if "$CSC_EXE" /nologo /optimize+ \
-      "/out:${WIN_PROFILE}\\.config\\nave\\nave-winmem.exe" \
-      "${WIN_PROFILE}\\.config\\nave\\nave-winmem.cs" </dev/null >/dev/null 2>&1; then
-      echo "│ [ok] Helper nativo Windows RAM compilado em ${WIN_PROFILE}\\.config\\nave\\nave-winmem.exe"
+    mkdir -p "$WIN_NAVE_WSL" "$WIN_NAVE_WSL/shaders"
+
+    for helper in nave-winmem nave-hidemouse; do
+      src="$REPO_DIR/windows-terminal/${helper}.cs"
+      [[ -f "$src" ]] || continue
+      cp "$src" "$WIN_NAVE_WSL/${helper}.cs"
+      if "$PS_EXE" -NoProfile -NonInteractive -Command \
+        "& '$CSC_WIN' /nologo /optimize+ '/out:${WIN_PROFILE}\\.config\\nave\\${helper}.tmp.exe' '${WIN_PROFILE}\\.config\\nave\\${helper}.cs'" \
+        </dev/null >/dev/null 2>&1; then
+        mv -f "$WIN_NAVE_WSL/${helper}.tmp.exe" "$WIN_NAVE_WSL/${helper}.exe"
+        echo "│ [ok] Helper nativo Windows compilado: ${WIN_PROFILE}\\.config\\nave\\${helper}.exe"
+      fi
+    done
+
+    if [[ -d "$REPO_DIR/windows-terminal/shaders" ]]; then
+      cp "$REPO_DIR/windows-terminal/shaders/"*.hlsl "$WIN_NAVE_WSL/shaders/" 2>/dev/null || true
+      echo "│ [ok] Shaders HLSL instalados em ${WIN_PROFILE}\\.config\\nave\\shaders"
     fi
   fi
 fi
@@ -141,5 +153,8 @@ echo "│   export EDITOR=\"nave-edit\""
 echo "│   export NAVE_PROJECTS_DIR=\"\$HOME/projects\""
 echo "│   [[ -r \"\$HOME/.config/nave/init.zsh\" ]] && source \"\$HOME/.config/nave/init.zsh\""
 echo "│"
-echo "│ Depois rode: source ~/.zshrc && nave-help"
+echo "│ Dica Ubuntu/WSL2 (startup ~150ms mais rapido): adicione em ~/.zshenv:"
+echo "│   skip_global_compinit=1"
+echo "│"
+echo "│ Depois rode: source ~/.zshrc && nave-doctor && nave-help"
 echo "╰─────────────────────────────────────────────────────────"
