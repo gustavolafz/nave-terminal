@@ -4107,7 +4107,7 @@ fn main() {
         if app.poll_judge_updates(cols, rows) {
             needs_redraw = true;
         }
-        if !app.cursor_trails.is_empty() && last_trail_frame.elapsed() >= Duration::from_millis(12) {
+        if !app.cursor_trails.is_empty() && last_trail_frame.elapsed() >= Duration::from_millis(8) {
             needs_redraw = true;
             last_trail_frame = Instant::now();
         }
@@ -4161,7 +4161,7 @@ fn main() {
         }
 
         let poll_ms = if !app.cursor_trails.is_empty() {
-            12
+            8
         } else if decoder.has_pending_esc() {
             15
         } else {
