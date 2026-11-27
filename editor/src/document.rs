@@ -987,9 +987,22 @@ impl Document {
                 let mut new_cursors = doc.cursors.clone();
                 for i in (0..doc.cursors.len()).rev() {
                     let s = doc.cursors[i].head;
-                    doc.rope.insert(s, &spaces);
-                    shift_tail(&mut new_cursors[(i + 1)..], spaces.len() as isize);
-                    new_cursors[i] = Selection::caret(s + spaces.len());
+                    let (row, col) = doc.rope.byte_to_line_col(s);
+                    let line_txt = doc.rope.line(row);
+                    let ins = if line_txt.trim().is_empty() {
+                        let cur_vis = visual_width_prefix(&line_txt, col, w);
+                        let target = smart_blank_line_indent(&doc.rope, row, w);
+                        if target > cur_vis {
+                            " ".repeat(target - cur_vis)
+                        } else {
+                            spaces.clone()
+                        }
+                    } else {
+                        spaces.clone()
+                    };
+                    doc.rope.insert(s, &ins);
+                    shift_tail(&mut new_cursors[(i + 1)..], ins.len() as isize);
+                    new_cursors[i] = Selection::caret(s + ins.len());
                 }
                 doc.cursors = new_cursors;
             });
@@ -1513,6 +1526,58 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+fn visual_width_prefix(line: &str, max_chars: usize, tab_w: usize) -> usize {
+    let mut v = 0usize;
+    for ch in line.chars().take(max_chars) {
+        if ch == '\t' {
+            v += tab_w - (v % tab_w);
+        } else {
+            v += 1;
+        }
+    }
+    v
+}
+
+fn leading_ws_width(line: &str, tab_w: usize) -> usize {
+    let mut v = 0usize;
+    for ch in line.chars() {
+        if ch == ' ' {
+            v += 1;
+        } else if ch == '\t' {
+            v += tab_w - (v % tab_w);
+        } else {
+            break;
+        }
+    }
+    v
+}
+
+/// Computes the expected block indentation for a blank line so pressing `Tab` jumps
+/// straight to the enclosing scope's indentation (e.g. 0 -> 12 spaces inside a nested `while`).
+fn smart_blank_line_indent(rope: &Rope, row: usize, tab_w: usize) -> usize {
+    for r in (row.saturating_sub(64)..row).rev() {
+        let t = rope.line(r);
+        let tr = t.trim();
+        if tr.is_empty() {
+            continue;
+        }
+        let w = leading_ws_width(&t, tab_w);
+        let code = tr.split("//").next().unwrap_or(tr).trim_end();
+        let opens = matches!(code.as_bytes().last(), Some(b'{' | b'(' | b'[' | b':'));
+        return if opens { w + tab_w } else { w };
+    }
+    // Fallback if blank line is at the very top of file: look at first non-empty line below
+    let total = rope.line_count();
+    for r in (row + 1)..(row + 65).min(total) {
+        let t = rope.line(r);
+        let tr = t.trim();
+        if !tr.is_empty() {
+            return leading_ws_width(&t, tab_w);
+        }
+    }
+    0
+}
+
 fn matching_close(open: char) -> Option<char> {
     match open {
         '(' => Some(')'),
@@ -1749,5 +1814,34 @@ mod tests {
         doc.goto_line(1);
         assert_eq!(doc.jump_bookmark(true), Some((2, 2, 3)));
         assert_eq!(doc.jump_bookmark(true), Some((1, 2, 1)));
+    }
+
+    #[test]
+    fn smart_tab_on_blank_line_jumps_to_enclosing_block_indent() {
+        let mut doc = Document::new_empty();
+        doc.tab_width = 4;
+        // Exact user scenario: blank line at col 0 inside a 12-space while body
+        doc.rope = Rope::from_str(
+            "int main() {\n    if (ok) {\n        while (n--) {\n            int a;\n            cin >> a;\n\n        }\n    }\n}\n",
+        );
+        doc.goto_line(6); // empty line inside while
+        assert_eq!(doc.rope.line(5), "");
+
+        // 1st Tab jumps directly 0 -> 12 spaces!
+        doc.indent(false);
+        assert_eq!(doc.rope.line(5), "            ");
+        assert_eq!(doc.primary_line_col(), (5, 12));
+
+        // 2nd Tab (already at 12) advances normally +4 -> 16 spaces
+        doc.indent(false);
+        assert_eq!(doc.rope.line(5), "                ");
+        assert_eq!(doc.primary_line_col(), (5, 16));
+
+        // Also works inside an empty block right after `{`
+        doc.rope = Rope::from_str("        while (n--) {\n\n        }\n");
+        doc.goto_line(2);
+        doc.indent(false);
+        assert_eq!(doc.rope.line(1), "            ");
+        assert_eq!(doc.primary_line_col(), (1, 12));
     }
 }
