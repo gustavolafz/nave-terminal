@@ -27,12 +27,13 @@ zle -N up-line-or-beginning-search
 zle -N down-line-or-beginning-search
 
 # ------------------------------------------------------------------------------
-# Clipboard helper (WSL clip.exe -> wl-copy -> xclip -> pbcopy)
-# ------------------------------------------------------------------------------
+# Clipboard helper (WSL UTF-8 chcp 65001 + clip.exe -> wl-copy -> xclip -> pbcopy)
 function _nave_copy_text {
   local text="$1"
   [[ -z "$text" ]] && return
-  if command -v clip.exe >/dev/null 2>&1; then
+  if command -v cmd.exe >/dev/null 2>&1 && [[ -d /mnt/c ]]; then
+    (cd /mnt/c && printf '%s' "$text" | cmd.exe /d /c "chcp 65001 >nul && clip.exe" >/dev/null 2>&1)
+  elif command -v clip.exe >/dev/null 2>&1; then
     printf '%s' "$text" | clip.exe
   elif command -v wl-copy >/dev/null 2>&1; then
     printf '%s' "$text" | wl-copy

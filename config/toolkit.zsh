@@ -346,15 +346,40 @@ PY
 # WSL <-> Windows Bridge
 # ------------------------------------------------------------------------------
 function clip {
-  if [[ -n "$1" && -f "$1" ]]; then
-    clip.exe < "$1"
-  else
-    clip.exe
+  if command -v cmd.exe >/dev/null 2>&1 && [[ -d /mnt/c ]]; then
+    if [[ -n "$1" && -f "$1" ]]; then
+      local _abs="${1:A}"
+      (cd /mnt/c && cmd.exe /d /c "chcp 65001 >nul && clip.exe" < "$_abs" >/dev/null 2>&1)
+    else
+      (cd /mnt/c && cmd.exe /d /c "chcp 65001 >nul && clip.exe" >/dev/null 2>&1)
+    fi
+  elif command -v clip.exe >/dev/null 2>&1; then
+    if [[ -n "$1" && -f "$1" ]]; then
+      clip.exe < "$1"
+    else
+      clip.exe
+    fi
+  elif command -v wl-copy >/dev/null 2>&1; then
+    if [[ -n "$1" && -f "$1" ]]; then wl-copy < "$1"; else wl-copy; fi
+  elif command -v xclip >/dev/null 2>&1; then
+    if [[ -n "$1" && -f "$1" ]]; then xclip -selection clipboard < "$1"; else xclip -selection clipboard; fi
+  elif command -v pbcopy >/dev/null 2>&1; then
+    if [[ -n "$1" && -f "$1" ]]; then pbcopy < "$1"; else pbcopy; fi
   fi
 }
 
 function paste {
-  powershell.exe -NoProfile -Command "Get-Clipboard" 2>/dev/null | tr -d '\r'
+  if command -v powershell.exe >/dev/null 2>&1 && [[ -d /mnt/c ]]; then
+    (cd /mnt/c && powershell.exe -NoProfile -NonInteractive -Command '[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $t=Get-Clipboard -Raw; if($null -ne $t){[Console]::Write($t)}' 2>/dev/null) | tr -d '\r'
+  elif command -v powershell.exe >/dev/null 2>&1; then
+    powershell.exe -NoProfile -Command "Get-Clipboard" 2>/dev/null | tr -d '\r'
+  elif command -v wl-paste >/dev/null 2>&1; then
+    wl-paste -n
+  elif command -v xclip >/dev/null 2>&1; then
+    xclip -o -selection clipboard
+  elif command -v pbpaste >/dev/null 2>&1; then
+    pbpaste
+  fi
 }
 
 function winopen {
@@ -890,7 +915,7 @@ function glogf {
   sha=$(grep -oE '[a-f0-9]{7,}' <<< "$line" | head -n 1)
   [[ -n "$sha" ]] || return 0
   if [[ "$key" == "ctrl-y" ]]; then
-    if command -v clip.exe >/dev/null 2>&1; then printf '%s' "$sha" | clip.exe; fi
+    printf '%s' "$sha" | clip
     print -P "%F{${_NAVE_C[ok]:-48}}✓ SHA copiado:%f %B${sha}%b"
   else
     git show "$sha"

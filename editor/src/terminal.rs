@@ -153,6 +153,29 @@ pub fn copy_to_system_clipboard(text: &str) {
     if text.is_empty() {
         return;
     }
+    // On WSL2 + Windows, piping UTF-8 bytes directly into `clip.exe` decodes them
+    // with the Windows OEM console codepage (e.g. CP850 in PT-BR -> `ÔòÉ`, `┬À`, `ÔÇÿ`).
+    // Running `cmd.exe /d /c "chcp 65001 >nul && clip.exe"` from `/mnt/c` forces UTF-8
+    // stdin with zero UNC warnings, zero BOM, and ~55ms latency.
+    if std::path::Path::new("/mnt/c").is_dir() {
+        if let Ok(mut child) = Command::new("cmd.exe")
+            .args(["/d", "/c", "chcp 65001 >nul && clip.exe"])
+            .current_dir("/mnt/c")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            if let Ok(status) = child.wait() {
+                if status.success() {
+                    return;
+                }
+            }
+        }
+    }
     let candidates: [(&str, &[&str]); 4] = [
         ("clip.exe", &[]),
         ("wl-copy", &[]),
@@ -177,8 +200,28 @@ pub fn copy_to_system_clipboard(text: &str) {
 }
 
 pub fn paste_from_system_clipboard() -> Option<String> {
-    let candidates: [(&str, &[&str]); 4] = [
-        ("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard"]),
+    if std::path::Path::new("/mnt/c").is_dir() {
+        if let Ok(out) = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $t=Get-Clipboard -Raw; if($null -ne $t){[Console]::Write($t)}",
+            ])
+            .current_dir("/mnt/c")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+        {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+                if !s.is_empty() {
+                    return Some(s);
+                }
+            }
+        }
+    }
+    let candidates: [(&str, &[&str]); 3] = [
         ("wl-paste", &["-n"]),
         ("xclip", &["-o", "-selection", "clipboard"]),
         ("pbpaste", &[]),
@@ -192,9 +235,8 @@ pub fn paste_from_system_clipboard() -> Option<String> {
         {
             if out.status.success() {
                 let s = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
-                let trimmed = s.strip_suffix('\n').unwrap_or(&s).to_string();
-                if !trimmed.is_empty() {
-                    return Some(trimmed);
+                if !s.is_empty() {
+                    return Some(s);
                 }
             }
         }
