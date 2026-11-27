@@ -27,7 +27,7 @@ use rope::LineEnding;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use terminal::{copy_to_system_clipboard, paste_from_system_clipboard, Terminal};
+use terminal::{copy_to_system_clipboard, paste_from_system_clipboard, PointerShape, Terminal};
 
 const VERSION: &str = "nave-edit 0.2.0 (Rust Native · Multi-Pane · Nave Terminal v4)";
 
@@ -49,6 +49,11 @@ enum DragState {
     None,
     Selection(PaneId),
     Divider(DividerHit),
+    Scrollbar {
+        pane_id: PaneId,
+        start_row: usize,
+        height: usize,
+    },
     Tab {
         src_pane: PaneId,
         src_tab: usize,
@@ -114,6 +119,10 @@ struct App {
     layout: LayoutInfo,
     last_computed: ComputedLayout,
     drag: DragState,
+    hover_divider: Option<usize>,
+    hover_scrollbar: Option<PaneId>,
+    hover_shape: PointerShape,
+    follow_cursor: bool,
     last_click: Option<(Instant, usize, usize, u8)>,
     should_quit: bool,
     last_mtime_check: Instant,
@@ -181,6 +190,10 @@ impl App {
             layout: LayoutInfo::default(),
             last_computed: ComputedLayout::default(),
             drag: DragState::None,
+            hover_divider: None,
+            hover_scrollbar: None,
+            hover_shape: PointerShape::Default,
+            follow_cursor: true,
             last_click: None,
             should_quit: false,
             last_mtime_check: Instant::now(),
@@ -744,11 +757,19 @@ impl App {
     // Event Dispatch
     // -------------------------------------------------------------------------
 
-    fn handle_event(&mut self, ev: Event, cols: usize, rows: usize) {
+    fn handle_event(&mut self, ev: Event, cols: usize, rows: usize) -> bool {
         match ev {
-            Event::Paste(text) => self.handle_paste(&text),
+            Event::Paste(text) => {
+                self.follow_cursor = true;
+                self.handle_paste(&text);
+                true
+            }
             Event::Mouse(m) => self.handle_mouse(m, cols, rows),
-            Event::Key(k) => self.handle_key(k, cols, rows),
+            Event::Key(k) => {
+                self.follow_cursor = true;
+                self.handle_key(k, cols, rows);
+                true
+            }
         }
     }
 
@@ -778,22 +799,119 @@ impl App {
         }
     }
 
-    fn handle_mouse(&mut self, m: input::MouseEvent, cols: usize, rows: usize) {
+    fn update_hover(&mut self, col: usize, row: usize) -> bool {
+        let prev_div = self.hover_divider;
+        let prev_sb = self.hover_scrollbar;
+
+        if matches!(self.mode, Mode::Picker(_)) {
+            self.hover_divider = None;
+            self.hover_scrollbar = None;
+            self.hover_shape = PointerShape::Default;
+            return prev_div != self.hover_divider || prev_sb != self.hover_scrollbar;
+        }
+
+        if let Some(d) = self.layout.dividers.iter().copied().find(|d| d.hits(col, row)) {
+            self.hover_divider = Some(d.split_id);
+            self.hover_scrollbar = None;
+            self.hover_shape = match d.axis {
+                SplitAxis::Horizontal => PointerShape::ResizeH,
+                SplitAxis::Vertical => PointerShape::ResizeV,
+            };
+        } else if let Some(pl) = self.layout.panes.iter().find(|pl| {
+            pl.scrollbar_col == Some(col)
+                && row >= pl.content_start_row
+                && row < pl.content_start_row + pl.content_height
+        }) {
+            self.hover_divider = None;
+            self.hover_scrollbar = Some(pl.pane_id);
+            self.hover_shape = PointerShape::Grab;
+        } else if self.layout.panes.iter().any(|pl| {
+            row == pl.tab_bar_row
+                && pl
+                    .tab_hitboxes
+                    .iter()
+                    .any(|&(sc, ec, _)| col >= sc && col < ec)
+        }) {
+            self.hover_divider = None;
+            self.hover_scrollbar = None;
+            self.hover_shape = PointerShape::Grab;
+        } else {
+            self.hover_divider = None;
+            self.hover_scrollbar = None;
+            self.hover_shape = PointerShape::Default;
+        }
+
+        prev_div != self.hover_divider || prev_sb != self.hover_scrollbar
+    }
+
+    fn scroll_pane_from_scrollbar(
+        &mut self,
+        pane_id: PaneId,
+        mouse_row: usize,
+        start_row: usize,
+        height: usize,
+    ) {
+        if height == 0 {
+            return;
+        }
+        let rel = mouse_row.saturating_sub(start_row).min(height.saturating_sub(1));
+        if pane_id == self.active_pane {
+            let total = self.doc().rope.line_count();
+            let max_scroll = total.saturating_sub(height);
+            let target = if height <= 1 || max_scroll == 0 {
+                0
+            } else {
+                (rel * max_scroll) / (height - 1)
+            };
+            self.doc_mut().scroll_row = target;
+            self.follow_cursor = false;
+        } else if self.panes.iter().any(|p| p.id == pane_id) {
+            let did = self.pane(pane_id).active_view().doc_id;
+            let total = self
+                .docs
+                .get(did)
+                .and_then(|d| d.as_ref())
+                .map(|d| d.rope.line_count())
+                .unwrap_or(0);
+            let max_scroll = total.saturating_sub(height);
+            let target = if height <= 1 || max_scroll == 0 {
+                0
+            } else {
+                (rel * max_scroll) / (height - 1)
+            };
+            self.pane_mut(pane_id).active_view_mut().scroll_row = target;
+        }
+    }
+
+    fn handle_mouse(&mut self, m: input::MouseEvent, cols: usize, rows: usize) -> bool {
         if matches!(self.mode, Mode::Picker(_)) {
             if let Mode::Picker(ref mut pk) = self.mode {
                 match m.kind {
-                    MouseKind::WheelUp => pk.move_sel(-1),
-                    MouseKind::WheelDown => pk.move_sel(1),
+                    MouseKind::WheelUp => {
+                        pk.move_sel(-1);
+                        return true;
+                    }
+                    MouseKind::WheelDown => {
+                        pk.move_sel(1);
+                        return true;
+                    }
+                    MouseKind::Move => {
+                        self.hover_shape = PointerShape::Default;
+                        return false;
+                    }
                     _ => {}
                 }
             }
-            return;
+            return false;
         }
 
         match m.kind {
+            MouseKind::Move => {
+                return self.update_hover(m.col, m.row);
+            }
             MouseKind::WheelUp | MouseKind::WheelDown => {
                 if self.cfg.keyboard_only_nav {
-                    return;
+                    return false;
                 }
                 let target_pid = self
                     .layout
@@ -803,6 +921,7 @@ impl App {
                     .map(|pl| pl.pane_id)
                     .unwrap_or(self.active_pane);
                 if target_pid == self.active_pane {
+                    self.follow_cursor = false;
                     if m.kind == MouseKind::WheelUp {
                         self.doc_mut().scroll_row = self.doc().scroll_row.saturating_sub(3);
                     } else {
@@ -822,24 +941,48 @@ impl App {
                         tv.scroll_row = (tv.scroll_row + 3).min(max_r);
                     }
                 }
+                true
             }
             MouseKind::LeftDown => {
-                // 1. Check split dividers first for live drag-resizing (generous grab zone!)
-                let has_sb = self.cfg.scrollbar;
-                if let Some(div) = self
-                    .layout
-                    .dividers
-                    .iter()
-                    .copied()
-                    .find(|d| d.hits(m.col, m.row, has_sb))
-                {
+                // 1. Check split dividers (exact 1-col `│` / 1-row `─`)
+                if let Some(div) = self.layout.dividers.iter().copied().find(|d| d.hits(m.col, m.row)) {
                     self.drag = DragState::Divider(div);
+                    self.hover_divider = Some(div.split_id);
+                    self.hover_scrollbar = None;
+                    self.hover_shape = match div.axis {
+                        SplitAxis::Horizontal => PointerShape::ResizeH,
+                        SplitAxis::Vertical => PointerShape::ResizeV,
+                    };
                     self.mode = Mode::Edit;
                     self.set_status("Arraste para redimensionar a divisoria");
-                    return;
+                    return true;
                 }
 
-                // 2. Check pane tab bars -> focus/switch immediately AND arm DragState::Tab for drag-and-drop!
+                // 2. Check pane scrollbars (clickable & draggable even in keyboard-only text nav mode!)
+                let hit_sb = self.layout.panes.iter().find_map(|pl| {
+                    if pl.scrollbar_col == Some(m.col)
+                        && m.row >= pl.content_start_row
+                        && m.row < pl.content_start_row + pl.content_height
+                    {
+                        Some((pl.pane_id, pl.content_start_row, pl.content_height))
+                    } else {
+                        None
+                    }
+                });
+                if let Some((pid, start_row, height)) = hit_sb {
+                    self.mode = Mode::Edit;
+                    self.drag = DragState::Scrollbar {
+                        pane_id: pid,
+                        start_row,
+                        height,
+                    };
+                    self.hover_scrollbar = Some(pid);
+                    self.hover_shape = PointerShape::Grab;
+                    self.scroll_pane_from_scrollbar(pid, m.row, start_row, height);
+                    return true;
+                }
+
+                // 3. Check pane tab bars -> focus/switch immediately AND arm DragState::Tab for drag-and-drop!
                 let hit_tab = self.layout.panes.iter().find_map(|pl| {
                     if m.row == pl.tab_bar_row && pl.rect.contains(m.col, m.row) {
                         let tab_idx = pl
@@ -856,6 +999,7 @@ impl App {
                     self.mode = Mode::Edit;
                     if let Some(tidx) = opt_tidx {
                         self.focus_pane_and_tab(pid, tidx);
+                        self.hover_shape = PointerShape::Grab;
                         self.drag = DragState::Tab {
                             src_pane: pid,
                             src_tab: tidx,
@@ -869,9 +1013,10 @@ impl App {
                         self.focus_pane(pid);
                         self.drag = DragState::None;
                     }
-                    return;
+                    return true;
                 }
 
+                // 4. Pane editor canvas
                 let hit_pane = self
                     .layout
                     .panes
@@ -882,11 +1027,10 @@ impl App {
                     self.focus_pane(pid);
                     self.mode = Mode::Edit;
                     if self.cfg.keyboard_only_nav {
-                        // Keyboard-only text navigation: allow focusing another pane by click
-                        // without hijacking or moving the text cursor inside the file
                         self.drag = DragState::None;
-                        return;
+                        return true;
                     }
+                    self.follow_cursor = true;
                     if let Some((doc_row, doc_col)) = self.screen_to_doc_in_pane(pid, m.col, m.row) {
                         let now = Instant::now();
                         let clicks = if let Some((prev_t, pr, pc, cnt)) = self.last_click {
@@ -918,7 +1062,9 @@ impl App {
                             }
                         }
                     }
+                    return true;
                 }
+                false
             }
             MouseKind::LeftDrag => match self.drag {
                 DragState::Divider(div) => {
@@ -938,6 +1084,15 @@ impl App {
                     let pct2 = 100usize.saturating_sub(pct1);
                     let sep = if div.axis == SplitAxis::Horizontal { "│" } else { "─" };
                     self.set_status(format!("Redimensionando ({}% {} {}%)", pct1, sep, pct2));
+                    true
+                }
+                DragState::Scrollbar {
+                    pane_id,
+                    start_row,
+                    height,
+                } => {
+                    self.scroll_pane_from_scrollbar(pane_id, m.row, start_row, height);
+                    true
                 }
                 DragState::Tab {
                     src_pane,
@@ -950,6 +1105,7 @@ impl App {
                     if !dragging && (m.col.abs_diff(start_col) >= 2 || m.row != start_row) {
                         dragging = true;
                     }
+                    self.hover_shape = PointerShape::Grab;
                     self.drag = DragState::Tab {
                         src_pane,
                         src_tab,
@@ -959,17 +1115,21 @@ impl App {
                         cur_row: m.row,
                         dragging,
                     };
+                    dragging
                 }
                 DragState::Selection(pid) => {
                     if pid == self.active_pane {
                         if let Some((doc_row, doc_col)) = self.screen_to_doc_in_pane(pid, m.col, m.row) {
                             self.doc_mut().set_cursor_at_line_col(doc_row, doc_col, true);
+                            return true;
                         }
                     }
+                    false
                 }
-                DragState::None => {}
+                DragState::None => false,
             },
             MouseKind::LeftUp => {
+                let was_dragging = !matches!(self.drag, DragState::None);
                 if let DragState::Tab {
                     src_pane,
                     src_tab,
@@ -982,6 +1142,8 @@ impl App {
                     }
                 }
                 self.drag = DragState::None;
+                let hover_changed = self.update_hover(m.col, m.row);
+                was_dragging || hover_changed
             }
         }
     }
@@ -2476,10 +2638,12 @@ impl App {
         let computed = self.layout_tree.compute(area);
         let cfg = self.cfg.clone();
 
-        // Keep active pane's cursor visible within its exact pane rectangle
-        if let Some(active_rect) = computed.rect_of(self.active_pane) {
-            let content_h = active_rect.h.saturating_sub(1).max(1);
-            ensure_cursor_visible(self.doc_mut(), active_rect.w, content_h, &cfg);
+        // Keep active pane's cursor visible unless user explicitly scrolled via scrollbar/wheel
+        if self.follow_cursor {
+            if let Some(active_rect) = computed.rect_of(self.active_pane) {
+                let content_h = active_rect.h.saturating_sub(1).max(1);
+                ensure_cursor_visible(self.doc_mut(), active_rect.w, content_h, &cfg);
+            }
         }
         self.sync_active_to_tab();
 
@@ -2603,6 +2767,10 @@ impl App {
             DragState::Divider(d) => Some(d.split_id),
             _ => None,
         };
+        let hot_scrollbar = match self.drag {
+            DragState::Scrollbar { pane_id, .. } => Some(pane_id),
+            _ => self.hover_scrollbar,
+        };
         let highlight_all_dividers = matches!(self.mode, Mode::ResizePane);
 
         let (frame, layout_info) = render_editor(
@@ -2610,6 +2778,8 @@ impl App {
             &pane_views,
             &computed,
             active_divider,
+            self.hover_divider,
+            hot_scrollbar,
             highlight_all_dividers,
             drop_preview.as_ref(),
             self.palette,
@@ -2767,18 +2937,26 @@ fn main() {
         if term.poll_stdin(poll_ms) {
             let n = term.read_bytes(&mut read_buf);
             if n > 0 {
-                last_activity = Instant::now();
-                if standby_blink {
-                    standby_blink = false;
-                    term.set_cursor_style(app.cfg.block_cursor, false);
-                }
                 decoder.push(&read_buf[..n]);
                 while let Some(ev) = decoder.next_event() {
+                    let is_hover_move = matches!(
+                        ev,
+                        Event::Mouse(input::MouseEvent { kind: MouseKind::Move, .. })
+                    );
+                    if !is_hover_move {
+                        last_activity = Instant::now();
+                        if standby_blink {
+                            standby_blink = false;
+                            term.set_cursor_style(app.cfg.block_cursor, false);
+                        }
+                    }
                     if matches!(ev, Event::Key(_)) {
                         mouse_hider.notify_key();
                     }
-                    app.handle_event(ev, cols, rows);
-                    needs_redraw = true;
+                    if app.handle_event(ev, cols, rows) {
+                        needs_redraw = true;
+                    }
+                    mouse_hider.set_shape(app.hover_shape);
                     if app.should_quit {
                         break;
                     }
@@ -2786,8 +2964,10 @@ fn main() {
             }
         } else if decoder.has_pending_esc() {
             if let Some(ev) = decoder.flush_bare_esc() {
-                app.handle_event(ev, cols, rows);
-                needs_redraw = true;
+                if app.handle_event(ev, cols, rows) {
+                    needs_redraw = true;
+                }
+                mouse_hider.set_shape(app.hover_shape);
             }
         }
     }

@@ -55,27 +55,9 @@ pub struct DividerHit {
 }
 
 impl DividerHit {
-    pub fn hits(self, col: usize, row: usize, has_scrollbar: bool) -> bool {
+    pub fn hits(self, col: usize, row: usize) -> bool {
         match self.axis {
-            SplitAxis::Horizontal => {
-                if row < self.y || row >= self.y + self.len {
-                    return false;
-                }
-                if col == self.x {
-                    return true;
-                }
-                // Generous grab zone on rows below the tab bar (right pane col 0 is gutter margin;
-                // left pane col `x - 1` is scrollbar track when scrollbar is enabled)
-                if row > self.y {
-                    if col == self.x + 1 {
-                        return true;
-                    }
-                    if has_scrollbar && self.x > 0 && col == self.x - 1 {
-                        return true;
-                    }
-                }
-                false
-            }
+            SplitAxis::Horizontal => col == self.x && row >= self.y && row < self.y + self.len,
             SplitAxis::Vertical => row == self.y && col >= self.x && col < self.x + self.len,
         }
     }

@@ -61,6 +61,7 @@ pub enum MouseKind {
     LeftDown,
     LeftDrag,
     LeftUp,
+    Move,
     WheelUp,
     WheelDown,
 }
@@ -300,6 +301,8 @@ fn decode_csi(params: &str, final_ch: char) -> Option<Event> {
                     } else {
                         return None;
                     }
+                } else if motion && base == 3 {
+                    MouseKind::Move
                 } else if motion && base == 0 {
                     MouseKind::LeftDrag
                 } else if !motion && base == 0 {
@@ -450,14 +453,25 @@ mod tests {
         d.push(b"\x1b[200~hello\r\nworld\x1b[201~");
         assert_eq!(d.next_event(), Some(Event::Paste("hello\nworld".into())));
 
-        // SGR Mouse left click at col=10, row=5 (1-based 11, 6)
-        d.push(b"\x1b[<0;11;6M");
+        // SGR Mouse left click at col=10, row=5 (1-based 11, 6) + hover move (btn=35)
+        d.push(b"\x1b[<0;11;6M\x1b[<35;15;8M");
         assert_eq!(
             d.next_event(),
             Some(Event::Mouse(MouseEvent {
                 kind: MouseKind::LeftDown,
                 col: 10,
                 row: 5,
+                ctrl: false,
+                alt: false,
+                shift: false,
+            }))
+        );
+        assert_eq!(
+            d.next_event(),
+            Some(Event::Mouse(MouseEvent {
+                kind: MouseKind::Move,
+                col: 14,
+                row: 7,
                 ctrl: false,
                 alt: false,
                 shift: false,

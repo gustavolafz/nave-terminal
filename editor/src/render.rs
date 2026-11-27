@@ -25,6 +25,8 @@ pub struct PaneLayoutInfo {
     pub rect: Rect,
     pub gutter_width: usize,
     pub content_start_row: usize,
+    pub content_height: usize,
+    pub scrollbar_col: Option<usize>,
     pub visual_rows: Vec<VisualRowInfo>,
     pub tab_bar_row: usize,
     pub tab_hitboxes: Vec<(usize, usize, usize)>, // (start_col, end_col, tab_idx)
@@ -226,6 +228,8 @@ pub fn render_editor(
     pane_views: &[PaneRenderInput],
     computed: &ComputedLayout,
     active_divider: Option<usize>,
+    hover_divider: Option<usize>,
+    hot_scrollbar: Option<PaneId>,
     highlight_all_dividers: bool,
     drop_preview: Option<&DropPreview>,
     pal: &Palette,
@@ -263,11 +267,13 @@ pub fn render_editor(
             continue;
         };
 
+        let sb_hot = hot_scrollbar == Some(p.pane_id);
         let (p_layout, p_cursor, sel_chars, cur_row, cur_col, cur_count) = render_pane(
             &mut out,
             doc,
             p,
             multi_pane,
+            sb_hot,
             pal,
             cfg,
         );
@@ -295,21 +301,22 @@ pub fn render_editor(
     if multi_pane {
         out.push_str("\x1b[49m");
         for d in &computed.dividers {
-            let is_hot = highlight_all_dividers || active_divider == Some(d.split_id);
-            if is_hot {
+            let is_drag = highlight_all_dividers || active_divider == Some(d.split_id);
+            let is_hover = hover_divider == Some(d.split_id);
+            if is_drag || is_hover {
                 push_fg(&mut out, pal.grad[0], true);
             } else {
                 push_fg(&mut out, pal.dim, false);
             }
             match d.axis {
                 SplitAxis::Horizontal => {
-                    let glyph = if is_hot { '┃' } else { '│' };
+                    let glyph = if is_drag { '┃' } else { '│' };
                     for r in d.y..(d.y + d.len) {
                         let _ = write!(out, "\x1b[{};{}H{}", r + 1, d.x + 1, glyph);
                     }
                 }
                 SplitAxis::Vertical => {
-                    let glyph = if is_hot { '━' } else { '─' };
+                    let glyph = if is_drag { '━' } else { '─' };
                     let _ = write!(out, "\x1b[{};{}H", d.y + 1, d.x + 1);
                     for _ in 0..d.len {
                         out.push(glyph);
@@ -318,7 +325,7 @@ pub fn render_editor(
             }
         }
         if !computed.junctions.is_empty() {
-            if highlight_all_dividers || active_divider.is_some() {
+            if highlight_all_dividers || active_divider.is_some() || hover_divider.is_some() {
                 push_fg(&mut out, pal.grad[0], true);
             } else {
                 push_fg(&mut out, pal.dim, false);
@@ -728,6 +735,7 @@ fn render_pane(
     doc: &mut Document,
     p: &PaneRenderInput,
     multi_pane: bool,
+    sb_hot: bool,
     pal: &Palette,
     cfg: &EditorConfig,
 ) -> (PaneLayoutInfo, Option<(usize, usize)>, usize, usize, usize, usize) {
@@ -750,6 +758,12 @@ fn render_pane(
         rect,
         gutter_width: gutter_w,
         content_start_row,
+        content_height: content_h,
+        scrollbar_col: if show_sb && rect.w > 0 {
+            Some(rect.x + rect.w - 1)
+        } else {
+            None
+        },
         visual_rows: Vec::with_capacity(content_h),
         tab_bar_row: rect.y,
         tab_hitboxes: Vec::new(),
@@ -991,7 +1005,7 @@ fn render_pane(
                 out.push(' ');
             }
             if show_sb {
-                push_scrollbar_cell(out, screen_y, content_h, sb_start, sb_end, sb_cursor_row, pal);
+                push_scrollbar_cell(out, screen_y, content_h, sb_start, sb_end, sb_cursor_row, sb_hot, pal);
                 out.push_str(RST);
             }
             screen_y += 1;
@@ -1305,7 +1319,7 @@ fn render_pane(
 
             if show_sb {
                 out.push_str("\x1b[49m");
-                push_scrollbar_cell(out, screen_y, content_h, sb_start, sb_end, sb_cursor_row, pal);
+                push_scrollbar_cell(out, screen_y, content_h, sb_start, sb_end, sb_cursor_row, sb_hot, pal);
             }
             out.push_str(RST);
             screen_y += 1;
@@ -1421,6 +1435,7 @@ fn push_scrollbar_cell(
     sb_start: usize,
     sb_end: usize,
     sb_cursor_row: usize,
+    sb_hot: bool,
     pal: &Palette,
 ) {
     let t = screen_y as f32 / content_h.saturating_sub(1).max(1) as f32;
@@ -1428,10 +1443,15 @@ fn push_scrollbar_cell(
         push_fg(out, pal.grad[0], true);
         out.push('█');
     } else if screen_y >= sb_start && screen_y < sb_end {
-        push_fg(out, lerp_grad(pal.grad, t), false);
-        out.push('┃');
+        if sb_hot {
+            push_fg(out, pal.grad[0], true);
+            out.push('█');
+        } else {
+            push_fg(out, lerp_grad(pal.grad, t), false);
+            out.push('┃');
+        }
     } else {
-        push_fg(out, pal.border, false);
+        push_fg(out, if sb_hot { pal.dim } else { pal.border }, false);
         out.push('│');
     }
 }

@@ -9,6 +9,9 @@ class NaveHideMouse {
     const uint OCR_NORMAL = 32512;
     const uint OCR_IBEAM = 32513;
     const uint OCR_HAND = 32649;
+    const int IDC_SIZEWE = 32644;
+    const int IDC_SIZENS = 32645;
+    const int IDC_HAND = 32649;
     const int SM_CXCURSOR = 13;
     const int SM_CYCURSOR = 14;
     const int VK_LBUTTON = 0x01;
@@ -62,6 +65,9 @@ class NaveHideMouse {
     static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
 
     [DllImport("user32.dll", SetLastError = true)]
+    static extern IntPtr LoadCursor(IntPtr hInstance, IntPtr lpCursorName);
+
+    [DllImport("user32.dll", SetLastError = true)]
     static extern IntPtr CreateCursor(
         IntPtr hInst, int xHotSpot, int yHotSpot, int nWidth, int nHeight,
         byte[] pvANDPlane, byte[] pvXORPlane);
@@ -83,9 +89,15 @@ class NaveHideMouse {
 
     static readonly object StateLock = new object();
     static volatile bool _hidden = false;
+    static int _appliedShape = 'D';
+    static int _desiredShape = 'D';
+    static int _autoHide = 1;
     static int _stop = 0;
     static int _hideNow = 0;
     static IntPtr _blankCursor = IntPtr.Zero;
+    static IntPtr _curWE = IntPtr.Zero;
+    static IntPtr _curNS = IntPtr.Zero;
+    static IntPtr _curHand = IntPtr.Zero;
     static ConsoleCtrlDelegate _ctrlHandler;
 
     static IntPtr _cachedHwnd = IntPtr.Zero;
@@ -163,6 +175,12 @@ class NaveHideMouse {
         return CreateCursor(IntPtr.Zero, 0, 0, w, h, andMask, xorMask);
     }
 
+    static IntPtr CacheStandardCursor(int idc) {
+        IntPtr shared = LoadCursor(IntPtr.Zero, new IntPtr(idc));
+        if (shared == IntPtr.Zero) return IntPtr.Zero;
+        return CopyIcon(shared);
+    }
+
     static void HideCursors() {
         lock (StateLock) {
             if (_hidden || _blankCursor == IntPtr.Zero) return;
@@ -176,14 +194,61 @@ class NaveHideMouse {
                 }
             }
             _hidden = true;
+            _appliedShape = 0;
+        }
+    }
+
+    static void ApplyShape(int shape) {
+        lock (StateLock) {
+            if (shape == 'D') {
+                if (_hidden || _appliedShape != 'D') {
+                    SystemParametersInfo(SPI_SETCURSORS, 0, IntPtr.Zero, 0);
+                    _hidden = false;
+                    _appliedShape = 'D';
+                }
+                return;
+            }
+            IntPtr src = IntPtr.Zero;
+            if (shape == 'E') src = _curWE;
+            else if (shape == 'N') src = _curNS;
+            else if (shape == 'P') src = _curHand;
+            if (src == IntPtr.Zero) {
+                SystemParametersInfo(SPI_SETCURSORS, 0, IntPtr.Zero, 0);
+                _hidden = false;
+                _appliedShape = 'D';
+                return;
+            }
+            if (!_hidden && _appliedShape == shape) return;
+
+            uint[] targets = { OCR_IBEAM, OCR_NORMAL };
+            foreach (uint id in targets) {
+                IntPtr copy = CopyIcon(src);
+                if (copy != IntPtr.Zero) {
+                    if (!SetSystemCursor(copy, id)) {
+                        DestroyCursor(copy);
+                    }
+                }
+            }
+            // If we were hidden, also restore OCR_HAND so system hand cursor isn't blank
+            if (_hidden && _curHand != IntPtr.Zero) {
+                IntPtr copyH = CopyIcon(_curHand);
+                if (copyH != IntPtr.Zero) {
+                    if (!SetSystemCursor(copyH, OCR_HAND)) {
+                        DestroyCursor(copyH);
+                    }
+                }
+            }
+            _hidden = false;
+            _appliedShape = shape;
         }
     }
 
     static void RestoreCursors(bool force) {
         lock (StateLock) {
-            if (!force && !_hidden) return;
+            if (!force && !_hidden && _appliedShape == 'D') return;
             SystemParametersInfo(SPI_SETCURSORS, 0, IntPtr.Zero, 0);
             _hidden = false;
+            _appliedShape = 'D';
         }
     }
 
@@ -197,17 +262,17 @@ class NaveHideMouse {
 
         if (args.Length > 0 && args[0].Equals("--self-test", StringComparison.OrdinalIgnoreCase)) {
             IntPtr c = BuildBlankCursor();
-            if (c == IntPtr.Zero) {
-                Console.Error.WriteLine("CreateCursor failed");
-                return 1;
-            }
-            IntPtr copy = CopyIcon(c);
-            bool ok = copy != IntPtr.Zero;
-            if (copy != IntPtr.Zero) DestroyCursor(copy);
-            DestroyCursor(c);
+            IntPtr we = CacheStandardCursor(IDC_SIZEWE);
+            IntPtr ns = CacheStandardCursor(IDC_SIZENS);
+            IntPtr hd = CacheStandardCursor(IDC_HAND);
+            bool ok = c != IntPtr.Zero && we != IntPtr.Zero && ns != IntPtr.Zero && hd != IntPtr.Zero;
+            if (c != IntPtr.Zero) DestroyCursor(c);
+            if (we != IntPtr.Zero) DestroyCursor(we);
+            if (ns != IntPtr.Zero) DestroyCursor(ns);
+            if (hd != IntPtr.Zero) DestroyCursor(hd);
             POINT pt;
             bool hasPos = GetCursorPos(out pt);
-            Console.WriteLine("OK cursor=" + ok + " pos=" + hasPos + " (" + pt.X + "," + pt.Y + ")");
+            Console.WriteLine("OK cursors=" + ok + " pos=" + hasPos + " (" + pt.X + "," + pt.Y + ")");
             return (ok && hasPos) ? 0 : 1;
         }
 
@@ -221,13 +286,14 @@ class NaveHideMouse {
 
         _ctrlHandler = ctrl => {
             Interlocked.Exchange(ref _stop, 1);
-            RestoreCursors(false);
+            RestoreCursors(true);
             return false;
         };
         SetConsoleCtrlHandler(_ctrlHandler, true);
-        AppDomain.CurrentDomain.ProcessExit += (s, e) => RestoreCursors(false);
+        AppDomain.CurrentDomain.ProcessExit += (s, e) => RestoreCursors(true);
 
-        // Watch stdin pipe from nave-edit: 'H' = hide now on keypress, 'Q'/EOF = exit & restore immediately
+        // Pipe protocol from nave-edit:
+        // 'H'=hide now on key, 'A'/'a'=auto-hide ON/OFF, 'D'=default, 'E'=↔, 'N'=↕, 'P'=hand, 'Q'/EOF=exit
         Thread stdinWatcher = new Thread(() => {
             try {
                 Stream s = Console.OpenStandardInput();
@@ -236,9 +302,17 @@ class NaveHideMouse {
                     int n = s.Read(buf, 0, buf.Length);
                     if (n <= 0) break;
                     for (int i = 0; i < n; i++) {
-                        if (buf[i] == (byte)'H') {
+                        byte b = buf[i];
+                        if (b == (byte)'H') {
                             Interlocked.Exchange(ref _hideNow, 1);
-                        } else if (buf[i] == (byte)'Q') {
+                        } else if (b == (byte)'A') {
+                            Interlocked.Exchange(ref _autoHide, 1);
+                        } else if (b == (byte)'a') {
+                            Interlocked.Exchange(ref _autoHide, 0);
+                            Interlocked.Exchange(ref _hideNow, 0);
+                        } else if (b == (byte)'D' || b == (byte)'E' || b == (byte)'N' || b == (byte)'P') {
+                            Interlocked.Exchange(ref _desiredShape, (int)b);
+                        } else if (b == (byte)'Q') {
                             Interlocked.Exchange(ref _stop, 1);
                             return;
                         }
@@ -252,7 +326,6 @@ class NaveHideMouse {
         stdinWatcher.IsBackground = true;
         stdinWatcher.Start();
 
-        // Serialize across multiple ne tabs so only one helper manages system cursors at a time
         bool ownsMutex = false;
         using (Mutex mtx = new Mutex(false, "Local\\NaveEditHideMouseMutex")) {
             try {
@@ -266,39 +339,56 @@ class NaveHideMouse {
                 }
                 if (!ownsMutex) return 0;
 
+                // Ensure clean baseline before caching standard OS cursors
+                RestoreCursors(true);
                 _blankCursor = BuildBlankCursor();
+                _curWE = CacheStandardCursor(IDC_SIZEWE);
+                _curNS = CacheStandardCursor(IDC_SIZENS);
+                _curHand = CacheStandardCursor(IDC_HAND);
                 if (_blankCursor == IntPtr.Zero) return 1;
 
                 Stopwatch sw = Stopwatch.StartNew();
                 POINT lastPt;
                 GetCursorPos(out lastPt);
-                long lastMoveMs = -idleMs; // Hide right away on launch if pointer is already idle inside editor
+                long lastMoveMs = -idleMs;
 
                 while (Volatile.Read(ref _stop) == 0) {
                     POINT pt;
                     if (!GetCursorPos(out pt)) {
-                        Thread.Sleep(25);
+                        Thread.Sleep(20);
+                        continue;
+                    }
+
+                    IntPtr fg = GetForegroundWindow();
+                    bool inside = IsTerminalWindow(fg) && IsInsideEditorArea(fg, pt);
+                    if (!inside) {
+                        Interlocked.Exchange(ref _hideNow, 0);
+                        RestoreCursors(false);
+                        Thread.Sleep(30);
                         continue;
                     }
 
                     long now = sw.ElapsedMilliseconds;
                     int dist = Math.Abs(pt.X - lastPt.X) + Math.Abs(pt.Y - lastPt.Y);
-                    if (dist >= 2) {
+                    bool moved = dist >= 2;
+                    if (moved) {
                         lastPt = pt;
                         lastMoveMs = now;
                         Interlocked.Exchange(ref _hideNow, 0);
-                        RestoreCursors(false);
-                        Thread.Sleep(25);
+                    }
+
+                    int desired = Volatile.Read(ref _desiredShape);
+                    bool autoHide = Volatile.Read(ref _autoHide) != 0;
+                    bool btnDown = AnyMouseButtonDown();
+
+                    if (moved || btnDown || !autoHide) {
+                        ApplyShape(desired);
+                        Thread.Sleep(20);
                         continue;
                     }
 
-                    IntPtr fg = GetForegroundWindow();
-                    bool eligible = IsTerminalWindow(fg) && IsInsideEditorArea(fg, pt) && !AnyMouseButtonDown();
-                    if (!eligible) {
-                        Interlocked.Exchange(ref _hideNow, 0);
-                        RestoreCursors(false);
-                        Thread.Sleep(35);
-                        continue;
+                    if (!_hidden && _appliedShape != desired) {
+                        ApplyShape(desired);
                     }
 
                     bool immediate = Interlocked.Exchange(ref _hideNow, 0) != 0;
@@ -306,14 +396,14 @@ class NaveHideMouse {
                         HideCursors();
                     }
 
-                    Thread.Sleep(25);
+                    Thread.Sleep(20);
                 }
             } finally {
-                RestoreCursors(false);
-                if (_blankCursor != IntPtr.Zero) {
-                    DestroyCursor(_blankCursor);
-                    _blankCursor = IntPtr.Zero;
-                }
+                RestoreCursors(true);
+                if (_blankCursor != IntPtr.Zero) { DestroyCursor(_blankCursor); _blankCursor = IntPtr.Zero; }
+                if (_curWE != IntPtr.Zero) { DestroyCursor(_curWE); _curWE = IntPtr.Zero; }
+                if (_curNS != IntPtr.Zero) { DestroyCursor(_curNS); _curNS = IntPtr.Zero; }
+                if (_curHand != IntPtr.Zero) { DestroyCursor(_curHand); _curHand = IntPtr.Zero; }
                 if (ownsMutex) {
                     try { mtx.ReleaseMutex(); } catch { }
                 }

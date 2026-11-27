@@ -47,8 +47,8 @@ impl Terminal {
         }
 
         let mut stdout = io::stdout().lock();
-        // Always enable SGR 1006 button-drag mouse reporting so pane divider resizing & tab drag-and-drop always work
-        stdout.write_all(b"\x1b[?1049h\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h")?;
+        // Always enable SGR 1006 any-event mouse tracking (1003h) for live divider/tab/scrollbar hover & drag
+        stdout.write_all(b"\x1b[?1049h\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h")?;
         stdout.write_all(if block_cursor { b"\x1b[2 q" } else { b"\x1b[6 q" })?;
         if !cursor_hex.is_empty() {
             let _ = write!(stdout, "\x1b]12;{}\x07", cursor_hex);
@@ -130,7 +130,7 @@ impl Drop for Terminal {
             self.active = false;
             let mut stdout = io::stdout().lock();
             let _ = stdout.write_all(
-                b"\x1b[?2026l\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b]112\x07\x1b[0 q\x1b[?25h\x1b[?1049l",
+                b"\x1b[?2026l\x1b[?2004l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b]112\x07\x1b[0 q\x1b[?25h\x1b[?1049l",
             );
             let _ = stdout.flush();
             unsafe {
@@ -193,15 +193,25 @@ pub fn paste_from_system_clipboard() -> Option<String> {
     None
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerShape {
+    Default,
+    ResizeH, // ↔ vertical divider `│`
+    ResizeV, // ↕ horizontal divider `─`
+    Grab,    // 👆 tab / scrollbar
+}
+
 /// Manages the optional native Windows `nave-hidemouse.exe` helper on WSL2.
-/// Auto-hides the OS mouse pointer after 500ms of mouse stillness (or immediately on keypress)
-/// ONLY while Windows Terminal is foreground and the pointer sits inside the editor canvas.
-/// Automatically restores Windows system cursors on movement, focus loss, toggle OFF, or process exit.
+/// Provides real OS pointer shapes (↔ / ↕ / 👆) over draggable editor UI elements
+/// AND auto-hides the OS mouse pointer after 500ms of stillness or on keypress.
+/// Automatically restores Windows system cursors on focus loss, toggle OFF, or process exit.
 pub struct MouseHider {
     exe_path: Option<PathBuf>,
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     last_notify: Option<Instant>,
+    auto_hide: bool,
+    shape: PointerShape,
 }
 
 impl MouseHider {
@@ -211,10 +221,15 @@ impl MouseHider {
             child: None,
             stdin: None,
             last_notify: None,
+            auto_hide: true,
+            shape: PointerShape::Default,
         }
     }
 
     fn locate_helper() -> Option<PathBuf> {
+        if std::env::var("NAVE_NO_MOUSE_HELPER").is_ok() {
+            return None;
+        }
         if let Ok(env_p) = std::env::var("NAVE_HIDEMOUSE_EXE") {
             let p = PathBuf::from(env_p);
             if p.is_file() {
@@ -238,37 +253,57 @@ impl MouseHider {
         None
     }
 
-    pub fn sync(&mut self, active: bool) {
-        if active {
-            if self.child.is_some() {
-                return;
-            }
-            let Some(ref exe) = self.exe_path else { return };
-            if let Ok(mut child) = Command::new(exe)
-                .arg("500")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-            {
-                self.stdin = child.stdin.take();
-                self.child = Some(child);
-                self.last_notify = None;
-            }
-        } else {
-            if let Some(mut s) = self.stdin.take() {
-                let _ = s.write_all(b"Q");
-                let _ = s.flush();
-            }
-            if let Some(mut child) = self.child.take() {
-                let _ = child.wait();
-            }
+    fn ensure_spawned(&mut self) {
+        if self.child.is_some() {
+            return;
+        }
+        let Some(ref exe) = self.exe_path else { return };
+        if let Ok(mut child) = Command::new(exe)
+            .arg("500")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            self.stdin = child.stdin.take();
+            self.child = Some(child);
             self.last_notify = None;
+            self.send_byte(if self.auto_hide { b'A' } else { b'a' });
         }
     }
 
-    pub fn notify_key(&mut self) {
+    fn send_byte(&mut self, byte: u8) {
         let Some(ref mut s) = self.stdin else { return };
+        if s.write_all(&[byte]).is_err() || s.flush().is_err() {
+            self.stdin = None;
+        }
+    }
+
+    pub fn sync(&mut self, auto_hide: bool) {
+        self.auto_hide = auto_hide;
+        self.ensure_spawned();
+        self.send_byte(if auto_hide { b'A' } else { b'a' });
+    }
+
+    pub fn set_shape(&mut self, shape: PointerShape) {
+        if self.shape == shape {
+            return;
+        }
+        self.shape = shape;
+        self.ensure_spawned();
+        let cmd = match shape {
+            PointerShape::Default => b'D',
+            PointerShape::ResizeH => b'E',
+            PointerShape::ResizeV => b'N',
+            PointerShape::Grab => b'P',
+        };
+        self.send_byte(cmd);
+    }
+
+    pub fn notify_key(&mut self) {
+        if !self.auto_hide {
+            return;
+        }
         if self
             .last_notify
             .is_some_and(|t| t.elapsed() < Duration::from_millis(120))
@@ -276,14 +311,24 @@ impl MouseHider {
             return;
         }
         self.last_notify = Some(Instant::now());
-        if s.write_all(b"H").is_err() || s.flush().is_err() {
-            self.stdin = None;
+        self.send_byte(b'H');
+    }
+
+    pub fn stop(&mut self) {
+        if let Some(mut s) = self.stdin.take() {
+            let _ = s.write_all(b"Q");
+            let _ = s.flush();
         }
+        if let Some(mut child) = self.child.take() {
+            let _ = child.wait();
+        }
+        self.last_notify = None;
+        self.shape = PointerShape::Default;
     }
 }
 
 impl Drop for MouseHider {
     fn drop(&mut self) {
-        self.sync(false);
+        self.stop();
     }
 }
