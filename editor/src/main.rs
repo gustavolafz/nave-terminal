@@ -910,9 +910,6 @@ impl App {
                 return self.update_hover(m.col, m.row);
             }
             MouseKind::WheelUp | MouseKind::WheelDown => {
-                if self.cfg.keyboard_only_nav {
-                    return false;
-                }
                 let target_pid = self
                     .layout
                     .panes
@@ -920,7 +917,18 @@ impl App {
                     .find(|pl| pl.rect.contains(m.col, m.row))
                     .map(|pl| pl.pane_id)
                     .unwrap_or(self.active_pane);
-                if target_pid == self.active_pane {
+                if self.cfg.wheel_moves_cursor {
+                    // Fast cursor-driven scrolling (3 lines/notch, follows cursor with scrolloff!)
+                    self.focus_pane(target_pid);
+                    self.follow_cursor = true;
+                    let motion = if m.kind == MouseKind::WheelUp {
+                        Motion::PageUp(3)
+                    } else {
+                        Motion::PageDown(3)
+                    };
+                    self.doc_mut().move_cursors(motion, m.shift);
+                } else if target_pid == self.active_pane {
+                    // Page/viewport scrolling without moving the cursor
                     self.follow_cursor = false;
                     if m.kind == MouseKind::WheelUp {
                         self.doc_mut().scroll_row = self.doc().scroll_row.saturating_sub(3);
@@ -1026,10 +1034,6 @@ impl App {
                 if let Some(pid) = hit_pane {
                     self.focus_pane(pid);
                     self.mode = Mode::Edit;
-                    if self.cfg.keyboard_only_nav {
-                        self.drag = DragState::None;
-                        return true;
-                    }
                     self.follow_cursor = true;
                     if let Some((doc_row, doc_col)) = self.screen_to_doc_in_pane(pid, m.col, m.row) {
                         let now = Instant::now();
@@ -1744,7 +1748,7 @@ impl App {
                 KeyCode::Char('v') => {
                     self.cfg.toggle_vim_visual();
                     self.term_sync_needed = true;
-                    let st = if self.cfg.vim_visual { "ON (relnum + nav teclado)" } else { "OFF (VS Code padrao)" };
+                    let st = if self.cfg.vim_visual { "ON (relnum + scroll cursor)" } else { "OFF (VS Code padrao)" };
                     self.set_status(format!("Estilo Vim Visual: {}", st));
                     return;
                 }
@@ -2385,7 +2389,7 @@ impl App {
                 PickerAction::ToggleVimVisual => {
                     self.cfg.toggle_vim_visual();
                     self.term_sync_needed = true;
-                    let st = if self.cfg.vim_visual { "ON (relnum + nav teclado)" } else { "OFF (VS Code padrao)" };
+                    let st = if self.cfg.vim_visual { "ON (relnum + scroll cursor)" } else { "OFF (VS Code padrao)" };
                     self.set_status(format!("Estilo Vim Visual: {}", st));
                 }
                 PickerAction::ToggleRelativeNumbers => {
@@ -2408,15 +2412,15 @@ impl App {
                     let st = if self.cfg.auto_hide_mouse { "ON (sempre ativo)" } else { "OFF" };
                     self.set_status(format!("Auto-Hide Ponteiro do Mouse: {}", st));
                 }
-                PickerAction::ToggleKeyboardOnlyNav => {
-                    self.cfg.keyboard_only_nav = !self.cfg.keyboard_only_nav;
+                PickerAction::ToggleWheelMovesCursor => {
+                    self.cfg.wheel_moves_cursor = !self.cfg.wheel_moves_cursor;
                     self.cfg.save();
-                    let st = if self.cfg.keyboard_only_nav {
-                        "ON (texto so teclado · mouse p/ abas/divisorias)"
+                    let st = if self.cfg.wheel_moves_cursor {
+                        "ON (move o cursor ±3 linhas)"
                     } else {
-                        "OFF (mouse livre no texto)"
+                        "OFF (rola a pagina)"
                     };
-                    self.set_status(format!("Navegacao no Texto: {}", st));
+                    self.set_status(format!("Scroll do Mouse: {}", st));
                 }
                 PickerAction::ToggleScrollbar => {
                     self.cfg.scrollbar = !self.cfg.scrollbar;
