@@ -166,7 +166,9 @@ Para habilitar também `Ctrl+Shift+Z` (refazer), `Ctrl+Shift+K` (apagar linha), 
   { "id": "Nave.dupDown",              "command": { "action": "sendInput", "input": "\u001b[1;4B" } },
   { "id": "Nave.dupUp",                "command": { "action": "sendInput", "input": "\u001b[1;4A" } },
   { "id": "Nave.shiftEnter",           "command": { "action": "sendInput", "input": "\u001b\r" } },
-  { "id": "Nave.comment",              "command": { "action": "sendInput", "input": "\u001b[47;5u" } }
+  { "id": "Nave.comment",              "command": { "action": "sendInput", "input": "\u001b[47;5u" } },
+  { "id": "Nave.splitRight",           "command": { "action": "sendInput", "input": "\u001b[92;5u" } },
+  { "id": "Nave.toggleTerminal",       "command": { "action": "sendInput", "input": "\u001b[39;5u" } }
 ],
 "keybindings": [
   { "id": "Nave.redo",                 "keys": "ctrl+shift+z" },
@@ -176,7 +178,9 @@ Para habilitar também `Ctrl+Shift+Z` (refazer), `Ctrl+Shift+K` (apagar linha), 
   { "id": "Nave.dupDown",              "keys": "alt+shift+down" },
   { "id": "Nave.dupUp",                "keys": "alt+shift+up" },
   { "id": "Nave.shiftEnter",           "keys": "shift+enter" },
-  { "id": "Nave.comment",              "keys": "ctrl+oem_2" }
+  { "id": "Nave.comment",              "keys": "ctrl+sc(115)" },
+  { "id": "Nave.splitRight",           "keys": "ctrl+sc(86)" },
+  { "id": "Nave.toggleTerminal",       "keys": "ctrl+sc(41)" }
 ]
 ```
 </details>

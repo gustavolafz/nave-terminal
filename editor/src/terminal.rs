@@ -116,19 +116,14 @@ impl Terminal {
         if rc <= 0 {
             return (false, false);
         }
-        let stdin_ready = (pfds[0].revents & libc::POLLIN) != 0;
+        let stdin_ready = (pfds[0].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR)) != 0;
         let extra_ready = extra_fd.is_some()
             && (pfds[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR)) != 0;
         (stdin_ready, extra_ready)
     }
 
-    pub fn read_bytes(&self, buf: &mut [u8]) -> usize {
-        let n = unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-        if n > 0 {
-            n as usize
-        } else {
-            0
-        }
+    pub fn read_bytes(&self, buf: &mut [u8]) -> isize {
+        unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) }
     }
 
     pub fn write_frame(&self, data: &str) -> io::Result<()> {

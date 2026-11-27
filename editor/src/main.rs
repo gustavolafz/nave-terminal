@@ -3369,8 +3369,12 @@ fn main() {
         }
         if stdin_ready {
             let n = term.read_bytes(&mut read_buf);
+            if n == 0 {
+                // Controlling TTY closed (EOF/HUP): exit cleanly instead of spinning
+                break;
+            }
             if n > 0 {
-                decoder.push(&read_buf[..n]);
+                decoder.push(&read_buf[..n as usize]);
                 while let Some(ev) = decoder.next_event() {
                     let is_hover_move = matches!(
                         ev,
