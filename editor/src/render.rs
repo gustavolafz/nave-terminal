@@ -385,7 +385,7 @@ pub fn render_editor(
             }
             if seg_idx == 0 {
                 if is_bookmarked {
-                    push_fg(&mut out, pal.grad[0], true);
+                    push_fg(&mut out, pal.grad[2], true);
                     out.push('◆');
                 } else if is_cur_line {
                     push_fg(&mut out, pal.active_line_num, true);

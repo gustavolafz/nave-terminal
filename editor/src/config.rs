@@ -22,7 +22,7 @@ pub struct EditorConfig {
 impl Default for EditorConfig {
     fn default() -> Self {
         Self {
-            palette: "dracula".into(),
+            palette: "auto".into(),
             vim_visual: false,
             relative_numbers: false,
             block_cursor: false,

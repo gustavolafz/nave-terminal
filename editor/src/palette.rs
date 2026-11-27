@@ -77,6 +77,7 @@ pub struct Palette {
 }
 
 pub const PALETTES: [Palette; 6] = [
+    // 1. Nave Cyber (Obsidian Ciano / Violeta / Magenta — padrão Nave Terminal)
     Palette {
         name: "cyber",
         cursor_hex: "#00f0ff",
@@ -90,11 +91,11 @@ pub const PALETTES: [Palette; 6] = [
         indent_active: (124, 77, 255),
         cur_line_bg: (20, 23, 38),
         sel_bg: (42, 54, 96),
-        word_hl_bg: (38, 44, 74),
+        word_hl_bg: (56, 48, 84),
         match_bg: (56, 48, 84),
         active_match_bg: (124, 77, 255),
-        bracket_bg: (28, 66, 86),
-        bracket_fg: (0, 245, 255),
+        bracket_bg: (0, 245, 255),
+        bracket_fg: (16, 18, 30),
         bar_bg: (16, 18, 30),
         tab_active_bg: (28, 32, 54),
         ok: (0, 255, 136),
@@ -108,16 +109,17 @@ pub const PALETTES: [Palette; 6] = [
         escape: (255, 46, 151),
         num: (255, 118, 178),
         constant: (255, 118, 178),
-        param: (255, 181, 122),
+        param: (255, 176, 92),
         prop: (125, 249, 255),
         comment: (106, 114, 148),
         op: (255, 46, 151),
-        punct: (168, 178, 210),
+        punct: (148, 158, 194),
         var: (125, 249, 255),
         attr: (0, 255, 136),
         key: (0, 240, 255),
         heading: (0, 245, 255),
     },
+    // 2. Nave Emerald (Obsidian Esmeralda / Aqua / Lima)
     Palette {
         name: "emerald",
         cursor_hex: "#00ff88",
@@ -131,11 +133,11 @@ pub const PALETTES: [Palette; 6] = [
         indent_active: (0, 229, 255),
         cur_line_bg: (14, 29, 20),
         sel_bg: (26, 72, 48),
-        word_hl_bg: (24, 54, 42),
+        word_hl_bg: (30, 66, 54),
         match_bg: (30, 66, 54),
         active_match_bg: (0, 140, 96),
-        bracket_bg: (24, 72, 58),
-        bracket_fg: (0, 255, 136),
+        bracket_bg: (0, 255, 136),
+        bracket_fg: (11, 22, 16),
         bar_bg: (11, 22, 16),
         tab_active_bg: (20, 44, 30),
         ok: (0, 255, 136),
@@ -149,16 +151,17 @@ pub const PALETTES: [Palette; 6] = [
         escape: (0, 229, 255),
         num: (178, 255, 89),
         constant: (178, 255, 89),
-        param: (255, 204, 112),
-        prop: (134, 239, 212),
+        param: (255, 218, 102),
+        prop: (167, 243, 208),
         comment: (84, 130, 104),
         op: (0, 229, 255),
-        punct: (162, 206, 184),
+        punct: (132, 182, 154),
         var: (167, 243, 208),
         attr: (178, 255, 89),
         key: (0, 245, 212),
         heading: (0, 255, 136),
     },
+    // 3. Nave Sunset (Obsidian Ouro / Magma / Magenta)
     Palette {
         name: "sunset",
         cursor_hex: "#ff5e3a",
@@ -172,11 +175,11 @@ pub const PALETTES: [Palette; 6] = [
         indent_active: (255, 94, 58),
         cur_line_bg: (30, 16, 24),
         sel_bg: (82, 32, 56),
-        word_hl_bg: (60, 32, 42),
+        word_hl_bg: (76, 42, 34),
         match_bg: (76, 42, 34),
         active_match_bg: (190, 52, 88),
-        bracket_bg: (86, 44, 42),
-        bracket_fg: (255, 214, 0),
+        bracket_bg: (255, 214, 0),
+        bracket_fg: (22, 12, 18),
         bar_bg: (22, 12, 18),
         tab_active_bg: (48, 22, 36),
         ok: (0, 255, 136),
@@ -191,15 +194,16 @@ pub const PALETTES: [Palette; 6] = [
         num: (255, 94, 178),
         constant: (255, 94, 178),
         param: (255, 198, 128),
-        prop: (255, 160, 112),
+        prop: (255, 159, 96),
         comment: (146, 92, 118),
         op: (255, 94, 58),
-        punct: (212, 172, 184),
+        punct: (196, 142, 164),
         var: (255, 198, 128),
         attr: (255, 214, 0),
         key: (255, 140, 90),
         heading: (255, 214, 0),
     },
+    // 4. Nave Nord (Obsidian Aurora Gelo / Azul / Violeta)
     Palette {
         name: "nord",
         cursor_hex: "#38e8ff",
@@ -213,11 +217,11 @@ pub const PALETTES: [Palette; 6] = [
         indent_active: (108, 140, 255),
         cur_line_bg: (18, 26, 43),
         sel_bg: (42, 64, 108),
-        word_hl_bg: (34, 48, 76),
+        word_hl_bg: (46, 58, 92),
         match_bg: (46, 58, 92),
         active_match_bg: (90, 116, 210),
-        bracket_bg: (32, 58, 88),
-        bracket_fg: (56, 232, 255),
+        bracket_bg: (56, 232, 255),
+        bracket_fg: (13, 19, 32),
         bar_bg: (13, 19, 32),
         tab_active_bg: (26, 38, 64),
         ok: (52, 255, 180),
@@ -231,16 +235,17 @@ pub const PALETTES: [Palette; 6] = [
         escape: (192, 132, 252),
         num: (165, 180, 252),
         constant: (165, 180, 252),
-        param: (255, 186, 134),
-        prop: (136, 224, 216),
+        param: (255, 192, 128),
+        prop: (147, 235, 255),
         comment: (96, 116, 154),
         op: (108, 140, 255),
-        punct: (166, 182, 212),
+        punct: (148, 166, 200),
         var: (147, 235, 255),
         attr: (52, 255, 180),
         key: (56, 232, 255),
         heading: (56, 232, 255),
     },
+    // 5. Nave Stealth (Obsidian Ametista / Monocromático Violeta)
     Palette {
         name: "stealth",
         cursor_hex: "#a855f7",
@@ -248,17 +253,17 @@ pub const PALETTES: [Palette; 6] = [
         fg: (244, 244, 248),
         dim: (112, 98, 138),
         line_num: (112, 98, 138),
-        active_line_num: (216, 180, 254),
+        active_line_num: (248, 250, 252),
         border: (76, 40, 117),
         indent_guide: (76, 40, 117),
         indent_active: (168, 85, 247),
         cur_line_bg: (21, 18, 31),
         sel_bg: (64, 38, 98),
-        word_hl_bg: (46, 32, 68),
+        word_hl_bg: (58, 40, 82),
         match_bg: (58, 40, 82),
         active_match_bg: (148, 68, 224),
-        bracket_bg: (58, 36, 90),
-        bracket_fg: (236, 72, 153),
+        bracket_bg: (248, 250, 252),
+        bracket_fg: (15, 13, 22),
         bar_bg: (15, 13, 22),
         tab_active_bg: (34, 26, 52),
         ok: (248, 250, 252),
@@ -276,53 +281,53 @@ pub const PALETTES: [Palette; 6] = [
         prop: (216, 180, 254),
         comment: (116, 102, 142),
         op: (236, 72, 153),
-        punct: (176, 166, 200),
+        punct: (164, 152, 192),
         var: (216, 180, 254),
         attr: (248, 250, 252),
         key: (192, 132, 252),
-        heading: (216, 180, 254),
+        heading: (248, 250, 252),
     },
-    // Exact 1:1 match to VS Code "Best Themes - Dracula Redefined" + user settings.json overrides
+    // 6. Dracula Redefined (VS Code customizado salvo como opção extra — Alt+6)
     Palette {
         name: "dracula",
         cursor_hex: "#ff73c6",
-        grad: [(255, 115, 198), (184, 130, 255), (107, 227, 245)], // #ff73c6 -> #b882ff -> #6be3f5
-        fg: (235, 238, 247),                                      // #ebeef7 editor.foreground / variables
-        dim: (121, 129, 161),                                     // #7981a1 tab.inactiveForeground
-        line_num: (87, 94, 125),                                  // #575e7d editorLineNumber.foreground
-        active_line_num: (199, 158, 255),                         // #c79eff editorLineNumber.activeForeground
-        border: (46, 51, 71),                                     // #2e3347 editorWidget.border
-        indent_guide: (46, 51, 71),                               // #2e3347 indent guide (readable on translucent bg)
-        indent_active: (147, 112, 230),                           // #9370e6 editorIndentGuide.activeBackground1
-        cur_line_bg: (28, 31, 46),                                // #1c1f2e editor.lineHighlightBackground
-        sel_bg: (59, 42, 94),                                     // #3b2a5e editor.selectionBackground
-        word_hl_bg: (30, 50, 66),                                 // #6be3f51e over #141620 wordHighlightBackground
-        match_bg: (34, 56, 74),                                   // #6be3f524 over #141620 findMatchHighlightBackground
-        active_match_bg: (120, 46, 96),                           // #ff73c640 vivid findMatchBackground
-        bracket_bg: (34, 62, 78),                                 // #6be3f51c over #141620 editorBracketMatch.background
-        bracket_fg: (107, 227, 245),                              // #6be3f5 editorBracketMatch.border
-        bar_bg: (16, 17, 26),                                     // #10111a sideBar / tabsBackground
-        tab_active_bg: (28, 31, 46),                              // #1c1f2e active tab
-        ok: (92, 242, 152),                                       // #5cf298 terminal.ansiGreen
-        warn: (242, 229, 143),                                    // #f2e58f terminal.ansiYellow
-        err: (255, 97, 125),                                      // #ff617d terminal.ansiRed
-        kw: (255, 115, 198),                                      // #ff73c6 keywords / storage.type / storage.modifier
+        grad: [(255, 115, 198), (184, 130, 255), (107, 227, 245)],
+        fg: (235, 238, 247),
+        dim: (121, 129, 161),
+        line_num: (87, 94, 125),
+        active_line_num: (199, 158, 255),
+        border: (46, 51, 71),
+        indent_guide: (46, 51, 71),
+        indent_active: (147, 112, 230),
+        cur_line_bg: (28, 31, 46),
+        sel_bg: (59, 42, 94),
+        word_hl_bg: (30, 50, 66),
+        match_bg: (34, 56, 74),
+        active_match_bg: (120, 46, 96),
+        bracket_bg: (34, 62, 78),
+        bracket_fg: (107, 227, 245),
+        bar_bg: (16, 17, 26),
+        tab_active_bg: (28, 31, 46),
+        ok: (92, 242, 152),
+        warn: (242, 229, 143),
+        err: (255, 97, 125),
+        kw: (255, 115, 198),
         kw_bold: false,
-        ty: (107, 227, 245),                                      // #6be3f5 entity.name.type / class / support.type
-        func: (92, 242, 152),                                     // #5cf298 entity.name.function / support.function
-        str_col: (242, 229, 143),                                 // #f2e58f string / string.quoted
-        escape: (255, 115, 198),                                  // #ff73c6 constant.character.escape
-        num: (199, 158, 255),                                     // #c79eff constant.numeric
-        constant: (199, 158, 255),                                // #c79eff constant.language / constant.other
-        param: (255, 181, 122),                                   // #ffb57a variable.parameter (italic)
-        prop: (135, 230, 216),                                    // #87e6d8 variable.other.property / property-name
-        comment: (127, 135, 168),                                 // #7f87a8 comments (italic)
-        op: (255, 115, 198),                                      // #ff73c6 keyword.operator
-        punct: (184, 192, 222),                                   // #b8c0de punctuation / meta.brace
-        var: (199, 158, 255),                                     // #c79eff source.shell variable.other
-        attr: (135, 230, 216),                                    // #87e6d8 entity.other.attribute-name
-        key: (135, 230, 216),                                     // #87e6d8 support.type.property-name
-        heading: (199, 158, 255),                                 // #c79eff markup.heading (bold)
+        ty: (107, 227, 245),
+        func: (92, 242, 152),
+        str_col: (242, 229, 143),
+        escape: (255, 115, 198),
+        num: (199, 158, 255),
+        constant: (199, 158, 255),
+        param: (255, 181, 122),
+        prop: (135, 230, 216),
+        comment: (127, 135, 168),
+        op: (255, 115, 198),
+        punct: (184, 192, 222),
+        var: (199, 158, 255),
+        attr: (135, 230, 216),
+        key: (135, 230, 216),
+        heading: (199, 158, 255),
     },
 ];
 
@@ -331,7 +336,7 @@ impl Palette {
         PALETTES
             .iter()
             .find(|p| p.name.eq_ignore_ascii_case(name.trim()))
-            .unwrap_or(&PALETTES[5])
+            .unwrap_or(&PALETTES[0])
     }
 
     pub fn by_index(idx: usize) -> &'static Palette {
@@ -353,7 +358,7 @@ impl Palette {
         if let Ok(name) = fs::read_to_string(path) {
             Self::by_name(&name)
         } else {
-            Self::by_name("dracula")
+            &PALETTES[0]
         }
     }
 
