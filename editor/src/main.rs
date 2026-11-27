@@ -498,6 +498,12 @@ impl App {
         self.completion = None;
     }
 
+    fn completion_popup_visible(&self) -> bool {
+        self.completion
+            .as_ref()
+            .is_some_and(|c| self.cfg.autocomplete_popup || c.forced)
+    }
+
     fn refresh_completion(&mut self, forced: bool) {
         if !matches!(self.mode, Mode::Edit) || (self.term_open && self.term_focused) {
             self.completion = None;
@@ -2686,13 +2692,13 @@ impl App {
                     }
                     return;
                 }
-                KeyCode::Char('n') if self.completion.is_some() => {
+                KeyCode::Char('n') if self.completion_popup_visible() => {
                     if let Some(ref mut c) = self.completion {
                         c.move_sel(1);
                     }
                     return;
                 }
-                KeyCode::Char('p') if self.completion.is_some() => {
+                KeyCode::Char('p') if self.completion_popup_visible() => {
                     if let Some(ref mut c) = self.completion {
                         c.move_sel(-1);
                     }
@@ -2901,7 +2907,7 @@ impl App {
                 self.doc_mut().move_cursors(Motion::Right, k.shift);
             }
             KeyCode::Up => {
-                if !k.shift && self.completion.is_some() {
+                if !k.shift && self.completion_popup_visible() {
                     if let Some(ref mut c) = self.completion {
                         c.move_sel(-1);
                     }
@@ -2911,7 +2917,7 @@ impl App {
                 }
             }
             KeyCode::Down => {
-                if !k.shift && self.completion.is_some() {
+                if !k.shift && self.completion_popup_visible() {
                     if let Some(ref mut c) = self.completion {
                         c.move_sel(1);
                     }
@@ -3401,7 +3407,17 @@ impl App {
                         self.clear_completion();
                     }
                     let st = if self.cfg.autocomplete { "ON" } else { "OFF" };
-                    self.set_status(format!("Autocomplete Inteligente: {}", st));
+                    self.set_status(format!("Autocomplete / Dicas: {}", st));
+                }
+                PickerAction::ToggleAutocompletePopup => {
+                    self.cfg.autocomplete_popup = !self.cfg.autocomplete_popup;
+                    self.cfg.save();
+                    let st = if self.cfg.autocomplete_popup {
+                        "ON (popup flutuante visivel)"
+                    } else {
+                        "OFF (so texto fantasma inline · Ctrl+Space abre popup)"
+                    };
+                    self.set_status(format!("Popup de Dicas do Autocomplete: {}", st));
                 }
                 PickerAction::CycleWtBgMode => self.apply_wt_bg_mode(None),
                 PickerAction::SetWtBgFrosted => self.apply_wt_bg_mode(Some("frosted")),

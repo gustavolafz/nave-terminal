@@ -38,6 +38,7 @@ pub enum PickerAction {
     ToggleTrailingSpaces,
     CycleColorColumn,
     ToggleAutocomplete,
+    ToggleAutocompletePopup,
     CycleAutocompleteMinLen,
     ToggleCpRadar,
     ToggleExamMode,
@@ -536,13 +537,18 @@ impl Picker {
                 action: PickerAction::JumpMatchingBracket,
             },
             PickerItem {
-                label: format!("Autocomplete Inteligente de Variaveis/STL [{}]", onoff(cfg.autocomplete)),
-                detail: format!("Tab aceita · Ctrl+Space forca (min {} chars)", cfg.autocomplete_min_len),
+                label: format!("Autocomplete: Popup de Dicas [{}]", onoff(cfg.autocomplete_popup)),
+                detail: "OFF = so texto fantasma (Ctrl+Space abre)".into(),
+                action: PickerAction::ToggleAutocompletePopup,
+            },
+            PickerItem {
+                label: format!("Autocomplete / Dicas [{}]", onoff(cfg.autocomplete)),
+                detail: format!("liga/desliga sugestoes (min {} chars)", cfg.autocomplete_min_len),
                 action: PickerAction::ToggleAutocomplete,
             },
             PickerItem {
-                label: format!("Autocomplete: Tamanho Minimo de Variavel [{} chars]", cfg.autocomplete_min_len),
-                detail: "3 / 4 / 5 / 6 caracteres".into(),
+                label: format!("Autocomplete: Minimo de Caracteres [{}]", cfg.autocomplete_min_len),
+                detail: "3 / 4 / 5 / 6 chars".into(),
                 action: PickerAction::CycleAutocompleteMinLen,
             },
             PickerItem {

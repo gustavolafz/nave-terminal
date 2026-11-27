@@ -25,6 +25,7 @@ pub struct EditorConfig {
     pub show_trailing: bool,
     pub color_column: usize, // 0 = off, else 80 / 100 / 120
     pub autocomplete: bool,
+    pub autocomplete_popup: bool,
     pub autocomplete_min_len: usize, // min identifier length for auto suggestions (default 4)
     pub cp_radar: bool,
     pub exam_mode: bool,
@@ -55,6 +56,7 @@ impl Default for EditorConfig {
             show_trailing: true,
             color_column: 120,
             autocomplete: true,
+            autocomplete_popup: true,
             autocomplete_min_len: 4,
             cp_radar: true,
             exam_mode: false,
@@ -124,6 +126,7 @@ impl EditorConfig {
                     }
                 }
                 "autocomplete" => cfg.autocomplete = parse_bool(v),
+                "autocomplete_popup" => cfg.autocomplete_popup = parse_bool(v),
                 "autocomplete_min_len" => {
                     if let Ok(n) = v.parse::<usize>() {
                         cfg.autocomplete_min_len = n.clamp(3, 8);
@@ -170,6 +173,7 @@ impl EditorConfig {
              show_trailing={}\n\
              color_column={}\n\
              autocomplete={}\n\
+             autocomplete_popup={}\n\
              autocomplete_min_len={}\n\
              cp_radar={}\n\
              exam_mode={}\n\
@@ -195,6 +199,7 @@ impl EditorConfig {
             self.show_trailing,
             self.color_column,
             self.autocomplete,
+            self.autocomplete_popup,
             self.autocomplete_min_len,
             self.cp_radar,
             self.exam_mode,

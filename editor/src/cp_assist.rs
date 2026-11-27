@@ -44,6 +44,7 @@ pub struct CompletionPopup {
     pub items: Vec<CompletionItem>,
     pub selected: usize,
     pub user_navigated: bool,
+    pub forced: bool,
 }
 
 impl CompletionPopup {
@@ -354,6 +355,7 @@ pub fn compute_completions(
         items,
         selected: 0,
         user_navigated: false,
+        forced,
     })
 }
 

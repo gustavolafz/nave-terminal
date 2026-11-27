@@ -1368,7 +1368,7 @@ pub fn render_editor(
     // -------------------------------------------------------------------------
     if picker.is_none() && !has_prompt {
         if let (Some(comp), Some((cy, cx))) = (completion, primary_screen_pos) {
-            if !comp.items.is_empty() && rows >= 8 && cols >= 30 {
+            if (cfg.autocomplete_popup || comp.forced) && !comp.items.is_empty() && rows >= 8 && cols >= 30 {
                 let max_vis = comp.items.len().min(6);
                 let pop_h = max_vis + 2;
                 let max_lbl = comp
