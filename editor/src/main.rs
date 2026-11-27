@@ -477,9 +477,11 @@ impl App {
                 }
                 KeyCode::Char('m') => {
                     let head = self.doc().primary_cursor().head;
-                    if let Some((_a, b)) = syntax::find_matching_bracket(&self.doc().rope, head) {
+                    let at_cursor = self.cfg.block_cursor;
+                    if let Some((_a, b)) = syntax::find_matching_bracket(&self.doc().rope, head, at_cursor) {
                         let doc = self.doc_mut();
-                        doc.cursors = vec![document::Selection::caret(b)];
+                        let target = if at_cursor { b } else { (b + 1).min(doc.rope.len_bytes()) };
+                        doc.cursors = vec![document::Selection::caret(target)];
                         doc.primary = 0;
                     }
                     return;

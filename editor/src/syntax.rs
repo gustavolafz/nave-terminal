@@ -1435,20 +1435,26 @@ fn is_type_name(lang: Language, w: &str) -> bool {
     }
 }
 
-/// Find matching bracket byte offset for `() [] {}` at or immediately before `byte_pos`.
-pub fn find_matching_bracket(rope: &Rope, byte_pos: usize) -> Option<(usize, usize)> {
+/// Find matching bracket byte offset for `() [] {}`.
+/// - In thin bar cursor mode (`at_cursor = false`): only triggers when the cursor is
+///   immediately AFTER a delimiter (`byte_pos - 1`), never before `([{` or `)]}`.
+/// - In Vim block cursor mode (`at_cursor = true`): triggers on the delimiter directly
+///   under the block cursor (`byte_pos`).
+pub fn find_matching_bracket(rope: &Rope, byte_pos: usize, at_cursor: bool) -> Option<(usize, usize)> {
     let len = rope.len_bytes();
     if len == 0 {
         return None;
     }
 
-    // Check char at cursor, then char immediately before cursor
-    let check_positions = [
-        (byte_pos < len).then_some(byte_pos),
-        (byte_pos > 0).then_some(byte_pos.saturating_sub(1)),
-    ];
+    let pos = if at_cursor {
+        if byte_pos < len { byte_pos } else { return None }
+    } else if byte_pos > 0 {
+        byte_pos - 1
+    } else {
+        return None;
+    };
 
-    for pos in check_positions.into_iter().flatten() {
+    for pos in [pos] {
         let s = rope.slice(pos, (pos + 1).min(len));
         let b = match s.as_bytes().first().copied() {
             Some(c) => c,
@@ -1544,9 +1550,17 @@ mod tests {
     #[test]
     fn bracket_matching_nested() {
         let r = Rope::from_str("fn f(a: Vec<(i32, i32)>) { let s = \")\"; }");
-        assert_eq!(find_matching_bracket(&r, 4), Some((4, 23)));
-        assert_eq!(find_matching_bracket(&r, 23), Some((23, 4)));
-        assert_eq!(find_matching_bracket(&r, 25), Some((25, 40)));
+        // Bar cursor (`at_cursor = false`): NEVER before delimiter, ONLY immediately after!
+        assert_eq!(find_matching_bracket(&r, 4, false), None);           // before '('
+        assert_eq!(find_matching_bracket(&r, 5, false), Some((4, 23)));  // after '('
+        assert_eq!(find_matching_bracket(&r, 23, false), None);          // before ')'
+        assert_eq!(find_matching_bracket(&r, 24, false), Some((23, 4))); // after ')'
+        assert_eq!(find_matching_bracket(&r, 25, false), None);          // before '{'
+        assert_eq!(find_matching_bracket(&r, 26, false), Some((25, 40))); // after '{'
+        // Block cursor (`at_cursor = true`): directly under block
+        assert_eq!(find_matching_bracket(&r, 4, true), Some((4, 23)));
+        assert_eq!(find_matching_bracket(&r, 23, true), Some((23, 4)));
+        assert_eq!(find_matching_bracket(&r, 25, true), Some((25, 40)));
     }
 
     #[test]
