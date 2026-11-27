@@ -150,6 +150,10 @@ impl Document {
         self.rev != self.saved_rev
     }
 
+    pub fn revision(&self) -> usize {
+        self.rev
+    }
+
     pub fn primary_cursor(&self) -> Selection {
         self.cursors[self.primary.min(self.cursors.len() - 1)]
     }

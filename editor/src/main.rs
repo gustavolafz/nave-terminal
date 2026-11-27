@@ -153,6 +153,8 @@ struct App {
     cursor_trails: Vec<CursorTrail>,
     last_cursor_screen: Option<(usize, usize)>,
     arm_cursor_trail: bool,
+    last_edit_sig: u64,
+    pending_autosave_at: Option<Instant>,
     should_quit: bool,
     last_mtime_check: Instant,
 }
@@ -241,6 +243,8 @@ impl App {
             cursor_trails: Vec::new(),
             last_cursor_screen: None,
             arm_cursor_trail: false,
+            last_edit_sig: 0,
+            pending_autosave_at: None,
             should_quit: false,
             last_mtime_check: Instant::now(),
         }
@@ -2659,6 +2663,9 @@ impl App {
                     return;
                 }
                 KeyCode::Char('q') => {
+                    if self.cfg.auto_save {
+                        self.flush_auto_save();
+                    }
                     if self.docs.iter().flatten().any(|d| d.is_dirty()) {
                         self.mode = Mode::ConfirmQuit;
                     } else {
@@ -2668,6 +2675,9 @@ impl App {
                 }
                 KeyCode::Char('w') => {
                     let did = self.active_doc_id();
+                    if self.cfg.auto_save && self.doc().is_dirty() && self.doc_ref_count(did) == 1 {
+                        self.flush_auto_save();
+                    }
                     if self.doc().is_dirty() && self.doc_ref_count(did) == 1 {
                         self.mode = Mode::ConfirmCloseTab;
                     } else {
@@ -3600,6 +3610,17 @@ impl App {
                     self.cfg.save();
                     self.set_status(format!("Word Wrap: {}", if self.cfg.wrap { "ON" } else { "OFF" }));
                 }
+                PickerAction::ToggleAutoSave => {
+                    self.cfg.auto_save = !self.cfg.auto_save;
+                    self.cfg.save();
+                    if self.cfg.auto_save {
+                        self.flush_auto_save();
+                        self.set_status("✓ Auto-Save: ON (salva automaticamente apos 600ms)");
+                    } else {
+                        self.pending_autosave_at = None;
+                        self.set_status("Auto-Save: OFF (salve manualmente com Ctrl+S)");
+                    }
+                }
                 PickerAction::ToggleAutoClose => {
                     self.cfg.auto_close = !self.cfg.auto_close;
                     self.cfg.save();
@@ -3673,6 +3694,70 @@ impl App {
         self.cfg.save();
         self.term_sync_needed = true;
         self.set_status(format!("Paleta: {}", self.palette.name));
+    }
+
+    fn dirty_edit_signature(&self) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for (did, slot) in self.docs.iter().enumerate() {
+            if Some(did) == self.judge_doc_id {
+                continue;
+            }
+            if let Some(doc) = slot.as_ref() {
+                if doc.is_dirty() {
+                    h ^= (did as u64).wrapping_add(1).wrapping_mul(0x9e3779b97f4a7c15);
+                    h = h.wrapping_mul(0x100000001b3) ^ (doc.revision() as u64);
+                }
+            }
+        }
+        h
+    }
+
+    fn flush_auto_save(&mut self) -> bool {
+        let mut saved_any = false;
+        let mut last_err: Option<String> = None;
+        let jid = self.judge_doc_id;
+        for did in 0..self.docs.len() {
+            if Some(did) == jid {
+                continue;
+            }
+            if let Some(doc) = self.docs[did].as_mut() {
+                if doc.is_dirty() && doc.path.is_some() && !doc.external_changed {
+                    match doc.save() {
+                        Ok(()) => saved_any = true,
+                        Err(e) => last_err = Some(e.to_string()),
+                    }
+                }
+            }
+        }
+        self.pending_autosave_at = None;
+        self.last_edit_sig = self.dirty_edit_signature();
+        if let Some(e) = last_err {
+            self.set_status(format!("Auto-Save falhou: {}", e));
+        }
+        saved_any
+    }
+
+    fn poll_auto_save(&mut self) -> bool {
+        let sig = self.dirty_edit_signature();
+        if sig != self.last_edit_sig {
+            self.last_edit_sig = sig;
+            if self.cfg.auto_save && sig != 0xcbf29ce484222325 {
+                self.pending_autosave_at = Some(Instant::now());
+            } else {
+                self.pending_autosave_at = None;
+            }
+            return false;
+        }
+        if !self.cfg.auto_save {
+            return false;
+        }
+        if self
+            .pending_autosave_at
+            .is_some_and(|t| t.elapsed() >= Duration::from_millis(600))
+        {
+            return self.flush_auto_save();
+        }
+        false
     }
 
     fn try_save_active(&mut self) -> bool {
@@ -4134,6 +4219,9 @@ fn main() {
             needs_redraw = true;
         }
         if app.poll_judge_updates(cols, rows) {
+            needs_redraw = true;
+        }
+        if app.poll_auto_save() {
             needs_redraw = true;
         }
         if !app.cursor_trails.is_empty() && last_trail_frame.elapsed() >= Duration::from_millis(8) {

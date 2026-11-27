@@ -58,6 +58,7 @@ pub enum PickerAction {
     TimerTogglePause,
     TimerStop,
     ToggleWrap,
+    ToggleAutoSave,
     ToggleAutoClose,
     ToggleLineEnding,
     TrimTrailingSpaces,
@@ -380,6 +381,11 @@ impl Picker {
                 ),
                 detail: "0 / 80 / 100 / 120".into(),
                 action: PickerAction::CycleColorColumn,
+            },
+            PickerItem {
+                label: format!("Auto-Save (Salvar Automaticamente) [{}]", onoff(cfg.auto_save)),
+                detail: "apos 600ms sem digitar".into(),
+                action: PickerAction::ToggleAutoSave,
             },
             PickerItem {
                 label: format!("Alternar Word Wrap [{}]", onoff(cfg.wrap)),

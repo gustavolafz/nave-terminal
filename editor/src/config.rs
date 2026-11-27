@@ -16,6 +16,7 @@ pub struct EditorConfig {
     pub center_scroll: bool,
     pub scrolloff: usize,
     pub wrap: bool,
+    pub auto_save: bool,
     pub auto_close: bool,
     pub cursorword: bool,
     pub indent_guides: bool,
@@ -47,6 +48,7 @@ impl Default for EditorConfig {
             center_scroll: false,
             scrolloff: 3,
             wrap: false,
+            auto_save: true,
             auto_close: true,
             cursorword: true,
             indent_guides: true,
@@ -113,6 +115,7 @@ impl EditorConfig {
                     }
                 }
                 "wrap" => cfg.wrap = parse_bool(v),
+                "auto_save" => cfg.auto_save = parse_bool(v),
                 "auto_close" => cfg.auto_close = parse_bool(v),
                 "cursorword" => cfg.cursorword = parse_bool(v),
                 "indent_guides" => cfg.indent_guides = parse_bool(v),
@@ -164,6 +167,7 @@ impl EditorConfig {
              center_scroll={}\n\
              scrolloff={}\n\
              wrap={}\n\
+             auto_save={}\n\
              auto_close={}\n\
              cursorword={}\n\
              indent_guides={}\n\
@@ -190,6 +194,7 @@ impl EditorConfig {
             self.center_scroll,
             self.scrolloff,
             self.wrap,
+            self.auto_save,
             self.auto_close,
             self.cursorword,
             self.indent_guides,
