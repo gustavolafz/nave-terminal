@@ -637,6 +637,7 @@ function nave-edit {
     & wsl.exe bash -lc 'exec "$HOME/.local/bin/nave-edit" "$@"' -- @wslArgs
 }
 Set-Alias -Name ne -Value nave-edit -Scope Global -ErrorAction SilentlyContinue
+function mdview { nave-edit --preview @args }
 function nave-cursor-reset {
     $exe = Join-Path $HOME ".config\nave\nave-hidemouse.exe"
     if (Test-Path $exe) { & $exe --reset; Write-Host "Cursor do Windows restaurado." -ForegroundColor Green }

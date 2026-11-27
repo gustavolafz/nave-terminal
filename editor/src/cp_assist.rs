@@ -749,6 +749,44 @@ pub struct SymbolEntry {
 pub fn extract_symbols(rope: &Rope, lang: Language) -> Vec<SymbolEntry> {
     let mut out = Vec::new();
     let total = rope.line_count().min(10_000);
+    if lang == Language::Markdown {
+        let mut in_fence = false;
+        for r in 0..total {
+            let line = rope.line(r);
+            let trimmed = line.trim();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                in_fence = !in_fence;
+                continue;
+            }
+            if in_fence {
+                continue;
+            }
+            let hashes = trimmed.bytes().take_while(|&b| b == b'#').count();
+            if (1..=6).contains(&hashes) {
+                let rest = &trimmed[hashes..];
+                if rest.starts_with(' ') || rest.starts_with('\t') {
+                    let title = rest.trim().trim_end_matches('#').trim();
+                    if !title.is_empty() {
+                        let kind = match hashes {
+                            1 => "H1",
+                            2 => "H2",
+                            3 => "H3",
+                            4 => "H4",
+                            5 => "H5",
+                            _ => "H6",
+                        };
+                        let indent = "  ".repeat(hashes.saturating_sub(1));
+                        out.push(SymbolEntry {
+                            name: format!("{}{}", indent, title),
+                            kind,
+                            line: r + 1,
+                        });
+                    }
+                }
+            }
+        }
+        return out;
+    }
     for r in 0..total {
         let line = rope.line(r);
         let trimmed = line.trim();

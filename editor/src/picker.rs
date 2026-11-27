@@ -79,6 +79,8 @@ pub enum PickerAction {
     ClosePane,
     ToggleTerminal,
     RestartTerminal,
+    ToggleMarkdownPreview,
+    MarkdownPreviewSide,
     SetPalette(usize),
 }
 
@@ -486,6 +488,16 @@ impl Picker {
                 label: "Novo / Reiniciar Terminal Integrado".into(),
                 detail: "abre shell limpo na pasta atual".into(),
                 action: PickerAction::RestartTerminal,
+            },
+            PickerItem {
+                label: "Markdown: Modo Visualizacao (Reader .md)".into(),
+                detail: "Alt+P · F7 · Ctrl+Shift+V".into(),
+                action: PickerAction::ToggleMarkdownPreview,
+            },
+            PickerItem {
+                label: "Markdown: Preview ao Lado (Split Vivo)".into(),
+                detail: "Ctrl+K m · edita esquerda, ve direita".into(),
+                action: PickerAction::MarkdownPreviewSide,
             },
             PickerItem {
                 label: "CP: Compilar e Julgar Casos (O2 · -DLOCAL)".into(),

@@ -63,6 +63,7 @@ fi
 command -v lazygit >/dev/null 2>&1 && alias lg='lazygit'
 command -v btop >/dev/null 2>&1 && alias mon='btop'
 command -v nave-edit >/dev/null 2>&1 && alias ne='nave-edit'
+command -v nave-edit >/dev/null 2>&1 && alias mdview='nave-edit --preview'
 function nave-cursor-reset {
   local exe="/mnt/c/Users/${USER}/.config/nave/nave-hidemouse.exe"
   [[ -x "$exe" ]] || exe=(/mnt/c/Users/*/.config/nave/nave-hidemouse.exe(N[1]))
@@ -1398,6 +1399,7 @@ function nave-help {
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}sysinfo / hr [titulo]%f  Arte + barras de sistema / regua divisoria"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-hud / nave-warp%f   Cockpit tempo real ([1-6],[p]) / starfield 3D"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}ne <arquivo> (Ctrl+')%f  Editor nativo Rust (multi-painel + terminal integrado)"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}mdview <arq.md>%f        Leitor visual Markdown nativo (Alt+P / Ctrl+K m split)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-doctor%f            Diagnostico completo (startup, historico, helpers, WT)"
   print -P "%F{${c_frm}}│%f"
   print -P "%F{${c_frm}}│%f %F{${c_lbl}}%BNavegacao, Busca & Execucao%b%f"

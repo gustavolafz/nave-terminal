@@ -44,6 +44,9 @@ pub struct PaneLayoutInfo {
     pub visual_rows: Vec<VisualRowInfo>,
     pub tab_bar_row: usize,
     pub tab_hitboxes: Vec<(usize, usize, usize)>, // (start_col, end_col, tab_idx)
+    pub md_preview: bool,
+    pub md_total_lines: usize,
+    pub md_row_sources: Vec<usize>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -374,6 +377,9 @@ pub fn predict_primary_screen_pos(
     p: &PaneRenderInput,
     cfg: &EditorConfig,
 ) -> Option<(usize, usize)> {
+    if p.md_preview {
+        return None;
+    }
     let rect = p.rect;
     let total_lines = doc.rope.line_count();
     let (content_h, _) = pane_content_height(doc, rect.w, rect.h, p.scroll_row, p.scroll_col, cfg);
@@ -454,6 +460,7 @@ pub struct TabBadge {
     pub name: String,
     pub dirty: bool,
     pub active: bool,
+    pub md_preview: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -468,6 +475,7 @@ pub struct PaneRenderInput {
     pub scroll_col: usize,
     pub cursors: Vec<Selection>,
     pub primary: usize,
+    pub md_preview: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -757,6 +765,7 @@ pub fn render_editor(
 
     let mut primary_screen_pos: Option<(usize, usize)> = None;
     let mut active_status_info: Option<(usize, usize, usize, usize, String, String, bool, usize)> = None;
+    let mut active_md_info: Option<(usize, usize, usize, usize)> = None; // (scroll, md_total, src_row, src_total)
 
     // -------------------------------------------------------------------------
     // Render each Pane inside its exact Rect (header tab bar + editor canvas)
@@ -791,6 +800,14 @@ pub fn render_editor(
         if p.is_focused {
             primary_screen_pos = p_cursor;
             layout.primary_cursor_screen = p_cursor;
+            if p_layout.md_preview {
+                active_md_info = Some((
+                    p.scroll_row.min(p_layout.md_total_lines.saturating_sub(1)),
+                    p_layout.md_total_lines.max(1),
+                    cur_row,
+                    doc.rope.line_count().max(1),
+                ));
+            }
             active_status_info = Some((
                 cur_row,
                 cur_col,
@@ -1203,6 +1220,19 @@ pub fn render_editor(
                 tp.screen.cur_col + 1
             )
         }
+    } else if let Some((md_scroll, md_total, src_row, src_total)) = active_md_info {
+        let pct = if md_total <= 1 {
+            100
+        } else {
+            ((md_scroll * 100) / md_total.saturating_sub(1)).min(100)
+        };
+        format!(
+            " ◈ PREVIEW · {}% · Ln {}/{}{}",
+            pct,
+            src_row + 1,
+            src_total,
+            pane_badge
+        )
     } else {
         format!(
             " Ln {}, Col {}{}{}",
@@ -1265,6 +1295,8 @@ pub fn render_editor(
     };
     let right_help = if term_panel.is_some_and(|t| t.is_focused) {
         "Ctrl+' ocultar · Ctrl+1..9 editor · Shift+PgUp/Dn scroll · F1 cmds ".into()
+    } else if active_md_info.is_some() {
+        "↑↓/j/k rolar · [/] secao · e/Alt+P editar · Ctrl+K m split · F1 cmds ".into()
     } else if multi_pane {
         format!(
             "[{} · {}{}{}] [{}]{} · Ctrl+' term · F1 cmds ",
@@ -1595,18 +1627,21 @@ fn render_pane(
     let mut p_layout = PaneLayoutInfo {
         pane_id: p.pane_id,
         rect,
-        gutter_width: gutter_w,
+        gutter_width: if p.md_preview { 0 } else { gutter_w },
         content_start_row,
-        content_height: content_h,
-        scrollbar_col: if show_sb && rect.w > 0 {
+        content_height: if p.md_preview { rect.h.saturating_sub(1) } else { content_h },
+        scrollbar_col: if (if p.md_preview { cfg.scrollbar && rect.w >= 16 } else { show_sb }) && rect.w > 0 {
             Some(rect.x + rect.w - 1)
         } else {
             None
         },
-        hscrollbar: hscrollbar_info,
+        hscrollbar: if p.md_preview { None } else { hscrollbar_info },
         visual_rows: Vec::with_capacity(content_h),
         tab_bar_row: rect.y,
         tab_hitboxes: Vec::new(),
+        md_preview: p.md_preview,
+        md_total_lines: 0,
+        md_row_sources: Vec::new(),
     };
 
     // -------------------------------------------------------------------------
@@ -1648,14 +1683,18 @@ fn render_pane(
     }
 
     let right_meta = if !multi_pane {
-        format!(
-            " [{} · {}{}{}] [{}] ",
-            doc.lang.name(),
-            doc.eol.label(),
-            if wrap { " · WRAP" } else { "" },
-            if cfg.relative_numbers { " · REL" } else { "" },
-            pal.name
-        )
+        if p.md_preview {
+            format!(" [◈ PREVIEW · {}] [{}] ", doc.lang.name(), pal.name)
+        } else {
+            format!(
+                " [{} · {}{}{}] [{}] ",
+                doc.lang.name(),
+                doc.eol.label(),
+                if wrap { " · WRAP" } else { "" },
+                if cfg.relative_numbers { " · REL" } else { "" },
+                pal.name
+            )
+        }
     } else {
         String::new()
     };
@@ -1672,7 +1711,10 @@ fn render_pane(
     if p.tabs.len() > 1 {
         let mut w_to_active = 0usize;
         for t in p.tabs.iter().take(active_idx + 1) {
-            let lbl_w = str_display_width(&t.name) + if t.dirty { 4 } else { 2 } + 1;
+            let lbl_w = str_display_width(&t.name)
+                + if t.md_preview { 2 } else { 0 }
+                + if t.dirty { 4 } else { 2 }
+                + 1;
             w_to_active += lbl_w;
         }
         if used_cols + w_to_active > max_tabs_col {
@@ -1681,10 +1723,11 @@ fn render_pane(
     }
 
     for (idx, t) in p.tabs.iter().enumerate().skip(start_tab) {
+        let pfx = if t.md_preview { "◈ " } else { "" };
         let full_label = if t.dirty {
-            format!(" {} ● ", t.name)
+            format!(" {}{} ● ", pfx, t.name)
         } else {
-            format!(" {} ", t.name)
+            format!(" {}{} ", pfx, t.name)
         };
         let avail = max_tabs_col.saturating_sub(used_cols);
         if avail < 3 {
@@ -1738,6 +1781,64 @@ fn render_pane(
         }
     }
     out.push_str(RST);
+
+    // -------------------------------------------------------------------------
+    // Markdown Visual Reader Mode Canvas (rendered headings, tables, code, alerts)
+    // -------------------------------------------------------------------------
+    if p.md_preview {
+        let md_h = rect.h.saturating_sub(1);
+        let md_show_sb = cfg.scrollbar && rect.w >= 16;
+        let md_sb_w = if md_show_sb { 1 } else { 0 };
+        let md_text_w = rect.w.saturating_sub(md_sb_w);
+        let rendered = crate::markdown::render_markdown(&doc.rope, md_text_w, pal);
+        let tot = rendered.total_lines();
+        p_layout.md_total_lines = tot;
+        p_layout.md_row_sources = Vec::with_capacity(md_h);
+
+        let max_scroll = tot.saturating_sub(md_h);
+        let scroll = p.scroll_row.min(max_scroll);
+
+        let (sb_start, sb_end, sb_cur) = if md_show_sb && md_h > 0 {
+            let thumb_h = ((md_h * md_h) / tot.max(1)).clamp(1, md_h);
+            let start = if tot <= md_h || max_scroll == 0 {
+                0
+            } else {
+                (scroll * (md_h - thumb_h)) / max_scroll
+            };
+            let cur_y = (scroll * md_h.saturating_sub(1)) / max_scroll.max(1);
+            (start, (start + thumb_h).min(md_h), cur_y.min(md_h.saturating_sub(1)))
+        } else {
+            (0, 0, 0)
+        };
+
+        let last_src = doc.rope.line_count().saturating_sub(1);
+        for sy in 0..md_h {
+            let abs_row = content_start_row + sy;
+            let md_row = scroll + sy;
+            let line_opt = rendered.lines.get(md_row);
+            p_layout
+                .md_row_sources
+                .push(line_opt.map(|l| l.source_line).unwrap_or(last_src));
+
+            let _ = write!(out, "\x1b[{};{}H", abs_row + 1, rect.x + 1);
+            crate::markdown::write_md_line_cells(
+                out,
+                line_opt,
+                rendered.left_margin,
+                md_text_w,
+                pal,
+                cfg.opaque_bg,
+            );
+            if md_show_sb {
+                push_base_bg(out, cfg, pal);
+                push_scrollbar_cell(out, sy, md_h, sb_start, sb_end, sb_cur, sb_hot, pal);
+            }
+            out.push_str(RST);
+        }
+
+        let top_src = p_layout.md_row_sources.first().copied().unwrap_or(0);
+        return (p_layout, None, 0, top_src, 0, 1);
+    }
 
     // -------------------------------------------------------------------------
     // Pane Editor Canvas (`rect.y + 1 .. rect.y + rect.h`)
@@ -2611,11 +2712,12 @@ mod tests {
             rect: Rect { x: 0, y: 0, w: 60, h: 10 },
             is_focused: true,
             doc_id: 0,
-            tabs: vec![TabBadge { name: "t.cpp".into(), dirty: false, active: true }],
+            tabs: vec![TabBadge { name: "t.cpp".into(), dirty: false, active: true, md_preview: false }],
             scroll_row: 0,
             scroll_col: 0,
             cursors: vec![sel],
             primary: 0,
+            md_preview: false,
         };
         let pal = &crate::palette::PALETTES[0];
         let cfg = EditorConfig::default();
@@ -2666,11 +2768,12 @@ mod tests {
             rect: Rect { x: 0, y: 0, w: 50, h: 10 },
             is_focused: true,
             doc_id: 0,
-            tabs: vec![TabBadge { name: "s.cpp".into(), dirty: false, active: true }],
+            tabs: vec![TabBadge { name: "s.cpp".into(), dirty: false, active: true, md_preview: false }],
             scroll_row: 0,
             scroll_col: 0,
             cursors: vec![Selection::caret(0)],
             primary: 0,
+            md_preview: false,
         };
         let mut out1 = String::new();
         let (l1, _, _, _, _, _) =
@@ -2689,5 +2792,37 @@ mod tests {
         assert_eq!(l2.content_height, 8);
         assert!(max_sc > 80);
         assert!(out2.contains('━'));
+    }
+
+    #[test]
+    fn markdown_preview_pane_renders_styled_blocks_and_hides_cursor() {
+        let pal = &crate::palette::PALETTES[0];
+        let cfg = EditorConfig::default();
+        let mut doc = Document::new_empty();
+        doc.rope = crate::rope::Rope::from_str("# Titulo\n\n- [x] **Feito**\n\n| A | B |\n|---|---|\n| 1 | 2 |\n");
+        let p = PaneRenderInput {
+            pane_id: 0,
+            group_num: 1,
+            rect: Rect { x: 0, y: 0, w: 60, h: 14 },
+            is_focused: true,
+            doc_id: 0,
+            tabs: vec![TabBadge { name: "README.md".into(), dirty: false, active: true, md_preview: true }],
+            scroll_row: 0,
+            scroll_col: 0,
+            cursors: vec![Selection::caret(0)],
+            primary: 0,
+            md_preview: true,
+        };
+        let mut out = String::new();
+        let (pl, cursor, _, _, _, _) =
+            render_pane(&mut out, &mut doc, &p, false, false, false, &[], None, &HashMap::new(), pal, &cfg);
+        assert!(pl.md_preview);
+        assert!(cursor.is_none(), "hardware cursor must stay hidden in Markdown preview mode");
+        assert!(pl.hscrollbar.is_none());
+        assert!(pl.md_total_lines >= 8);
+        assert!(out.contains("◈ README.md"));
+        assert!(out.contains("[✓]"));
+        assert!(out.contains('┌'));
+        assert!(out.contains('═'));
     }
 }

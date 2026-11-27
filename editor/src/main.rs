@@ -5,6 +5,7 @@ mod git;
 mod input;
 mod judge;
 mod layout;
+mod markdown;
 mod palette;
 mod picker;
 mod pty_term;
@@ -90,6 +91,8 @@ struct TabView {
     scroll_col: usize,
     cursors: Vec<Selection>,
     primary: usize,
+    md_preview: bool,
+    md_scroll: usize,
 }
 
 impl TabView {
@@ -100,6 +103,8 @@ impl TabView {
             scroll_col: doc.scroll_col,
             cursors: doc.cursors.clone(),
             primary: doc.primary,
+            md_preview: false,
+            md_scroll: 0,
         }
     }
 }
@@ -162,6 +167,7 @@ struct App {
     arm_cursor_trail: bool,
     last_edit_sig: u64,
     pending_autosave_at: Option<Instant>,
+    last_md_sync: (usize, usize, usize), // (doc_id, primary_row, doc_rev)
     should_quit: bool,
     last_mtime_check: Instant,
 }
@@ -253,6 +259,7 @@ impl App {
             arm_cursor_trail: false,
             last_edit_sig: 0,
             pending_autosave_at: None,
+            last_md_sync: (usize::MAX, 0, 0),
             should_quit: false,
             last_mtime_check: Instant::now(),
         }
@@ -333,6 +340,152 @@ impl App {
             cur_tv.cursors = cursors;
             cur_tv.primary = primary;
             cur_tv.scroll_row = scroll_row;
+        }
+    }
+
+    fn active_is_md_preview(&self) -> bool {
+        self.pane(self.active_pane).active_view().md_preview
+    }
+
+    fn pane_md_geometry(&self, pid: PaneId, cols: usize, rows: usize) -> (usize, usize) {
+        let area = self.pane_area(cols, rows);
+        let computed = self.layout_tree.compute(area);
+        let rect = computed
+            .rect_of(pid)
+            .unwrap_or(Rect { x: 0, y: 0, w: cols, h: rows.saturating_sub(1) });
+        let sb_w = if self.cfg.scrollbar && rect.w >= 16 { 1 } else { 0 };
+        let text_w = rect.w.saturating_sub(sb_w).max(8);
+        let content_h = rect.h.saturating_sub(1).max(1);
+        (text_w, content_h)
+    }
+
+    fn toggle_markdown_preview(&mut self, cols: usize, rows: usize) {
+        self.clear_completion();
+        self.cursor_trails.clear();
+        self.sync_active_to_tab();
+        let pid = self.active_pane;
+        let currently_on = self.pane(pid).active_view().md_preview;
+
+        if !currently_on {
+            let (text_w, _) = self.pane_md_geometry(pid, cols, rows);
+            let (primary_row, _) = self.doc().primary_line_col();
+            let rendered = markdown::render_markdown(&self.doc().rope, text_w, self.palette);
+            let vrow = rendered.visual_row_for_source(primary_row);
+            let tv = self.pane_mut(pid).active_view_mut();
+            tv.md_preview = true;
+            tv.md_scroll = vrow.saturating_sub(2);
+            self.set_status("◈ Modo Visualizacao Markdown (↑↓/j/k rolar · [/] secao · e/Alt+P editar · Ctrl+K m split)");
+        } else {
+            let cur_md_scroll = self.pane(pid).active_view().md_scroll;
+            let target_src = self
+                .layout
+                .panes
+                .iter()
+                .find(|pl| pl.pane_id == pid && pl.md_preview)
+                .and_then(|pl| pl.md_row_sources.first().copied())
+                .unwrap_or_else(|| {
+                    let (text_w, _) = self.pane_md_geometry(pid, cols, rows);
+                    let rendered = markdown::render_markdown(&self.doc().rope, text_w, self.palette);
+                    rendered
+                        .lines
+                        .get(cur_md_scroll)
+                        .map(|l| l.source_line)
+                        .unwrap_or(0)
+                });
+            self.pane_mut(pid).active_view_mut().md_preview = false;
+            self.doc_mut().goto_line(target_src + 1);
+            self.follow_cursor = true;
+            self.set_status("Modo Edicao");
+        }
+    }
+
+    fn open_markdown_preview_side(&mut self, cols: usize, rows: usize) {
+        self.clear_completion();
+        self.cursor_trails.clear();
+        self.sync_active_to_tab();
+        let cur_doc_id = self.active_doc_id();
+
+        // Toggle OFF if another pane is already showing a live preview of this document
+        if let Some(existing_pid) = self.panes.iter().find_map(|p| {
+            if p.id != self.active_pane
+                && p.active_view().doc_id == cur_doc_id
+                && p.active_view().md_preview
+            {
+                Some(p.id)
+            } else {
+                None
+            }
+        }) {
+            if self.panes.len() > 1 {
+                self.panes.retain(|p| p.id != existing_pid);
+                if let Some(next_pid) = self.layout_tree.remove_pane(existing_pid) {
+                    if self.active_pane == existing_pid {
+                        self.active_pane = next_pid;
+                    }
+                    self.load_active_from_tab();
+                }
+                self.set_status("Preview Markdown ao lado fechado");
+                return;
+            }
+        }
+
+        // Ensure source pane is in Edit mode before splitting live preview to the right
+        let src_pid = self.active_pane;
+        self.pane_mut(src_pid).active_view_mut().md_preview = false;
+        let before_count = self.panes.len();
+        self.split_active(SplitAxis::Horizontal, false, cols, rows);
+        if self.panes.len() == before_count {
+            return; // terminal too narrow to split
+        }
+        let preview_pid = self.active_pane;
+        let (text_w, _) = self.pane_md_geometry(preview_pid, cols, rows);
+        let (primary_row, _) = self.doc().primary_line_col();
+        let rendered = markdown::render_markdown(&self.doc().rope, text_w, self.palette);
+        let vrow = rendered.visual_row_for_source(primary_row);
+        {
+            let tv = self.pane_mut(preview_pid).active_view_mut();
+            tv.md_preview = true;
+            tv.md_scroll = vrow.saturating_sub(3);
+        }
+        // Keep focus in the source pane so user edits live while watching preview!
+        self.active_pane = src_pid;
+        self.load_active_from_tab();
+        self.set_status("◈ Preview Markdown ao Lado (edite aqui, visualize em tempo real a direita · Ctrl+K m fecha)");
+    }
+
+    fn scroll_md_pane(&mut self, pid: PaneId, delta: isize, cols: usize, rows: usize) {
+        let (tot, view_h) = if let Some(pl) = self.layout.panes.iter().find(|p| p.pane_id == pid && p.md_preview) {
+            (pl.md_total_lines, pl.content_height.max(1))
+        } else {
+            let (text_w, ch) = self.pane_md_geometry(pid, cols, rows);
+            let did = self.pane(pid).active_view().doc_id;
+            let tot = self
+                .docs
+                .get(did)
+                .and_then(|d| d.as_ref())
+                .map(|d| markdown::render_markdown(&d.rope, text_w, self.palette).total_lines())
+                .unwrap_or(1);
+            (tot, ch)
+        };
+        let max_scroll = tot.saturating_sub(view_h);
+        let tv = self.pane_mut(pid).active_view_mut();
+        tv.md_scroll = if delta < 0 {
+            tv.md_scroll.saturating_sub(delta.unsigned_abs())
+        } else {
+            tv.md_scroll.saturating_add(delta as usize).min(max_scroll)
+        };
+    }
+
+    fn jump_md_heading(&mut self, forward: bool, cols: usize, rows: usize) {
+        let pid = self.active_pane;
+        let (text_w, _) = self.pane_md_geometry(pid, cols, rows);
+        let cur = self.pane(pid).active_view().md_scroll;
+        let rendered = markdown::render_markdown(&self.doc().rope, text_w, self.palette);
+        if let Some((target, title)) = rendered.jump_heading(cur, forward) {
+            self.pane_mut(pid).active_view_mut().md_scroll = target;
+            self.set_status(format!("◈ {}", title));
+        } else {
+            self.set_status("Nenhum titulo (#) encontrado neste documento");
         }
     }
 
@@ -1659,6 +1812,23 @@ impl App {
             return;
         }
         let rel = mouse_row.saturating_sub(start_row).min(height.saturating_sub(1));
+        if self.panes.iter().any(|p| p.id == pane_id && p.active_view().md_preview) {
+            let total = self
+                .layout
+                .panes
+                .iter()
+                .find(|pl| pl.pane_id == pane_id)
+                .map(|pl| pl.md_total_lines)
+                .unwrap_or(1);
+            let max_scroll = total.saturating_sub(height);
+            let target = if height <= 1 || max_scroll == 0 {
+                0
+            } else {
+                (rel * max_scroll) / (height - 1)
+            };
+            self.pane_mut(pane_id).active_view_mut().md_scroll = target;
+            return;
+        }
         if pane_id == self.active_pane {
             let total = self.doc().rope.line_count();
             let max_scroll = total.saturating_sub(height);
@@ -1742,6 +1912,11 @@ impl App {
                     .find(|pl| pl.rect.contains(m.col, m.row))
                     .map(|pl| pl.pane_id)
                     .unwrap_or(self.active_pane);
+                if self.panes.iter().any(|p| p.id == target_pid && p.active_view().md_preview) {
+                    let delta = if m.kind == MouseKind::WheelUp { -3 } else { 3 };
+                    self.scroll_md_pane(target_pid, delta, cols, rows);
+                    return true;
+                }
                 // Shift + vertical wheel/touchpad scroll -> smooth horizontal pan (VS Code standard!)
                 if m.shift && !self.cfg.wrap {
                     let delta = if m.kind == MouseKind::WheelUp { -6 } else { 6 };
@@ -1921,6 +2096,40 @@ impl App {
                 if let Some(pid) = hit_pane {
                     self.focus_pane(pid);
                     self.mode = Mode::Edit;
+                    if self.pane(pid).active_view().md_preview {
+                        let now = Instant::now();
+                        let clicks = if let Some((prev_t, pr, pc, cnt)) = self.last_click {
+                            if now.duration_since(prev_t).as_millis() < 400
+                                && pr == m.row
+                                && pc.abs_diff(m.col) <= 1
+                            {
+                                (cnt % 2) + 1
+                            } else {
+                                1
+                            }
+                        } else {
+                            1
+                        };
+                        self.last_click = Some((now, m.row, m.col, clicks));
+                        if clicks == 2 {
+                            let src_row = self
+                                .layout
+                                .panes
+                                .iter()
+                                .find(|pl| pl.pane_id == pid)
+                                .and_then(|pl| {
+                                    let rel_y = m.row.checked_sub(pl.content_start_row)?;
+                                    pl.md_row_sources.get(rel_y).copied()
+                                })
+                                .unwrap_or(0);
+                            self.pane_mut(pid).active_view_mut().md_preview = false;
+                            self.doc_mut().goto_line(src_row + 1);
+                            self.follow_cursor = true;
+                            self.set_status(format!("Modo Edicao (Ln {})", src_row + 1));
+                        }
+                        self.drag = DragState::None;
+                        return true;
+                    }
                     self.follow_cursor = true;
                     if let Some((doc_row, doc_col)) = self.screen_to_doc_in_pane(pid, m.col, m.row) {
                         let now = Instant::now();
@@ -2560,7 +2769,36 @@ impl App {
 
         // Ctrl+Shift combinations
         if k.ctrl && k.shift && !k.alt {
+            if self.active_is_md_preview() {
+                match k.code {
+                    KeyCode::Char('v') => {
+                        self.toggle_markdown_preview(cols, rows);
+                        return;
+                    }
+                    KeyCode::Char('p') => {
+                        self.open_command_palette();
+                        return;
+                    }
+                    KeyCode::Char('o') => {
+                        self.open_symbol_picker();
+                        return;
+                    }
+                    KeyCode::PageUp => {
+                        self.reorder_active_tab(-1);
+                        return;
+                    }
+                    KeyCode::PageDown => {
+                        self.reorder_active_tab(1);
+                        return;
+                    }
+                    _ => return,
+                }
+            }
             match k.code {
+                KeyCode::Char('v') => {
+                    self.toggle_markdown_preview(cols, rows);
+                    return;
+                }
                 KeyCode::Char('z') => {
                     if self.doc_mut().redo() {
                         self.set_status("Refeito");
@@ -2742,6 +2980,10 @@ impl App {
                     self.apply_wt_bg_mode(None);
                     return;
                 }
+                KeyCode::Char('p') => {
+                    self.toggle_markdown_preview(cols, rows);
+                    return;
+                }
                 KeyCode::Char('i') => {
                     self.doc_mut().expand_selection();
                     return;
@@ -2921,7 +3163,12 @@ impl App {
                     return;
                 }
                 KeyCode::Char('c') => {
-                    let txt = self.doc().copy_text();
+                    let txt = if self.active_is_md_preview() {
+                        let d = self.doc();
+                        d.rope.slice(0, d.rope.len_bytes())
+                    } else {
+                        self.doc().copy_text()
+                    };
                     if !txt.is_empty() {
                         self.clipboard = txt.clone();
                         copy_to_system_clipboard(&txt);
@@ -2930,6 +3177,9 @@ impl App {
                     return;
                 }
                 KeyCode::Char('x') => {
+                    if self.active_is_md_preview() {
+                        return;
+                    }
                     let txt = self.doc_mut().cut_text();
                     if !txt.is_empty() {
                         self.clipboard = txt.clone();
@@ -2939,6 +3189,9 @@ impl App {
                     return;
                 }
                 KeyCode::Char('v') => {
+                    if self.active_is_md_preview() {
+                        return;
+                    }
                     let txt = paste_from_system_clipboard().unwrap_or_else(|| self.clipboard.clone());
                     if !txt.is_empty() {
                         self.doc_mut().paste(&txt);
@@ -2946,6 +3199,9 @@ impl App {
                     return;
                 }
                 KeyCode::Char('/') => {
+                    if self.active_is_md_preview() {
+                        return;
+                    }
                     self.doc_mut().toggle_comment();
                     return;
                 }
@@ -3056,6 +3312,9 @@ impl App {
             KeyCode::F(6) => {
                 self.run_judge(true);
             }
+            KeyCode::F(7) => {
+                self.toggle_markdown_preview(cols, rows);
+            }
             KeyCode::F(8) => {
                 self.clear_completion();
                 self.jump_next_diagnostic();
@@ -3065,6 +3324,33 @@ impl App {
                     self.set_status(format!("Erro ao recarregar: {}", e));
                 } else {
                     self.set_status("Recarregado do disco");
+                }
+            }
+            _ if self.active_is_md_preview() && !k.ctrl && !k.alt => {
+                let pid = self.active_pane;
+                let half = (page_step / 2).max(3) as isize;
+                let page = page_step.max(4) as isize;
+                match k.code {
+                    KeyCode::Up | KeyCode::Char('k') => self.scroll_md_pane(pid, -1, cols, rows),
+                    KeyCode::Down | KeyCode::Char('j') => self.scroll_md_pane(pid, 1, cols, rows),
+                    KeyCode::PageUp | KeyCode::Char('b') => self.scroll_md_pane(pid, -page, cols, rows),
+                    KeyCode::PageDown | KeyCode::Char(' ') => self.scroll_md_pane(pid, page, cols, rows),
+                    KeyCode::Char('u') => self.scroll_md_pane(pid, -half, cols, rows),
+                    KeyCode::Char('d') => self.scroll_md_pane(pid, half, cols, rows),
+                    KeyCode::Home => {
+                        self.pane_mut(pid).active_view_mut().md_scroll = 0;
+                    }
+                    KeyCode::Char('g') if !k.shift => {
+                        self.pane_mut(pid).active_view_mut().md_scroll = 0;
+                    }
+                    KeyCode::End | KeyCode::Char('G') => self.scroll_md_pane(pid, isize::MAX / 4, cols, rows),
+                    KeyCode::Char('g') if k.shift => self.scroll_md_pane(pid, isize::MAX / 4, cols, rows),
+                    KeyCode::Char(']') | KeyCode::Char('n') => self.jump_md_heading(true, cols, rows),
+                    KeyCode::Char('[') | KeyCode::Char('p') => self.jump_md_heading(false, cols, rows),
+                    KeyCode::Char('e') | KeyCode::Enter | KeyCode::Esc => {
+                        self.toggle_markdown_preview(cols, rows);
+                    }
+                    _ => {}
                 }
             }
             KeyCode::Left => {
@@ -3221,6 +3507,9 @@ impl App {
             }
             KeyCode::Char('t') | KeyCode::Char('\'') | KeyCode::Char('`') => {
                 self.toggle_terminal(cols, rows);
+            }
+            KeyCode::Char('m') | KeyCode::Char('p') => {
+                self.open_markdown_preview_side(cols, rows);
             }
             _ => {
                 self.set_status("Ctrl+K cancelado");
@@ -3564,9 +3853,18 @@ impl App {
                 PickerAction::OpenFile(path) => self.open_or_focus_file(&path, None),
                 PickerAction::BrowseDir(_) => {}
                 PickerAction::JumpToLine(ln) => {
-                    self.arm_trail();
-                    self.doc_mut().goto_line(ln);
-                    self.set_status(format!("Simbolo na linha {}", ln));
+                    if self.active_is_md_preview() {
+                        let pid = self.active_pane;
+                        let (text_w, _) = self.pane_md_geometry(pid, cols, rows);
+                        let rendered = markdown::render_markdown(&self.doc().rope, text_w, self.palette);
+                        let vrow = rendered.visual_row_for_source(ln.saturating_sub(1));
+                        self.pane_mut(pid).active_view_mut().md_scroll = vrow;
+                        self.set_status(format!("◈ Secao na linha {}", ln));
+                    } else {
+                        self.arm_trail();
+                        self.doc_mut().goto_line(ln);
+                        self.set_status(format!("Simbolo na linha {}", ln));
+                    }
                 }
                 PickerAction::InsertSnippet(body) => self.insert_snippet_at_cursor(&body),
                 PickerAction::ToggleAutocomplete => {
@@ -3839,6 +4137,8 @@ impl App {
                 PickerAction::ClosePane => self.close_active_pane(),
                 PickerAction::ToggleTerminal => self.toggle_terminal(cols, rows),
                 PickerAction::RestartTerminal => self.restart_terminal(cols, rows),
+                PickerAction::ToggleMarkdownPreview => self.toggle_markdown_preview(cols, rows),
+                PickerAction::MarkdownPreviewSide => self.open_markdown_preview_side(cols, rows),
                 PickerAction::SetPalette(idx) => self.set_palette_index(idx),
             }
         }
@@ -4008,7 +4308,7 @@ impl App {
         let cfg = self.cfg.clone();
 
         // Keep active pane's cursor visible unless user explicitly scrolled via scrollbar/wheel
-        if self.follow_cursor {
+        if self.follow_cursor && !self.active_is_md_preview() {
             if let Some(active_rect) = computed.rect_of(self.active_pane) {
                 let (content_h, _) = {
                     let d = self.doc();
@@ -4018,6 +4318,40 @@ impl App {
             }
         }
         self.sync_active_to_tab();
+
+        // Live Split Preview auto-sync: when editing a .md on one pane and another pane previews it,
+        // keep the preview gently aligned with the edited/focused source line!
+        if !self.active_is_md_preview() && self.follow_cursor {
+            let active_did = self.active_doc_id();
+            let (prow, _) = self.doc().primary_line_col();
+            let rev = self.doc().revision();
+            let sig = (active_did, prow, rev);
+            if sig != self.last_md_sync {
+                self.last_md_sync = sig;
+                let preview_pids: Vec<PaneId> = self
+                    .panes
+                    .iter()
+                    .filter(|p| {
+                        p.id != self.active_pane
+                            && p.active_view().doc_id == active_did
+                            && p.active_view().md_preview
+                    })
+                    .map(|p| p.id)
+                    .collect();
+                for ppid in preview_pids {
+                    if let Some(prect) = computed.rect_of(ppid) {
+                        let sb_w = if cfg.scrollbar && prect.w >= 16 { 1 } else { 0 };
+                        let tw = prect.w.saturating_sub(sb_w).max(8);
+                        let ph = prect.h.saturating_sub(1).max(1);
+                        let rendered = markdown::render_markdown(&self.doc().rope, tw, self.palette);
+                        let vrow = rendered.visual_row_for_source(prow);
+                        let max_s = rendered.total_lines().saturating_sub(ph);
+                        let target = vrow.saturating_sub(ph / 3).min(max_s);
+                        self.pane_mut(ppid).active_view_mut().md_scroll = target;
+                    }
+                }
+            }
+        }
 
         // Build per-pane render inputs in deterministic computed order
         let pane_views: Vec<PaneRenderInput> = computed
@@ -4042,6 +4376,7 @@ impl App {
                             name,
                             dirty,
                             active: ti == p.active_tab,
+                            md_preview: tab.md_preview,
                         }
                     })
                     .collect();
@@ -4052,10 +4387,11 @@ impl App {
                     is_focused: pid == self.active_pane && !(self.term_open && self.term_focused),
                     doc_id: tv.doc_id,
                     tabs,
-                    scroll_row: tv.scroll_row,
-                    scroll_col: tv.scroll_col,
+                    scroll_row: if tv.md_preview { tv.md_scroll } else { tv.scroll_row },
+                    scroll_col: if tv.md_preview { 0 } else { tv.scroll_col },
                     cursors: tv.cursors.clone(),
                     primary: tv.primary,
+                    md_preview: tv.md_preview,
                 })
             })
             .collect();
@@ -4083,7 +4419,7 @@ impl App {
         } else {
             match self.mode {
                 Mode::ChordK => Some(
-                    "Ctrl+K → [\\] lado a lado · [-] topo/base · [←↑↓→] focar · [Shift+seta] mover · [o] inverter · [s] trocar · [r] redimensionar · [=] 50/50 · [w] fechar",
+                    "Ctrl+K → [\\] lado a lado · [-] topo/base · [m] preview .md ao lado · [←↑↓→] focar · [o] inverter · [s] trocar · [r] redimensionar · [=] 50/50 · [w] fechar",
                 ),
                 Mode::ResizePane => Some(
                     "REDIMENSIONAR → [←/→] largura · [↑/↓] altura · [+/-] painel · [=] 50/50 · [Enter/Esc] sair",
@@ -4292,7 +4628,7 @@ fn parse_file_arg(arg: &str) -> (PathBuf, Option<usize>) {
 
 fn print_help() {
     println!(
-        "{}\n\nUso:\n  nave-edit [opcoes] [arquivo[:linha] ...]\n  nave-edit +<linha> <arquivo>\n\nOpcoes:\n  -h, --help          Mostra esta ajuda\n  -v, --version       Mostra versao\n  --cp                Abre layout Maratona 3 paineis (codigo | in.txt / expected.txt)\n  -O                  Abre multiplos arquivos lado a lado (│)\n  -o                  Abre multiplos arquivos acima/abaixo (─)\n  --render-once <f>   Renderiza 1 frame estatico e sai\n\nAtalhos principais (VS Code + Multi-Janela + CP Suite):\n  Ctrl+S salvar · Ctrl+Q sair · Ctrl+W fechar aba · Ctrl+P abrir arquivo · F1 comandos\n  F5 compilar+julgar (O2) · F6 debug (ASan+UBSan) · F8 prox erro · Ctrl+Space autocomplete\n  Ctrl+Shift+O ir p/ simbolo · Ctrl+] / Alt+M pular par {{}} · Ctrl+' terminal integrado\n  Ctrl+\\ dividir lado a lado · Ctrl+K - dividir topo/base · Ctrl+1..9 focar/criar painel\n  Ctrl+PgUp/PgDn viajar abas · Alt+=/Alt+- redimensionar · Ctrl+D multi-cursor · Alt+1..6 paletas",
+        "{}\n\nUso:\n  nave-edit [opcoes] [arquivo[:linha] ...]\n  nave-edit +<linha> <arquivo>\n\nOpcoes:\n  -h, --help          Mostra esta ajuda\n  -v, --version       Mostra versao\n  -p, --preview       Abre arquivo(s) .md direto no Modo Visualizacao (Reader)\n  --preview-split     Abre .md em Split Vivo (editor a esquerda | preview a direita)\n  --cp                Abre layout Maratona 3 paineis (codigo | in.txt / expected.txt)\n  -O                  Abre multiplos arquivos lado a lado (│)\n  -o                  Abre multiplos arquivos acima/abaixo (─)\n  --render-once <f>   Renderiza 1 frame estatico e sai\n\nAtalhos principais (VS Code + Multi-Janela + CP Suite + Markdown Reader):\n  Ctrl+S salvar · Ctrl+Q sair · Ctrl+W fechar aba · Ctrl+P abrir arquivo · F1 comandos\n  Alt+P / F7 preview .md · Ctrl+K m preview .md ao lado (split vivo) · [/] secoes .md\n  F5 compilar+julgar (O2) · F6 debug (ASan+UBSan) · F8 prox erro · Ctrl+Space autocomplete\n  Ctrl+Shift+O ir p/ simbolo/titulo · Ctrl+] / Alt+M pular par {{}} · Ctrl+' terminal integrado\n  Ctrl+\\ dividir lado a lado · Ctrl+K - dividir topo/base · Ctrl+1..9 focar/criar painel\n  Ctrl+PgUp/PgDn viajar abas · Alt+=/Alt+- redimensionar · Ctrl+D multi-cursor · Alt+1..6 paletas",
         VERSION
     );
 }
@@ -4301,6 +4637,8 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let mut render_once = false;
     let mut cp_layout = false;
+    let mut start_preview = false;
+    let mut start_preview_split = false;
     let mut initial_split: Option<SplitAxis> = None;
     let mut pending_line: Option<usize> = None;
     let mut docs: Vec<Document> = Vec::new();
@@ -4314,6 +4652,12 @@ fn main() {
             "-v" | "--version" => {
                 println!("{}", VERSION);
                 return;
+            }
+            "-p" | "--preview" => {
+                start_preview = true;
+            }
+            "--preview-split" => {
+                start_preview_split = true;
             }
             "--cp" => {
                 cp_layout = true;
@@ -4350,6 +4694,15 @@ fn main() {
     if cp_layout {
         let (cols, rows) = Terminal::size();
         app.setup_cp_layout(cols, rows);
+    } else if start_preview_split {
+        let (cols, rows) = Terminal::size();
+        app.open_markdown_preview_side(cols, rows);
+    } else if start_preview {
+        for p in &mut app.panes {
+            for tv in &mut p.tabs {
+                tv.md_preview = true;
+            }
+        }
     }
 
     if render_once {
