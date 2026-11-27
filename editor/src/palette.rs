@@ -60,6 +60,7 @@ pub struct Palette {
     pub kw: Rgb,
     pub kw_bold: bool,
     pub ty: Rgb,
+    pub ty_italic: bool,
     pub func: Rgb,
     pub str_col: Rgb,
     pub escape: Rgb,
@@ -104,6 +105,7 @@ pub const PALETTES: [Palette; 6] = [
         kw: (216, 150, 255),        // #D896FF electric neon violet (bold)
         kw_bold: true,
         ty: (0, 248, 255),          // #00F8FF hyper neon cyan
+        ty_italic: false,
         func: (48, 255, 168),       // #30FFA8 electric neon mint
         str_col: (255, 226, 52),    // #FFE234 electric solar gold
         escape: (255, 56, 162),     // #FF38A2 laser magenta
@@ -146,6 +148,7 @@ pub const PALETTES: [Palette; 6] = [
         kw: (0, 255, 148),          // #00FF94 electric emerald (bold)
         kw_bold: true,
         ty: (0, 236, 255),          // #00ECFF electric aqua
+        ty_italic: false,
         func: (176, 255, 82),       // #B0FF52 bioluminescent lime
         str_col: (255, 228, 74),    // #FFE44A vibrant tropical gold
         escape: (255, 92, 168),     // #FF5CA8 vibrant orchid coral
@@ -188,6 +191,7 @@ pub const PALETTES: [Palette; 6] = [
         kw: (255, 62, 158),         // #FF3E9E electric hot magenta (bold)
         kw_bold: true,
         ty: (76, 232, 255),         // #4CE8FF twilight neon cyan
+        ty_italic: false,
         func: (255, 178, 56),       // #FFB238 electric golden amber
         str_col: (255, 236, 92),    // #FFEC5C bright solar yellow
         escape: (255, 62, 158),     // #FF3E9E hot magenta
@@ -230,6 +234,7 @@ pub const PALETTES: [Palette; 6] = [
         kw: (204, 146, 255),        // #CC92FF electric aurora violet (bold)
         kw_bold: true,
         ty: (64, 238, 255),         // #40EEFF glacial neon cyan
+        ty_italic: false,
         func: (74, 255, 188),       // #4AFFBC electric aurora green
         str_col: (255, 224, 102),   // #FFE066 bright aurora gold
         escape: (255, 114, 156),    // #FF729C arctic rose
@@ -272,6 +277,7 @@ pub const PALETTES: [Palette; 6] = [
         kw: (206, 138, 255),        // #CE8AFF electric amethyst (bold)
         kw_bold: true,
         ty: (88, 232, 255),         // #58E8FF electric sapphire cyan
+        ty_italic: false,
         func: (104, 255, 198),      // #68FFC6 vibrant jade mint
         str_col: (255, 220, 112),   // #FFDC70 bright champagne gold
         escape: (255, 86, 172),     // #FF56AC neon ruby rose
@@ -314,6 +320,7 @@ pub const PALETTES: [Palette; 6] = [
         kw: (255, 115, 198),
         kw_bold: false,
         ty: (107, 227, 245),
+        ty_italic: true,
         func: (92, 242, 152),
         str_col: (242, 229, 143),
         escape: (255, 115, 198),
@@ -366,13 +373,13 @@ impl Palette {
         match kind {
             TokenKind::Plain => TokenStyle { fg: self.fg, bold: false, italic: false },
             TokenKind::Keyword => TokenStyle { fg: self.kw, bold: self.kw_bold, italic: false },
-            TokenKind::Type => TokenStyle { fg: self.ty, bold: false, italic: false },
+            TokenKind::Type => TokenStyle { fg: self.ty, bold: false, italic: self.ty_italic },
             TokenKind::Function => TokenStyle { fg: self.func, bold: false, italic: false },
             TokenKind::String => TokenStyle { fg: self.str_col, bold: false, italic: false },
             TokenKind::Escape => TokenStyle { fg: self.escape, bold: false, italic: false },
             TokenKind::Number => TokenStyle { fg: self.num, bold: false, italic: false },
             TokenKind::Constant => TokenStyle { fg: self.constant, bold: false, italic: false },
-            TokenKind::BuiltinVar => TokenStyle { fg: self.constant, bold: false, italic: true },
+            TokenKind::BuiltinVar => TokenStyle { fg: self.constant, bold: false, italic: false },
             TokenKind::Parameter => TokenStyle { fg: self.param, bold: false, italic: true },
             TokenKind::Property => TokenStyle { fg: self.prop, bold: false, italic: false },
             TokenKind::Comment => TokenStyle { fg: self.comment, bold: false, italic: true },
