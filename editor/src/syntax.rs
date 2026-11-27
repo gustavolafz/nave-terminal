@@ -667,25 +667,9 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
             continue;
         }
 
-        // Numbers (decimal, hex, binary, octal, floats, scientific 10e9 / 1e-5, suffixes)
+        // Numbers (with VS Code sub-token highlighting for 0x/0b/0o prefixes, e/E/p/P exponents, +/- signs, suffixes)
         if b.is_ascii_digit() {
-            let start = i;
-            i += 1;
-            while i < len
-                && (bytes[i].is_ascii_alphanumeric()
-                    || bytes[i] == b'_'
-                    || bytes[i] == b'.'
-                    || ((bytes[i] == b'+' || bytes[i] == b'-')
-                        && matches!(bytes[i - 1], b'e' | b'E')
-                        && i + 1 < len
-                        && bytes[i + 1].is_ascii_digit()))
-            {
-                if bytes[i] == b'.' && i + 1 < len && bytes[i + 1] == b'.' {
-                    break; // Don't eat Rust range `0..10`
-                }
-                i += 1;
-            }
-            spans.push(Span { start, end: i, kind: TokenKind::Number });
+            i = scan_number(lang, line, i, &mut spans);
             prev_non_ws_byte = Some(b'0');
             prev_word = "";
             continue;
@@ -816,6 +800,118 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
     }
 
     (spans, state)
+}
+
+fn scan_number(lang: Language, line: &str, mut i: usize, spans: &mut Vec<Span>) -> usize {
+    let bytes = line.as_bytes();
+    let len = bytes.len();
+
+    // 1. Base prefix (`0x`, `0X`, `0b`, `0B`, `0o`, `0O`) -> VS Code `keyword.other.unit.*` / `storage.type.number`
+    let mut is_hex = false;
+    if bytes[i] == b'0'
+        && i + 2 < len
+        && matches!(bytes[i + 1], b'x' | b'X' | b'b' | b'B' | b'o' | b'O')
+    {
+        let p = bytes[i + 1];
+        let next_valid = match p {
+            b'x' | b'X' => bytes[i + 2].is_ascii_hexdigit() || bytes[i + 2] == b'_',
+            b'b' | b'B' => matches!(bytes[i + 2], b'0' | b'1' | b'_'),
+            _ => matches!(bytes[i + 2], b'0'..=b'7' | b'_'),
+        };
+        if next_valid {
+            is_hex = matches!(p, b'x' | b'X');
+            spans.push(Span { start: i, end: i + 2, kind: TokenKind::Keyword });
+            i += 2;
+        }
+    }
+
+    // 2. Mantissa digits (and optional single `.` decimal point, plus C++14 `'` digit separators)
+    let mut seg_start = i;
+    let mut saw_dot = false;
+    while i < len {
+        let c = bytes[i];
+        let is_digit = if is_hex {
+            c.is_ascii_hexdigit() || c == b'_'
+        } else {
+            c.is_ascii_digit() || c == b'_'
+        };
+        if is_digit {
+            i += 1;
+            continue;
+        }
+        if c == b'.' && !saw_dot && !(i + 1 < len && bytes[i + 1] == b'.') {
+            // Only consume `.` if followed by a digit (don't eat method call `10.abs()`)
+            let after_digit = i + 1 < len
+                && if is_hex {
+                    bytes[i + 1].is_ascii_hexdigit()
+                } else {
+                    bytes[i + 1].is_ascii_digit()
+                };
+            if after_digit {
+                saw_dot = true;
+                i += 1;
+                continue;
+            }
+        }
+        // C++14 digit separator: `1'000'000`
+        if lang == Language::CLike
+            && c == b'\''
+            && i + 1 < len
+            && if is_hex {
+                bytes[i + 1].is_ascii_hexdigit()
+            } else {
+                bytes[i + 1].is_ascii_digit()
+            }
+        {
+            if i > seg_start {
+                spans.push(Span { start: seg_start, end: i, kind: TokenKind::Number });
+            }
+            spans.push(Span { start: i, end: i + 1, kind: TokenKind::Punctuation });
+            i += 1;
+            seg_start = i;
+            continue;
+        }
+        break;
+    }
+    if i > seg_start {
+        spans.push(Span { start: seg_start, end: i, kind: TokenKind::Number });
+    }
+
+    // 3. Scientific exponent (`e`/`E` for decimal, `p`/`P` for hex floats):
+    //    `e`/`E` -> Keyword (`keyword.other.unit.exponent`), `+`/`-` -> Operator, digits -> Number
+    if i < len
+        && ((!is_hex && matches!(bytes[i], b'e' | b'E')) || (is_hex && matches!(bytes[i], b'p' | b'P')))
+    {
+        let mut exp_pos = i + 1;
+        let has_sign = exp_pos < len && matches!(bytes[exp_pos], b'+' | b'-');
+        if has_sign {
+            exp_pos += 1;
+        }
+        if exp_pos < len && bytes[exp_pos].is_ascii_digit() {
+            spans.push(Span { start: i, end: i + 1, kind: TokenKind::Keyword });
+            i += 1;
+            if has_sign {
+                spans.push(Span { start: i, end: i + 1, kind: TokenKind::Operator });
+                i += 1;
+            }
+            let es = i;
+            while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'_') {
+                i += 1;
+            }
+            spans.push(Span { start: es, end: i, kind: TokenKind::Number });
+        }
+    }
+
+    // 4. Numeric type suffix (`LL`, `ull`, `f`, `u32`, `usize`, `f64`, `j`, `n`) -> Keyword (`storage.type.numeric`)
+    if i < len && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
+        let suf_start = i;
+        while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+            i += 1;
+        }
+        spans.push(Span { start: suf_start, end: i, kind: TokenKind::Keyword });
+    }
+
+    i
 }
 
 fn find_closing_quote(bytes: &[u8], mut i: usize, quote: u8) -> usize {
@@ -1503,8 +1599,28 @@ mod tests {
         assert_eq!(ckind("int"), Some(TokenKind::Keyword));
         assert_eq!(ckind("INF"), None); // Plain white variable, matching VS Code!
         assert_eq!(ckind("="), Some(TokenKind::Operator));
-        assert_eq!(ckind("10e9"), Some(TokenKind::Number));
+        assert_eq!(ckind("10"), Some(TokenKind::Number));
+        assert_eq!(ckind("e"), Some(TokenKind::Keyword));
+        assert_eq!(ckind("9"), Some(TokenKind::Number));
         assert_eq!(ckind(";"), Some(TokenKind::Punctuation));
+
+        // Verify hex literals do NOT split on hex digit 'e', while scientific signs & suffixes DO split
+        let num_line = "0x1e9f 1e-5 42usize 100LL 1'000";
+        let (nspans, _) = lex_line(Language::CLike, num_line, LineState::Normal);
+        let nkind = |s: usize, e: usize| nspans.iter().find(|sp| sp.start == s && sp.end == e).map(|sp| sp.kind);
+        assert_eq!(nkind(0, 2), Some(TokenKind::Keyword)); // 0x
+        assert_eq!(nkind(2, 6), Some(TokenKind::Number)); // 1e9f (whole hex!)
+        assert_eq!(nkind(7, 8), Some(TokenKind::Number)); // 1
+        assert_eq!(nkind(8, 9), Some(TokenKind::Keyword)); // e
+        assert_eq!(nkind(9, 10), Some(TokenKind::Operator)); // -
+        assert_eq!(nkind(10, 11), Some(TokenKind::Number)); // 5
+        assert_eq!(nkind(12, 14), Some(TokenKind::Number)); // 42
+        assert_eq!(nkind(14, 19), Some(TokenKind::Keyword)); // usize
+        assert_eq!(nkind(20, 23), Some(TokenKind::Number)); // 100
+        assert_eq!(nkind(23, 25), Some(TokenKind::Keyword)); // LL
+        assert_eq!(nkind(26, 27), Some(TokenKind::Number)); // 1
+        assert_eq!(nkind(27, 28), Some(TokenKind::Punctuation)); // '
+        assert_eq!(nkind(28, 31), Some(TokenKind::Number)); // 000
 
         let inc_line = "#include <bits/stdc++.h>";
         let (ispans, _) = lex_line(Language::CLike, inc_line, LineState::Normal);
