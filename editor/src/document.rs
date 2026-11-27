@@ -826,10 +826,12 @@ impl Document {
             for i in (0..doc.cursors.len()).rev() {
                 let (s, e) = doc.cursors[i].range();
                 let (row, _) = doc.rope.byte_to_line_col(s);
+                let line_start = doc.rope.line_start_byte(row);
+                let line_end = doc.rope.line_end_byte(row);
                 let line_txt = doc.rope.line(row);
                 let lead_ws: String = line_txt.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
-                let before = doc.rope.slice(doc.rope.line_start_byte(row), s);
-                let after = doc.rope.slice(e, doc.rope.line_end_byte(row));
+                let before = doc.rope.slice(line_start, s);
+                let after = doc.rope.slice(e, line_end);
                 let prev_non_ws = before.trim_end().chars().last();
                 let next_non_ws = after.trim_start().chars().next();
 
@@ -856,12 +858,24 @@ impl Document {
                     (s1, off)
                 };
 
-                if s < e {
-                    doc.rope.remove(s, e);
+                // If pressing Enter on a whitespace-only line (e.g. 2nd Enter), leave the
+                // skipped blank line cleanly empty while keeping indentation on the new line.
+                let (rem_s, rem_e) = if s == e
+                    && before.trim().is_empty()
+                    && after.trim().is_empty()
+                    && line_start < line_end
+                {
+                    (line_start, line_end)
+                } else {
+                    (s, e)
+                };
+
+                if rem_s < rem_e {
+                    doc.rope.remove(rem_s, rem_e);
                 }
-                doc.rope.insert(s, &insert_str);
-                shift_tail(&mut new_cursors[(i + 1)..], insert_str.len() as isize - (e - s) as isize);
-                new_cursors[i] = Selection::caret(s + caret_offset);
+                doc.rope.insert(rem_s, &insert_str);
+                shift_tail(&mut new_cursors[(i + 1)..], insert_str.len() as isize - (rem_e - rem_s) as isize);
+                new_cursors[i] = Selection::caret(rem_s + caret_offset);
             }
             doc.cursors = new_cursors;
         });
@@ -873,13 +887,21 @@ impl Document {
             let mut new_cursors = doc.cursors.clone();
             for i in (0..doc.cursors.len()).rev() {
                 let (row, _) = doc.rope.byte_to_line_col(doc.cursors[i].head);
+                let ls = doc.rope.line_start_byte(row);
                 let eol = doc.rope.line_end_byte(row);
                 let line_txt = doc.rope.line(row);
                 let lead_ws: String = line_txt.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
                 let ins = format!("\n{}", lead_ws);
-                doc.rope.insert(eol, &ins);
-                shift_tail(&mut new_cursors[(i + 1)..], ins.len() as isize);
-                new_cursors[i] = Selection::caret(eol + ins.len());
+                if line_txt.trim().is_empty() && ls < eol {
+                    doc.rope.remove(ls, eol);
+                    doc.rope.insert(ls, &ins);
+                    shift_tail(&mut new_cursors[(i + 1)..], ins.len() as isize - (eol - ls) as isize);
+                    new_cursors[i] = Selection::caret(ls + ins.len());
+                } else {
+                    doc.rope.insert(eol, &ins);
+                    shift_tail(&mut new_cursors[(i + 1)..], ins.len() as isize);
+                    new_cursors[i] = Selection::caret(eol + ins.len());
+                }
             }
             doc.cursors = new_cursors;
         });
@@ -1843,5 +1865,26 @@ mod tests {
         doc.indent(false);
         assert_eq!(doc.rope.line(1), "            ");
         assert_eq!(doc.primary_line_col(), (1, 12));
+    }
+
+    #[test]
+    fn double_enter_leaves_first_blank_line_unindented_and_indents_second() {
+        let mut doc = Document::new_empty();
+        doc.tab_width = 4;
+        doc.rope = Rope::from_str("            cin >> a;\n");
+        let eol = doc.rope.line_end_byte(0);
+        doc.cursors = vec![Selection::caret(eol)];
+
+        // 1st Enter -> indented new line
+        doc.insert_newline();
+        assert_eq!(doc.rope.line(1), "            ");
+        assert_eq!(doc.primary_line_col(), (1, 12));
+
+        // 2nd Enter -> strips spaces on skipped blank line 1, keeps 12-space indent only on line 2!
+        doc.insert_newline();
+        assert_eq!(doc.rope.line(0), "            cin >> a;");
+        assert_eq!(doc.rope.line(1), "");
+        assert_eq!(doc.rope.line(2), "            ");
+        assert_eq!(doc.primary_line_col(), (2, 12));
     }
 }
