@@ -390,6 +390,90 @@ function nave-glass {
     Write-Host (_Nave-Fg $script:NaveC.ok $msg -Bold)
 }
 
+function nave-font {
+    param(
+        [string]$Arg1 = "status",
+        [string]$Arg2 = ""
+    )
+    $wtPath = Join-Path $env:LOCALAPPDATA "Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
+    if (-not (Test-Path $wtPath)) { Write-Host "settings.json do Windows Terminal nao encontrado."; return }
+    $data = Get-Content $wtPath -Raw | ConvertFrom-Json
+    $targets = @("Ubuntu", "Windows PowerShell", "PowerShell")
+    $defaults = $data.profiles.defaults
+    $low = $Arg1.Trim().ToLowerInvariant()
+
+    $presets = @{
+        "plex"      = "IBM Plex Mono, Cascadia Mono, Iosevka Nerd Font"
+        "ibm"       = "IBM Plex Mono, Cascadia Mono, Iosevka Nerd Font"
+        "ibm-plex"  = "IBM Plex Mono, Cascadia Mono, Iosevka Nerd Font"
+        "ibmplex"   = "IBM Plex Mono, Cascadia Mono, Iosevka Nerd Font"
+        "iosevka"   = "Iosevka Nerd Font"
+        "jetbrains" = "JetBrains Mono, Cascadia Mono, Iosevka Nerd Font"
+        "jb"        = "JetBrains Mono, Cascadia Mono, Iosevka Nerd Font"
+        "cascadia"  = "Cascadia Code, Iosevka Nerd Font"
+        "consolas"  = "Consolas, Cascadia Mono"
+    }
+    $weights = @("thin", "extra-light", "light", "semi-light", "normal", "medium", "semi-bold", "bold", "extra-bold", "black")
+
+    if ($low -in @("status", "-h", "--help")) {
+        $ref = $data.profiles.list | Where-Object { $_.name -eq "Ubuntu" } | Select-Object -First 1
+        $f = if ($ref -and $ref.PSObject.Properties['font']) { $ref.font } elseif ($defaults.PSObject.Properties['font']) { $defaults.font } else { $null }
+        Write-Host ("  Fonte atual : " + $(if ($f -and $f.face) { $f.face } else { "<padrao>" }))
+        Write-Host ("  Tamanho     : " + $(if ($f -and $f.size) { $f.size } else { "padrao (12)" }))
+        Write-Host ("  Peso        : " + $(if ($f -and $f.weight) { $f.weight } else { "normal" }))
+        Write-Host "  Presets     : plex | iosevka | jetbrains | cascadia | consolas"
+        Write-Host "  Extras      : nave-font size <8..28>  |  nave-font weight <light|normal|medium|semi-bold|bold>"
+        return
+    }
+
+    $matched = @($defaults)
+    foreach ($p in $data.profiles.list) {
+        if ($p.name -in $targets -or $p.PSObject.Properties['font']) { $matched += $p }
+    }
+
+    $ensureFontObj = {
+        param($obj)
+        if (-not $obj.PSObject.Properties['font'] -or $null -eq $obj.font) {
+            $obj | Add-Member -NotePropertyName 'font' -NotePropertyValue ([PSCustomObject]@{}) -Force
+        }
+        return $obj.font
+    }
+
+    if ($low -eq "size") {
+        $sz = 0.0
+        if (-not [double]::TryParse($Arg2, [ref]$sz)) { Write-Host "Uso: nave-font size <8..28>"; return }
+        $sz = [Math]::Max(8.0, [Math]::Min(28.0, $sz))
+        $val = if ($sz -eq [Math]::Floor($sz)) { [int]$sz } else { $sz }
+        foreach ($p in $matched) {
+            $f = & $ensureFontObj $p
+            $f | Add-Member -NotePropertyName 'size' -NotePropertyValue $val -Force
+        }
+        $data | ConvertTo-Json -Depth 12 | Set-Content -Path $wtPath -Encoding UTF8
+        Write-Host (_Nave-Fg $script:NaveC.ok "$($script:CH_CHK) Tamanho da fonte alterado para: $val" -Bold)
+        return
+    }
+
+    if ($low -eq "weight") {
+        $w = $Arg2.Trim().ToLowerInvariant()
+        if ($w -notin $weights) { Write-Host "Pesos validos: light | normal | medium | semi-bold | bold"; return }
+        foreach ($p in $matched) {
+            $f = & $ensureFontObj $p
+            $f | Add-Member -NotePropertyName 'weight' -NotePropertyValue $w -Force
+        }
+        $data | ConvertTo-Json -Depth 12 | Set-Content -Path $wtPath -Encoding UTF8
+        Write-Host (_Nave-Fg $script:NaveC.ok "$($script:CH_CHK) Peso da fonte alterado para: $w" -Bold)
+        return
+    }
+
+    $face = if ($presets.ContainsKey($low)) { $presets[$low] } else { $Arg1.Trim() }
+    foreach ($p in $matched) {
+        $f = & $ensureFontObj $p
+        $f | Add-Member -NotePropertyName 'face' -NotePropertyValue $face -Force
+    }
+    $data | ConvertTo-Json -Depth 12 | Set-Content -Path $wtPath -Encoding UTF8
+    Write-Host (_Nave-Fg $script:NaveC.ok "$($script:CH_CHK) Fonte do Windows Terminal alterada para: $face" -Bold)
+}
+
 function hr {
     param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Title)
     $w = 80
@@ -815,6 +899,7 @@ function nave-help {
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-layout <modo>   ") + "Layout do prompt (framed|rail|hud|compact)")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-shader <modo>   ") + "Shader GPU Windows Terminal (glow|crt|frosted|off)")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-glass [modo]    ") + "Fundo: glass / frosted (vidro escuro) / solid / wall")
+    Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-font [preset]   ") + "Fonte ao vivo (plex|iosevka|jetbrains|cascadia|size|weight)")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-bg / welcome    ") + "Liga/desliga fundo OSC 11 ou welcome bar")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "sysinfo / hr [tit]   ") + "Arte gradiente + sistema / regua divisoria")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-hud / nave-warp ") + "Cockpit em tempo real / starfield 3D")

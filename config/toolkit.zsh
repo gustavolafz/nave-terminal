@@ -343,6 +343,112 @@ print(msg)
 PY
 }
 
+# Troca fonte, tamanho e peso do Windows Terminal ao vivo:
+#   nave-font                      -> mostra fonte atual e presets
+#   nave-font plex|ibm             -> IBM Plex Mono (fallback Cascadia/Iosevka)
+#   nave-font iosevka              -> Iosevka Nerd Font
+#   nave-font jetbrains|jb         -> JetBrains Mono (fallback Cascadia/Iosevka)
+#   nave-font cascadia             -> Cascadia Code
+#   nave-font consolas             -> Consolas
+#   nave-font size <8..28>         -> ajusta tamanho da fonte ao vivo
+#   nave-font weight <peso>        -> light | normal | medium | semi-bold | bold
+#   nave-font "<Nome Custom>"      -> define qualquer fonte instalada no Windows
+function nave-font {
+  local arg1="${1:-status}"
+  local arg2="${2:-}"
+  local wt_json="${NAVE_WT_SETTINGS:-}"
+  if [[ -z "$wt_json" ]]; then
+    wt_json=$(ls /mnt/c/Users/*/AppData/Local/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json 2>/dev/null | head -n 1)
+  fi
+  if [[ -z "$wt_json" || ! -f "$wt_json" ]]; then
+    print -P "%F{${_NAVE_C[warn]:-215}}settings.json do Windows Terminal nao encontrado.%f"
+    return 1
+  fi
+
+  python3 - "$wt_json" "$arg1" "$arg2" <<'PY'
+import json, pathlib, sys
+wt_path = pathlib.Path(sys.argv[1])
+arg1 = sys.argv[2].strip()
+arg2 = sys.argv[3].strip()
+low = arg1.lower()
+
+data = json.loads(wt_path.read_text(encoding="utf-8"))
+profiles = data.setdefault("profiles", {})
+defaults = profiles.setdefault("defaults", {})
+plist = profiles.get("list", [])
+targets = ("Ubuntu", "Windows PowerShell", "PowerShell")
+sources = ("Microsoft.WSL", "Windows.Terminal.PowershellCore")
+
+PRESETS = {
+    "plex": "IBM Plex Mono, Cascadia Mono, Iosevka Nerd Font",
+    "ibm": "IBM Plex Mono, Cascadia Mono, Iosevka Nerd Font",
+    "ibm-plex": "IBM Plex Mono, Cascadia Mono, Iosevka Nerd Font",
+    "ibmplex": "IBM Plex Mono, Cascadia Mono, Iosevka Nerd Font",
+    "iosevka": "Iosevka Nerd Font",
+    "jetbrains": "JetBrains Mono, Cascadia Mono, Iosevka Nerd Font",
+    "jb": "JetBrains Mono, Cascadia Mono, Iosevka Nerd Font",
+    "cascadia": "Cascadia Code, Iosevka Nerd Font",
+    "consolas": "Consolas, Cascadia Mono",
+}
+
+VALID_WEIGHTS = {
+    "thin", "extra-light", "light", "semi-light",
+    "normal", "medium", "semi-bold", "bold", "extra-bold", "black",
+}
+
+def matched_profiles():
+    res = [defaults]
+    for p in plist:
+        if p.get("name") in targets or p.get("source") in sources or "font" in p:
+            res.append(p)
+    return res
+
+if low in ("status", "-h", "--help"):
+    ref = next((p for p in plist if p.get("name") == "Ubuntu"), defaults)
+    fobj = ref.get("font") or defaults.get("font") or {}
+    print(f"  Fonte atual : {fobj.get('face', '<padrao>')}")
+    print(f"  Tamanho     : {fobj.get('size', 'padrao (12)')}")
+    print(f"  Peso        : {fobj.get('weight', 'normal')}")
+    print("  Presets     : plex | iosevka | jetbrains | cascadia | consolas")
+    print("  Extras      : nave-font size <8..28>  |  nave-font weight <light|normal|medium|semi-bold|bold>")
+    sys.exit(0)
+
+if low == "size":
+    try:
+        sz = float(arg2)
+    except Exception:
+        print("Uso: nave-font size <8..28> (ex.: nave-font size 11)")
+        sys.exit(1)
+    sz = max(8.0, min(28.0, sz))
+    sz_val = int(sz) if sz.is_integer() else sz
+    for p in matched_profiles():
+        fobj = p.setdefault("font", {})
+        fobj["size"] = sz_val
+    wt_path.write_text(json.dumps(data, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"✓ Tamanho da fonte alterado para: {sz_val}")
+    sys.exit(0)
+
+if low == "weight":
+    w = arg2.lower()
+    if w not in VALID_WEIGHTS:
+        print("Pesos validos: light | normal | medium | semi-bold | bold")
+        sys.exit(1)
+    for p in matched_profiles():
+        fobj = p.setdefault("font", {})
+        fobj["weight"] = w
+    wt_path.write_text(json.dumps(data, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"✓ Peso da fonte alterado para: {w}")
+    sys.exit(0)
+
+face = PRESETS.get(low, arg1)
+for p in matched_profiles():
+    fobj = p.setdefault("font", {})
+    fobj["face"] = face
+wt_path.write_text(json.dumps(data, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
+print(f"✓ Fonte do Windows Terminal alterada para: {face}")
+PY
+}
+
 # ------------------------------------------------------------------------------
 # WSL <-> Windows Bridge
 # ------------------------------------------------------------------------------
@@ -1395,6 +1501,7 @@ function nave-help {
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-layout <modo>%f     Layout do prompt (framed|rail|hud|compact)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-shader <modo>%f     Shader GPU Windows Terminal (glow|crt|frosted|off)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-glass [modo]%f      Fundo: glass / frosted (vidro escuro) / solid / wall"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-font [preset]%f     Fonte ao vivo (plex|iosevka|jetbrains|cascadia|size|weight)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-bg / transient%f    Liga/desliga fundo OSC 11 ou transient prompt"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}sysinfo / hr [titulo]%f  Arte + barras de sistema / regua divisoria"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}nave-hud / nave-warp%f   Cockpit tempo real ([1-6],[p]) / starfield 3D"
