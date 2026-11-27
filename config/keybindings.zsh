@@ -73,6 +73,7 @@ function TRAPINT {
       zle -R
       return 0
     fi
+    (( ${+widgets[_nave_suggest_clear]} )) && zle _nave_suggest_clear 2>/dev/null
   fi
   return $(( 128 + $1 ))
 }
@@ -369,6 +370,10 @@ bindkey "^[O1;5C" _nave_move_word_right  # Ctrl+Right (app mode)
 bindkey "^[[1;3C" _nave_move_word_right  # Alt+Right
 bindkey "^[Oc"    _nave_move_word_right  # Ctrl+Right (rxvt)
 bindkey "^[f"     _nave_move_word_right  # Alt+F
+if (( ${+widgets[_nave_suggest_next]} )); then
+  bindkey "^[[1;3B" _nave_suggest_next   # Alt+Down (cycle next suggestion)
+  bindkey "^[[1;3A" _nave_suggest_prev   # Alt+Up   (cycle previous suggestion)
+fi
 
 # Selection (VS Code / Windows standard — XTerm, short CSI, and app-mode variants)
 bindkey "^[[1;2D" _nave_sel_left         # Shift+Left
