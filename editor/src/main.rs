@@ -968,8 +968,23 @@ impl App {
                     self.cfg.block_cursor = !self.cfg.block_cursor;
                     self.cfg.save();
                     self.term_sync_needed = true;
-                    let st = if self.cfg.block_cursor { "Bloco (█)" } else { "Barra (|)" };
+                    let st = if self.cfg.block_cursor {
+                        if self.cfg.auto_hide_mouse { "Bloco (█ · auto-hide mouse ON)" } else { "Bloco (█)" }
+                    } else {
+                        "Barra (|)"
+                    };
                     self.set_status(format!("Cursor: {}", st));
+                }
+                PickerAction::ToggleAutoHideMouse => {
+                    self.cfg.auto_hide_mouse = !self.cfg.auto_hide_mouse;
+                    self.cfg.save();
+                    self.term_sync_needed = true;
+                    let st = if self.cfg.auto_hide_mouse {
+                        "ON (ativo no modo bloco)"
+                    } else {
+                        "OFF"
+                    };
+                    self.set_status(format!("Auto-Hide Ponteiro do Mouse: {}", st));
                 }
                 PickerAction::ToggleMouse => {
                     self.cfg.mouse = !self.cfg.mouse;
@@ -1275,6 +1290,9 @@ fn main() {
         }
     };
 
+    let mut mouse_hider = terminal::MouseHider::new();
+    mouse_hider.sync(app.cfg.block_cursor && app.cfg.auto_hide_mouse);
+
     let mut decoder = InputDecoder::new();
     let mut read_buf = [0u8; 4096];
     let mut needs_redraw = true;
@@ -1288,6 +1306,7 @@ fn main() {
             term.set_mouse(app.cfg.mouse);
             term.set_cursor_style(app.cfg.block_cursor, standby_blink);
             term.set_cursor_color(app.palette.cursor_hex);
+            mouse_hider.sync(app.cfg.block_cursor && app.cfg.auto_hide_mouse);
             app.term_sync_needed = false;
             needs_redraw = true;
         }
@@ -1332,6 +1351,9 @@ fn main() {
                 }
                 decoder.push(&read_buf[..n]);
                 while let Some(ev) = decoder.next_event() {
+                    if matches!(ev, Event::Key(_)) {
+                        mouse_hider.notify_key();
+                    }
                     app.handle_event(ev, cols, rows);
                     needs_redraw = true;
                     if app.should_quit {

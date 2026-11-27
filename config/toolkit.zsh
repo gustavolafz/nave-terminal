@@ -3,7 +3,7 @@
 # Modular WSL + Dev + Modern CLI + Art/Cockpit toolkit
 # ==============================================================================
 
-: "${NAVE_PROJECTS_DIR:=$HOME/projects}"
+: "${NAVE_PROJECTS_DIR:=$HOME/compProjects}"
 
 # ------------------------------------------------------------------------------
 # Modern CLI integrations (fzf, zoxide, eza, bat, fd, rg, lazygit, btop)
@@ -61,6 +61,13 @@ fi
 command -v lazygit >/dev/null 2>&1 && alias lg='lazygit'
 command -v btop >/dev/null 2>&1 && alias mon='btop'
 command -v nave-edit >/dev/null 2>&1 && alias ne='nave-edit'
+function nave-cursor-reset {
+  local exe="/mnt/c/Users/${USER}/.config/nave/nave-hidemouse.exe"
+  [[ -x "$exe" ]] || exe=(/mnt/c/Users/*/.config/nave/nave-hidemouse.exe(N[1]))
+  if [[ -n "$exe" && -f "$exe" ]]; then
+    "$exe" --reset < /dev/null && print -P "%F{${_NAVE_C[ok]:-48}}Cursor do Windows restaurado.%f"
+  fi
+}
 
 # ------------------------------------------------------------------------------
 # Visual Art Helpers: TrueColor gradient, hr divider, Windows Terminal shaders

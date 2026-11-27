@@ -15,6 +15,7 @@ pub enum PickerAction {
     ToggleVimVisual,
     ToggleRelativeNumbers,
     ToggleBlockCursor,
+    ToggleAutoHideMouse,
     ToggleMouse,
     ToggleScrollbar,
     ToggleCenterScroll,
@@ -91,8 +92,13 @@ impl Picker {
             },
             PickerItem {
                 label: format!("Cursor em Bloco Solido [{}]", onoff(cfg.block_cursor)),
-                detail: "█ vs |".into(),
+                detail: "█ vs | (auto-hide mouse quando ON)".into(),
                 action: PickerAction::ToggleBlockCursor,
+            },
+            PickerItem {
+                label: format!("Auto-Hide Ponteiro do Mouse (modo bloco) [{}]", onoff(cfg.auto_hide_mouse)),
+                detail: "some apos 0.5s ocioso no editor".into(),
+                action: PickerAction::ToggleAutoHideMouse,
             },
             PickerItem {
                 label: format!("Captura de Mouse [{}]", onoff(cfg.mouse)),

@@ -7,6 +7,7 @@ pub struct EditorConfig {
     pub vim_visual: bool,
     pub relative_numbers: bool,
     pub block_cursor: bool,
+    pub auto_hide_mouse: bool,
     pub mouse: bool,
     pub scrollbar: bool,
     pub center_scroll: bool,
@@ -26,6 +27,7 @@ impl Default for EditorConfig {
             vim_visual: false,
             relative_numbers: false,
             block_cursor: false,
+            auto_hide_mouse: true,
             mouse: true,
             scrollbar: true,
             center_scroll: false,
@@ -75,6 +77,7 @@ impl EditorConfig {
                 "vim_visual" => cfg.vim_visual = parse_bool(v),
                 "relative_numbers" => cfg.relative_numbers = parse_bool(v),
                 "block_cursor" => cfg.block_cursor = parse_bool(v),
+                "auto_hide_mouse" => cfg.auto_hide_mouse = parse_bool(v),
                 "mouse" => cfg.mouse = parse_bool(v),
                 "scrollbar" => cfg.scrollbar = parse_bool(v),
                 "center_scroll" => cfg.center_scroll = parse_bool(v),
@@ -110,6 +113,7 @@ impl EditorConfig {
              vim_visual={}\n\
              relative_numbers={}\n\
              block_cursor={}\n\
+             auto_hide_mouse={}\n\
              mouse={}\n\
              scrollbar={}\n\
              center_scroll={}\n\
@@ -124,6 +128,7 @@ impl EditorConfig {
             self.vim_visual,
             self.relative_numbers,
             self.block_cursor,
+            self.auto_hide_mouse,
             self.mouse,
             self.scrollbar,
             self.center_scroll,

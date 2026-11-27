@@ -1,7 +1,9 @@
 use std::io::{self, Write};
 use std::os::unix::io::RawFd;
-use std::process::{Command, Stdio};
+use std::path::PathBuf;
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 static WINCH_FLAG: AtomicBool = AtomicBool::new(false);
 
@@ -202,4 +204,99 @@ pub fn paste_from_system_clipboard() -> Option<String> {
         }
     }
     None
+}
+
+/// Manages the optional native Windows `nave-hidemouse.exe` helper on WSL2.
+/// Auto-hides the OS mouse pointer after 500ms of mouse stillness (or immediately on keypress)
+/// ONLY while Windows Terminal is foreground and the pointer sits inside the editor canvas.
+/// Automatically restores Windows system cursors on movement, focus loss, toggle OFF, or process exit.
+pub struct MouseHider {
+    exe_path: Option<PathBuf>,
+    child: Option<Child>,
+    stdin: Option<ChildStdin>,
+    last_notify: Option<Instant>,
+}
+
+impl MouseHider {
+    pub fn new() -> Self {
+        Self {
+            exe_path: Self::locate_helper(),
+            child: None,
+            stdin: None,
+            last_notify: None,
+        }
+    }
+
+    fn locate_helper() -> Option<PathBuf> {
+        if let Ok(env_p) = std::env::var("NAVE_HIDEMOUSE_EXE") {
+            let p = PathBuf::from(env_p);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        if let Ok(user) = std::env::var("USER") {
+            let p = PathBuf::from(format!("/mnt/c/Users/{}/.config/nave/nave-hidemouse.exe", user));
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        if let Ok(entries) = std::fs::read_dir("/mnt/c/Users") {
+            for ent in entries.flatten() {
+                let cand = ent.path().join(".config/nave/nave-hidemouse.exe");
+                if cand.is_file() {
+                    return Some(cand);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn sync(&mut self, active: bool) {
+        if active {
+            if self.child.is_some() {
+                return;
+            }
+            let Some(ref exe) = self.exe_path else { return };
+            if let Ok(mut child) = Command::new(exe)
+                .arg("500")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                self.stdin = child.stdin.take();
+                self.child = Some(child);
+                self.last_notify = None;
+            }
+        } else {
+            if let Some(mut s) = self.stdin.take() {
+                let _ = s.write_all(b"Q");
+                let _ = s.flush();
+            }
+            if let Some(mut child) = self.child.take() {
+                let _ = child.wait();
+            }
+            self.last_notify = None;
+        }
+    }
+
+    pub fn notify_key(&mut self) {
+        let Some(ref mut s) = self.stdin else { return };
+        if self
+            .last_notify
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(120))
+        {
+            return;
+        }
+        self.last_notify = Some(Instant::now());
+        if s.write_all(b"H").is_err() || s.flush().is_err() {
+            self.stdin = None;
+        }
+    }
+}
+
+impl Drop for MouseHider {
+    fn drop(&mut self) {
+        self.sync(false);
+    }
 }
