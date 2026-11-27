@@ -2247,21 +2247,38 @@ fn leading_visual_width(line: &str, tab_w: usize) -> usize {
     v
 }
 
+fn line_opens_block(trimmed: &str) -> bool {
+    let code = trimmed
+        .split("//")
+        .next()
+        .unwrap_or(trimmed)
+        .trim_end();
+    matches!(code.as_bytes().last(), Some(b'{' | b'(' | b'[' | b':'))
+}
+
+fn line_closes_block(trimmed: &str) -> bool {
+    matches!(trimmed.as_bytes().first(), Some(b'}' | b')' | b']'))
+}
+
 fn blank_line_inherited_indent(rope: &crate::rope::Rope, row: usize, tab_w: usize) -> usize {
     let total = rope.line_count();
     let mut above = 0usize;
-    for r in (row.saturating_sub(8)..row).rev() {
+    for r in (row.saturating_sub(64)..row).rev() {
         let t = rope.line(r);
-        if !t.trim().is_empty() {
-            above = leading_visual_width(&t, tab_w);
+        let tr = t.trim();
+        if !tr.is_empty() {
+            let w = leading_visual_width(&t, tab_w);
+            above = if line_opens_block(tr) { w + tab_w } else { w };
             break;
         }
     }
     let mut below = 0usize;
-    for r in (row + 1)..(row + 9).min(total) {
+    for r in (row + 1)..(row + 65).min(total) {
         let t = rope.line(r);
-        if !t.trim().is_empty() {
-            below = leading_visual_width(&t, tab_w);
+        let tr = t.trim();
+        if !tr.is_empty() {
+            let w = leading_visual_width(&t, tab_w);
+            below = if line_closes_block(tr) { w + tab_w } else { w };
             break;
         }
     }
@@ -2280,23 +2297,23 @@ fn compute_active_indent_scope(
     } else {
         leading_visual_width(&cur_txt, indent_w)
     };
-    let active_col = (cur_lead / indent_w) * indent_w;
+    let active_col = (cur_lead.saturating_sub(1) / indent_w) * indent_w;
     if active_col == 0 {
         return None;
     }
     let mut s = primary_row;
-    while s > 0 && primary_row - s < 80 {
+    while s > 0 && primary_row - s < 120 {
         let t = rope.line(s - 1);
-        if t.trim().is_empty() || leading_visual_width(&t, indent_w) >= active_col {
+        if t.trim().is_empty() || leading_visual_width(&t, indent_w) > active_col {
             s -= 1;
         } else {
             break;
         }
     }
     let mut e = primary_row;
-    while e + 1 < total && e - primary_row < 80 {
+    while e + 1 < total && e - primary_row < 120 {
         let t = rope.line(e + 1);
-        if t.trim().is_empty() || leading_visual_width(&t, indent_w) >= active_col {
+        if t.trim().is_empty() || leading_visual_width(&t, indent_w) > active_col {
             e += 1;
         } else {
             break;
@@ -2483,5 +2500,24 @@ mod tests {
             out[s3..s4].contains(&sel_seq),
             "blank line inside selection must render sel_bg newline block"
         );
+    }
+
+    #[test]
+    fn blank_lines_before_closing_brace_keep_block_indent_guide() {
+        // Exact user repro: blank lines inside `while (n--) { ... }` right above `}`
+        let src = "int main() {\n    while (n--) {\n        int a;\n        cin >> a;\n\n\n\n    }\n\n    return 0;\n}\n";
+        let rope = crate::rope::Rope::from_str(src);
+        // Blank lines 4, 5, 6 (inside `while`) must inherit indent = 8 so guide at col 4 stays visible!
+        assert_eq!(blank_line_inherited_indent(&rope, 4, 4), 8);
+        assert_eq!(blank_line_inherited_indent(&rope, 6, 4), 8);
+        // Blank line 8 (between `}` and `return 0;`) stays at outer main indent = 4 (no col 4 `while` guide)
+        assert_eq!(blank_line_inherited_indent(&rope, 8, 4), 4);
+
+        // Completely empty block (`while (n--) {\n\n    }`) also preserves its inner guide!
+        let empty_blk = crate::rope::Rope::from_str("int main() {\n    while (n--) {\n\n    }\n}\n");
+        assert_eq!(blank_line_inherited_indent(&empty_blk, 2, 4), 8);
+
+        // Active scope on blank line 6 inside `while` highlights col 4 across rows 2..=6
+        assert_eq!(compute_active_indent_scope(&rope, 6, 4), Some((2, 6, 4)));
     }
 }
