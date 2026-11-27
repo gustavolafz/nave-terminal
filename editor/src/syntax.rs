@@ -115,16 +115,30 @@ impl Language {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LineState {
+pub enum BlockMode {
     Normal,
     BlockComment,    // /* ... */
+    BlockDocComment, // /** ... */
     HtmlComment,     // <!-- ... -->
     TripleDoubleStr, // """ ... """ (string)
     TripleSingleStr, // ''' ... ''' (string)
-    TripleDoubleDoc, // """ ... """ (Python docstring -> Comment)
-    TripleSingleDoc, // ''' ... ''' (Python docstring -> Comment)
+    TripleDoubleDoc, // """ ... """ (Python docstring -> DocComment)
+    TripleSingleDoc, // ''' ... ''' (Python docstring -> DocComment)
     BacktickStr,     // ` ... `
     MarkdownFence,   // ``` ... ```
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineState {
+    pub mode: BlockMode,
+    pub bracket_depth: u16,
+}
+
+impl LineState {
+    pub const NORMAL: Self = Self {
+        mode: BlockMode::Normal,
+        bracket_depth: 0,
+    };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,7 +190,7 @@ impl SyntaxCache {
             self.lines.resize(total, None);
         }
         let limit = target_line.min(total.saturating_sub(1));
-        let mut state = LineState::Normal;
+        let mut state = LineState::NORMAL;
 
         for row in 0..=limit {
             if let Some(ref cached) = self.lines[row] {
@@ -238,14 +252,14 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
         let trimmed = line.trim_start();
         if trimmed.starts_with("```") {
             spans.push(Span { start: 0, end: len, kind: TokenKind::Function });
-            let next = if state == LineState::MarkdownFence {
-                LineState::Normal
+            state.mode = if state.mode == BlockMode::MarkdownFence {
+                BlockMode::Normal
             } else {
-                LineState::MarkdownFence
+                BlockMode::MarkdownFence
             };
-            return (spans, next);
+            return (spans, state);
         }
-        if state == LineState::MarkdownFence {
+        if state.mode == BlockMode::MarkdownFence {
             spans.push(Span { start: 0, end: len, kind: TokenKind::Function });
             return (spans, state);
         }
@@ -284,12 +298,14 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
     if lang == Language::TomlIni {
         let trimmed = line.trim_start();
         if trimmed.starts_with('#') || trimmed.starts_with(';') {
-            spans.push(Span { start: 0, end: len, kind: TokenKind::Comment });
-            return (spans, LineState::Normal);
+            push_comment_with_badges(line, 0, len, TokenKind::Comment, &mut spans);
+            state.mode = BlockMode::Normal;
+            return (spans, state);
         }
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
             spans.push(Span { start: 0, end: len, kind: TokenKind::Heading });
-            return (spans, LineState::Normal);
+            state.mode = BlockMode::Normal;
+            return (spans, state);
         }
         if let Some(eq) = line.find('=') {
             let lead = len - trimmed.len();
@@ -305,8 +321,9 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
     if lang == Language::Yaml {
         let trimmed = line.trim_start();
         if trimmed.starts_with('#') {
-            spans.push(Span { start: 0, end: len, kind: TokenKind::Comment });
-            return (spans, LineState::Normal);
+            push_comment_with_badges(line, 0, len, TokenKind::Comment, &mut spans);
+            state.mode = BlockMode::Normal;
+            return (spans, state);
         }
         if let Some(colon) = find_yaml_colon(line) {
             let lead = len - trimmed.len();
@@ -325,12 +342,12 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
     }
 
     // Precompute parameter identifier ranges & generic angle-bracket pairs on this line
-    let param_ranges = if state == LineState::Normal {
+    let param_ranges = if state.mode == BlockMode::Normal {
         find_param_ranges(lang, line)
     } else {
         Vec::new()
     };
-    let generic_pairs = if state == LineState::Normal {
+    let generic_pairs = if state.mode == BlockMode::Normal {
         find_generic_angle_brackets(lang, line)
     } else {
         Vec::new()
@@ -338,8 +355,11 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
     let in_generic_span = |pos: usize| -> bool {
         generic_pairs.iter().any(|&(s, e)| pos > s && pos < e)
     };
-    let is_generic_angle = |pos: usize| -> bool {
-        generic_pairs.iter().any(|&(s, e)| pos == s || pos == e)
+    let is_generic_open = |pos: usize| -> bool {
+        generic_pairs.iter().any(|&(s, _)| s == pos)
+    };
+    let is_generic_close = |pos: usize| -> bool {
+        generic_pairs.iter().any(|&(_, e)| e == pos)
     };
 
     // Context flags for line-level constructs
@@ -347,6 +367,8 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
     let in_java_pkg_or_import = lang == Language::Java
         && (trimmed_line.starts_with("package ") || trimmed_line.starts_with("import "));
     let in_java_pkg = lang == Language::Java && trimmed_line.starts_with("package ");
+    let in_py_import = lang == Language::Python
+        && (trimmed_line.starts_with("import ") || trimmed_line.starts_with("from "));
     let in_py_class_header = lang == Language::Python && trimmed_line.starts_with("class ");
     let in_shell_test = lang == Language::Shell
         && (trimmed_line.contains("[[") || trimmed_line.contains("[ "));
@@ -361,66 +383,79 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
 
     while i < len {
         // Handle active multi-line states
-        match state {
-            LineState::BlockComment => {
+        match state.mode {
+            BlockMode::BlockComment | BlockMode::BlockDocComment => {
+                let kind = if state.mode == BlockMode::BlockDocComment {
+                    TokenKind::DocComment
+                } else {
+                    TokenKind::Comment
+                };
                 let start = i;
                 if let Some(rel) = line[i..].find("*/") {
                     i += rel + 2;
-                    spans.push(Span { start, end: i, kind: TokenKind::Comment });
-                    state = LineState::Normal;
+                    push_comment_with_badges(line, start, i, kind, &mut spans);
+                    state.mode = BlockMode::Normal;
                 } else {
-                    spans.push(Span { start, end: len, kind: TokenKind::Comment });
-                    return (spans, LineState::BlockComment);
+                    push_comment_with_badges(line, start, len, kind, &mut spans);
+                    return (spans, state);
                 }
                 continue;
             }
-            LineState::HtmlComment => {
+            BlockMode::HtmlComment => {
                 let start = i;
                 if let Some(rel) = line[i..].find("-->") {
                     i += rel + 3;
-                    spans.push(Span { start, end: i, kind: TokenKind::Comment });
-                    state = LineState::Normal;
+                    push_comment_with_badges(line, start, i, TokenKind::Comment, &mut spans);
+                    state.mode = BlockMode::Normal;
                 } else {
-                    spans.push(Span { start, end: len, kind: TokenKind::Comment });
-                    return (spans, LineState::HtmlComment);
+                    push_comment_with_badges(line, start, len, TokenKind::Comment, &mut spans);
+                    return (spans, state);
                 }
                 continue;
             }
-            LineState::TripleDoubleStr | LineState::TripleDoubleDoc => {
-                let kind = if state == LineState::TripleDoubleDoc {
-                    TokenKind::Comment
-                } else {
-                    TokenKind::String
-                };
+            BlockMode::TripleDoubleStr | BlockMode::TripleDoubleDoc => {
+                let is_doc = state.mode == BlockMode::TripleDoubleDoc;
                 let start = i;
                 if let Some(rel) = line[i..].find("\"\"\"") {
                     i += rel + 3;
-                    spans.push(Span { start, end: i, kind });
-                    state = LineState::Normal;
+                    if is_doc {
+                        push_comment_with_badges(line, start, i, TokenKind::DocComment, &mut spans);
+                    } else {
+                        spans.push(Span { start, end: i, kind: TokenKind::String });
+                    }
+                    state.mode = BlockMode::Normal;
                 } else {
-                    spans.push(Span { start, end: len, kind });
+                    if is_doc {
+                        push_comment_with_badges(line, start, len, TokenKind::DocComment, &mut spans);
+                    } else {
+                        spans.push(Span { start, end: len, kind: TokenKind::String });
+                    }
                     return (spans, state);
                 }
                 continue;
             }
-            LineState::TripleSingleStr | LineState::TripleSingleDoc => {
-                let kind = if state == LineState::TripleSingleDoc {
-                    TokenKind::Comment
-                } else {
-                    TokenKind::String
-                };
+            BlockMode::TripleSingleStr | BlockMode::TripleSingleDoc => {
+                let is_doc = state.mode == BlockMode::TripleSingleDoc;
                 let start = i;
                 if let Some(rel) = line[i..].find("'''") {
                     i += rel + 3;
-                    spans.push(Span { start, end: i, kind });
-                    state = LineState::Normal;
+                    if is_doc {
+                        push_comment_with_badges(line, start, i, TokenKind::DocComment, &mut spans);
+                    } else {
+                        spans.push(Span { start, end: i, kind: TokenKind::String });
+                    }
+                    state.mode = BlockMode::Normal;
                 } else {
-                    spans.push(Span { start, end: len, kind });
+                    if is_doc {
+                        push_comment_with_badges(line, start, len, TokenKind::DocComment, &mut spans);
+                    } else {
+                        spans.push(Span { start, end: len, kind: TokenKind::String });
+                    }
                     return (spans, state);
                 }
                 continue;
             }
-            LineState::BacktickStr => {
+            BlockMode::BacktickStr => {
                 let (next_i, closed) = if lang == Language::JsTs {
                     scan_js_template_string(line, i, &mut spans, false)
                 } else {
@@ -428,13 +463,13 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
                 };
                 i = next_i;
                 if closed {
-                    state = LineState::Normal;
+                    state.mode = BlockMode::Normal;
                 } else {
-                    return (spans, LineState::BacktickStr);
+                    return (spans, state);
                 }
                 continue;
             }
-            LineState::Normal | LineState::MarkdownFence => {}
+            BlockMode::Normal | BlockMode::MarkdownFence => {}
         }
 
         let b = bytes[i];
@@ -446,7 +481,7 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
             continue;
         }
 
-        // Line comments
+        // Line comments (`///` / `//!` DocComment, normal comments + TODO/FIXME badges)
         if (matches!(
             lang,
             Language::Python | Language::Shell | Language::Yaml | Language::TomlIni | Language::Dockerfile
@@ -457,25 +492,32 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
             ) && rest.starts_with("//"))
             || (lang == Language::Sql && rest.starts_with("--"))
         {
-            spans.push(Span { start: i, end: len, kind: TokenKind::Comment });
+            let is_doc = (rest.starts_with("///") && !rest.starts_with("////"))
+                || (lang == Language::Rust && rest.starts_with("//!"));
+            let base = if is_doc { TokenKind::DocComment } else { TokenKind::Comment };
+            push_comment_with_badges(line, i, len, base, &mut spans);
             break;
         }
 
-        // Block comments
+        // Block comments (`/** ... */` DocComment vs `/* ... */` Comment + badges)
         if matches!(
             lang,
             Language::Rust | Language::JsTs | Language::CLike | Language::Java | Language::Go | Language::Sql | Language::HtmlCss
         ) && rest.starts_with("/*")
         {
+            let is_doc = rest.starts_with("/**") && !rest.starts_with("/**/") && !rest.starts_with("/***");
+            let base = if is_doc { TokenKind::DocComment } else { TokenKind::Comment };
+            let target_mode = if is_doc { BlockMode::BlockDocComment } else { BlockMode::BlockComment };
             let start = i;
             i += 2;
             if let Some(rel) = line[i..].find("*/") {
                 i += rel + 2;
-                spans.push(Span { start, end: i, kind: TokenKind::Comment });
-                state = LineState::Normal;
+                push_comment_with_badges(line, start, i, base, &mut spans);
+                state.mode = BlockMode::Normal;
             } else {
-                spans.push(Span { start, end: len, kind: TokenKind::Comment });
-                return (spans, LineState::BlockComment);
+                push_comment_with_badges(line, start, len, base, &mut spans);
+                state.mode = target_mode;
+                return (spans, state);
             }
             continue;
         }
@@ -485,11 +527,12 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
             i += 4;
             if let Some(rel) = line[i..].find("-->") {
                 i += rel + 3;
-                spans.push(Span { start, end: i, kind: TokenKind::Comment });
-                state = LineState::Normal;
+                push_comment_with_badges(line, start, i, TokenKind::Comment, &mut spans);
+                state.mode = BlockMode::Normal;
             } else {
-                spans.push(Span { start, end: len, kind: TokenKind::Comment });
-                return (spans, LineState::HtmlComment);
+                push_comment_with_badges(line, start, len, TokenKind::Comment, &mut spans);
+                state.mode = BlockMode::HtmlComment;
+                return (spans, state);
             }
             continue;
         }
@@ -527,7 +570,7 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
                 let quote = bytes[i];
                 if line[i..].starts_with("\"\"\"") || line[i..].starts_with("'''") {
                     let delim = if line[i..].starts_with("\"\"\"") { "\"\"\"" } else { "'''" };
-                    let target = if delim == "\"\"\"" { LineState::TripleDoubleStr } else { LineState::TripleSingleStr };
+                    let target = if delim == "\"\"\"" { BlockMode::TripleDoubleStr } else { BlockMode::TripleSingleStr };
                     let start = i;
                     i += 3;
                     if let Some(rel) = line[i..].find(delim) {
@@ -535,7 +578,8 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
                         spans.push(Span { start, end: i, kind: TokenKind::String });
                     } else {
                         spans.push(Span { start, end: len, kind: TokenKind::String });
-                        return (spans, target);
+                        state.mode = target;
+                        return (spans, state);
                     }
                 } else if is_fstr {
                     i = scan_python_fstring(line, i, quote, &mut spans);
@@ -557,21 +601,29 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
         if lang == Language::Python && (rest.starts_with("\"\"\"") || rest.starts_with("'''")) {
             let is_doc = line[..i].trim().is_empty();
             let delim = if rest.starts_with("\"\"\"") { "\"\"\"" } else { "'''" };
-            let kind = if is_doc { TokenKind::Comment } else { TokenKind::String };
-            let target_state = match (delim == "\"\"\"", is_doc) {
-                (true, true) => LineState::TripleDoubleDoc,
-                (true, false) => LineState::TripleDoubleStr,
-                (false, true) => LineState::TripleSingleDoc,
-                (false, false) => LineState::TripleSingleStr,
+            let target_mode = match (delim == "\"\"\"", is_doc) {
+                (true, true) => BlockMode::TripleDoubleDoc,
+                (true, false) => BlockMode::TripleDoubleStr,
+                (false, true) => BlockMode::TripleSingleDoc,
+                (false, false) => BlockMode::TripleSingleStr,
             };
             let start = i;
             i += 3;
             if let Some(rel) = line[i..].find(delim) {
                 i += rel + 3;
-                spans.push(Span { start, end: i, kind });
+                if is_doc {
+                    push_comment_with_badges(line, start, i, TokenKind::DocComment, &mut spans);
+                } else {
+                    spans.push(Span { start, end: i, kind: TokenKind::String });
+                }
             } else {
-                spans.push(Span { start, end: len, kind });
-                return (spans, target_state);
+                if is_doc {
+                    push_comment_with_badges(line, start, len, TokenKind::DocComment, &mut spans);
+                } else {
+                    spans.push(Span { start, end: len, kind: TokenKind::String });
+                }
+                state.mode = target_mode;
+                return (spans, state);
             }
             prev_non_ws_byte = Some(b'"');
             prev_word = "";
@@ -589,7 +641,8 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
             prev_non_ws_byte = Some(b'`');
             prev_word = "";
             if !closed && matches!(lang, Language::JsTs | Language::Go) {
-                return (spans, LineState::BacktickStr);
+                state.mode = BlockMode::BacktickStr;
+                return (spans, state);
             }
             continue;
         }
@@ -663,9 +716,9 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
             continue;
         }
 
-        // C/C++ preprocessor directives (`#` Punctuation, `include`/`define` Keyword, `<hdr>` String)
+        // C/C++ preprocessor directives (`#include`, `#define`, `#pragma`, `#ifdef` -> Macro, `<hdr>` -> String)
         if lang == Language::CLike && b == b'#' {
-            spans.push(Span { start: i, end: i + 1, kind: TokenKind::Punctuation });
+            spans.push(Span { start: i, end: i + 1, kind: TokenKind::Macro });
             i += 1;
             while i < len && bytes[i].is_ascii_whitespace() {
                 i += 1;
@@ -676,7 +729,7 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
             }
             let dir_word = &line[dir_start..i];
             if i > dir_start {
-                spans.push(Span { start: dir_start, end: i, kind: TokenKind::Keyword });
+                spans.push(Span { start: dir_start, end: i, kind: TokenKind::Macro });
             }
             if dir_word == "include" {
                 while i < len && bytes[i].is_ascii_whitespace() {
@@ -695,32 +748,31 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
             continue;
         }
 
-        // Rust attributes `#[` / `#![` -> Punctuation, let inner tokens lex naturally (`derive` Plain, `Debug`/`Clone` Type)!
+        // Rust attributes `#[` / `#![` -> `#`/`#!` Macro + `[` Rainbow bracket
         if lang == Language::Rust && (rest.starts_with("#[") || rest.starts_with("#![")) {
-            let n = if rest.starts_with("#![") { 3 } else { 2 };
-            spans.push(Span { start: i, end: i + n, kind: TokenKind::Punctuation });
-            i += n;
+            let hash_len = if rest.starts_with("#![") { 2 } else { 1 };
+            spans.push(Span { start: i, end: i + hash_len, kind: TokenKind::Macro });
+            i += hash_len;
+            let rb = TokenKind::Rainbow((state.bracket_depth % 4) as u8);
+            state.bracket_depth = state.bracket_depth.saturating_add(1);
+            spans.push(Span { start: i, end: i + 1, kind: rb });
+            i += 1;
             in_rust_attr = true;
             prev_non_ws_byte = Some(b'[');
             prev_word = "";
             continue;
         }
 
-        // Python / JS / Java decorators (`@` Punctuation + decorator name Function or Type)
+        // Python / JS / Java decorators (`@decorator`, `@Override` -> Macro)
         if matches!(lang, Language::Python | Language::JsTs | Language::Java) && b == b'@' {
-            spans.push(Span { start: i, end: i + 1, kind: TokenKind::Punctuation });
+            spans.push(Span { start: i, end: i + 1, kind: TokenKind::Macro });
             i += 1;
             let dstart = i;
             while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                 i += 1;
             }
             if i > dstart {
-                let kind = if lang == Language::Java {
-                    TokenKind::Type
-                } else {
-                    TokenKind::Function
-                };
-                spans.push(Span { start: dstart, end: i, kind });
+                spans.push(Span { start: dstart, end: i, kind: TokenKind::Macro });
             }
             prev_non_ws_byte = Some(b'@');
             prev_word = "";
@@ -826,43 +878,66 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
                 }
             } else if in_java_pkg_or_import && !matches!(word, "package" | "import" | "static") {
                 if in_java_pkg {
-                    TokenKind::Keyword
+                    TokenKind::Plain
+                } else if is_pascal_case(word) {
+                    TokenKind::Type
                 } else {
                     TokenKind::Plain
                 }
             } else if is_param {
                 TokenKind::Parameter
             } else if lang == Language::CLike && prev_word == "define" {
-                TokenKind::Function
+                if is_screaming_const(word) {
+                    TokenKind::ConstIdent
+                } else {
+                    TokenKind::Macro
+                }
             } else if lang == Language::Go && prev_word == "package" {
                 TokenKind::Type
             } else if lang == Language::Go && prev_word == "const" {
+                if is_screaming_const(word) {
+                    TokenKind::ConstIdent
+                } else {
+                    TokenKind::Constant
+                }
+            } else if is_builtin_var(lang, word) && !after_dot {
                 TokenKind::Constant
-            } else if is_builtin_var(lang, word) {
-                TokenKind::BuiltinVar
             } else if lang == Language::Shell && matches!(word, "true" | "false") {
-                TokenKind::Function
-            } else if is_constant_literal(lang, word) {
                 TokenKind::Constant
+            } else if is_constant_literal(lang, word) && !after_dot {
+                TokenKind::Constant
+            } else if is_control_flow(lang, word) && !after_dot {
+                TokenKind::ControlFlow
             } else if is_keyword(lang, word) && !after_dot {
                 TokenKind::Keyword
+            } else if is_primitive_type(lang, word) && !after_dot {
+                TokenKind::PrimitiveType
+            } else if is_std_builtin(lang, word) && !after_dot && !matches!(next_non_ws, Some(b'(')) {
+                TokenKind::StdBuiltin
             } else if matches!(prev_word, "fn" | "def" | "function" | "func") {
                 TokenKind::Function
             } else if lang == Language::JsTs && prev_word == "new" {
-                TokenKind::Function
+                if is_pascal_case(word) || is_type_name(lang, word) {
+                    TokenKind::Type
+                } else {
+                    TokenKind::Function
+                }
             } else if matches!(prev_word, "struct" | "enum" | "trait" | "class" | "interface" | "extends" | "implements" | "typename") {
                 TokenKind::Type
             } else if in_py_class_header && prev_non_ws_byte == Some(b'(') {
                 TokenKind::Type
             } else if lang == Language::Rust && rest_after.starts_with('!') && !rest_after.starts_with("!=") {
                 i += 1;
-                TokenKind::Function
+                TokenKind::Macro
+            } else if lang == Language::Rust
+                && in_rust_attr
+                && (prev_non_ws_byte == Some(b'[') || matches!(next_non_ws, Some(b'(')))
+            {
+                TokenKind::Macro
             } else if matches!(next_non_ws, Some(b'('))
                 && !matches!(lang, Language::Json | Language::Yaml | Language::TomlIni)
             {
-                if lang == Language::Rust && in_rust_attr {
-                    TokenKind::Plain
-                } else if lang == Language::Rust && matches!(word, "Some" | "Ok" | "Err") && !after_dot {
+                if lang == Language::Rust && matches!(word, "Some" | "Ok" | "Err") && !after_dot {
                     TokenKind::Type
                 } else if lang == Language::Python && is_type_name(lang, word) && !after_dot {
                     TokenKind::Type
@@ -872,7 +947,12 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
             } else if lang == Language::Rust && rest_after.starts_with("::<") {
                 TokenKind::Function
             } else if after_dot {
-                if matches!(lang, Language::JsTs | Language::CLike) {
+                if in_py_import {
+                    TokenKind::Plain
+                } else if matches!(
+                    lang,
+                    Language::Rust | Language::Python | Language::JsTs | Language::CLike | Language::Java | Language::Go
+                ) {
                     TokenKind::Property
                 } else {
                     TokenKind::Plain
@@ -881,8 +961,12 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
                 TokenKind::Variable
             } else if lang == Language::Shell && expect_shell_cmd {
                 TokenKind::Function
-            } else if matches!(lang, Language::Rust | Language::Python) && is_screaming_const(word) {
-                TokenKind::Constant
+            } else if matches!(
+                lang,
+                Language::Rust | Language::Python | Language::CLike | Language::Java | Language::JsTs | Language::Go
+            ) && is_screaming_const(word)
+            {
+                TokenKind::ConstIdent
             } else if in_generic_span(start)
                 && word.len() == 1
                 && word.as_bytes()[0].is_ascii_uppercase()
@@ -913,7 +997,15 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
         if lang == Language::JsTs && rest.starts_with("...") {
             spans.push(Span { start: i, end: i + 3, kind: TokenKind::Operator });
             i += 3;
-            prev_non_ws_byte = Some(b'.');
+            prev_non_ws_byte = Some(b'+');
+            prev_word = "";
+            continue;
+        }
+        if lang == Language::Rust && (rest.starts_with("..=") || rest.starts_with("..")) {
+            let n = if rest.starts_with("..=") { 3 } else { 2 };
+            spans.push(Span { start: i, end: i + n, kind: TokenKind::Operator });
+            i += n;
+            prev_non_ws_byte = Some(b'+');
             prev_word = "";
             continue;
         }
@@ -961,33 +1053,81 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
             prev_word = "";
             continue;
         }
-        if (b == b'<' || b == b'>') && is_generic_angle(i) {
-            spans.push(Span { start: i, end: i + 1, kind: TokenKind::Punctuation });
+        // Generic / template angle brackets `< >` participate in Rainbow Bracket nesting
+        if b == b'<' && is_generic_open(i) {
+            let rb = TokenKind::Rainbow((state.bracket_depth % 4) as u8);
+            state.bracket_depth = state.bracket_depth.saturating_add(1);
+            spans.push(Span { start: i, end: i + 1, kind: rb });
             i += 1;
-            prev_non_ws_byte = Some(b);
+            prev_non_ws_byte = Some(b'<');
             prev_word = "";
             continue;
         }
-        if lang == Language::Rust && b == b'.' && !rest.starts_with("..") {
-            spans.push(Span { start: i, end: i + 1, kind: TokenKind::Operator });
+        if b == b'>' && is_generic_close(i) {
+            let kind = if state.bracket_depth > 0 {
+                state.bracket_depth -= 1;
+                TokenKind::Rainbow((state.bracket_depth % 4) as u8)
+            } else {
+                TokenKind::BracketError
+            };
+            spans.push(Span { start: i, end: i + 1, kind });
+            i += 1;
+            prev_non_ws_byte = Some(b'>');
+            prev_word = "";
+            continue;
+        }
+        if lang == Language::Rust && b == b'.' {
+            spans.push(Span { start: i, end: i + 1, kind: TokenKind::Punctuation });
             i += 1;
             prev_non_ws_byte = Some(b'.');
             continue;
         }
 
-        // Punctuation & Braces (`() [] {} , ; .`)
-        if matches!(b, b'(' | b')' | b'[' | b']' | b'{' | b'}' | b',' | b';' | b'.') {
+        // Cross-line Rainbow Brackets `() [] {}` + unmatched closing `BracketError`
+        if matches!(b, b'(' | b'[' | b'{') {
             let start = i;
             i += 1;
-            spans.push(Span { start, end: i, kind: TokenKind::Punctuation });
+            let rb = TokenKind::Rainbow((state.bracket_depth % 4) as u8);
+            state.bracket_depth = state.bracket_depth.saturating_add(1);
+            spans.push(Span { start, end: i, kind: rb });
+            prev_non_ws_byte = Some(b);
+            prev_word = "";
+            if lang == Language::Shell && b == b'(' {
+                expect_shell_cmd = true;
+            }
+            continue;
+        }
+        if matches!(b, b')' | b']' | b'}') {
+            let start = i;
+            i += 1;
+            let kind = if state.bracket_depth > 0 {
+                state.bracket_depth -= 1;
+                TokenKind::Rainbow((state.bracket_depth % 4) as u8)
+            } else if lang == Language::Shell && b == b')' {
+                // Shell `case $x in pattern)` uses `)` without an opening `(`
+                TokenKind::Punctuation
+            } else {
+                TokenKind::BracketError
+            };
+            spans.push(Span { start, end: i, kind });
             if b == b']' {
                 in_rust_attr = false;
             }
             prev_non_ws_byte = Some(b);
+            prev_word = "";
+            continue;
+        }
+
+        // Simple punctuation (`, ; .`)
+        if matches!(b, b',' | b';' | b'.') {
+            let start = i;
+            i += 1;
+            spans.push(Span { start, end: i, kind: TokenKind::Punctuation });
+            prev_non_ws_byte = Some(b);
             if b != b'.' {
                 prev_word = "";
             }
-            if lang == Language::Shell && matches!(b, b';' | b'(') {
+            if lang == Language::Shell && b == b';' {
                 expect_shell_cmd = true;
             }
             continue;
@@ -1089,7 +1229,7 @@ fn scan_python_fstring(line: &str, mut i: usize, quote: u8, spans: &mut Vec<Span
                 }
                 j += 1;
             }
-            let (inner, _) = lex_line(Language::Python, &line[expr_s..j], LineState::Normal);
+            let (inner, _) = lex_line(Language::Python, &line[expr_s..j], LineState::NORMAL);
             for sp in inner {
                 spans.push(Span { start: expr_s + sp.start, end: expr_s + sp.end, kind: sp.kind });
             }
@@ -1158,7 +1298,7 @@ fn scan_js_template_string(
                 }
                 j += 1;
             }
-            let (inner, _) = lex_line(Language::JsTs, &line[expr_s..j], LineState::Normal);
+            let (inner, _) = lex_line(Language::JsTs, &line[expr_s..j], LineState::NORMAL);
             for sp in inner {
                 spans.push(Span { start: expr_s + sp.start, end: expr_s + sp.end, kind: sp.kind });
             }
@@ -1268,12 +1408,58 @@ fn advance_escape(line: &str, i: usize) -> usize {
     end
 }
 
+fn push_comment_with_badges(line: &str, start: usize, end: usize, base: TokenKind, spans: &mut Vec<Span>) {
+    if start >= end {
+        return;
+    }
+    let bytes = line.as_bytes();
+    let mut seg = start;
+    let mut i = start;
+    while i < end {
+        if bytes[i].is_ascii_uppercase() {
+            let prev_ok = i == start || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+            if prev_ok {
+                let wstart = i;
+                while i < end && (bytes[i].is_ascii_uppercase() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                let word = &line[wstart..i];
+                let after_ok = i == end || !(bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_');
+                if after_ok {
+                    let badge_kind = match word {
+                        "TODO" | "NOTE" | "PERF" | "OPTIMIZE" => Some(TokenKind::TodoBadge),
+                        "FIXME" | "BUG" | "HACK" | "WARN" | "WARNING" | "XXX" => Some(TokenKind::FixmeBadge),
+                        _ => None,
+                    };
+                    if let Some(bk) = badge_kind {
+                        let mut bend = i;
+                        if bend < end && bytes[bend] == b':' {
+                            bend += 1;
+                        }
+                        if wstart > seg {
+                            spans.push(Span { start: seg, end: wstart, kind: base });
+                        }
+                        spans.push(Span { start: wstart, end: bend, kind: bk });
+                        i = bend;
+                        seg = bend;
+                        continue;
+                    }
+                }
+                continue;
+            }
+        }
+        i += 1;
+    }
+    if seg < end {
+        spans.push(Span { start: seg, end, kind: base });
+    }
+}
+
 fn scan_number(lang: Language, line: &str, mut i: usize, spans: &mut Vec<Span>) -> usize {
     let bytes = line.as_bytes();
     let len = bytes.len();
 
-    // 1. Base prefix (`0x`, `0X`, `0b`, `0B`, `0o`, `0O`)
-    //    In C/C++/Python/JS/Go `0x` is Keyword; in Rust `0x` stays Number (`constant.numeric.hex.rust`)
+    // 1. Base prefix (`0x`, `0X`, `0b`, `0B`, `0o`, `0O`) -> NumUnit (non-bold)
     let mut is_hex = false;
     if bytes[i] == b'0'
         && i + 2 < len
@@ -1287,12 +1473,7 @@ fn scan_number(lang: Language, line: &str, mut i: usize, spans: &mut Vec<Span>) 
         };
         if next_valid {
             is_hex = matches!(p, b'x' | b'X');
-            let prefix_kind = if lang == Language::Rust {
-                TokenKind::Number
-            } else {
-                TokenKind::Keyword
-            };
-            spans.push(Span { start: i, end: i + 2, kind: prefix_kind });
+            spans.push(Span { start: i, end: i + 2, kind: TokenKind::NumUnit });
             i += 2;
         }
     }
@@ -1347,7 +1528,7 @@ fn scan_number(lang: Language, line: &str, mut i: usize, spans: &mut Vec<Span>) 
         spans.push(Span { start: seg_start, end: i, kind: TokenKind::Number });
     }
 
-    // 3. Scientific exponent (`e`/`E` or `p`/`P` for hex floats)
+    // 3. Scientific exponent (`e`/`E` or `p`/`P` for hex floats) -> NumUnit (non-bold!)
     if i < len
         && ((!is_hex && matches!(bytes[i], b'e' | b'E')) || (is_hex && matches!(bytes[i], b'p' | b'P')))
     {
@@ -1357,37 +1538,27 @@ fn scan_number(lang: Language, line: &str, mut i: usize, spans: &mut Vec<Span>) 
             exp_pos += 1;
         }
         if exp_pos < len && bytes[exp_pos].is_ascii_digit() {
-            if lang == Language::Python {
-                // MagicPython colors `1e-5` as one continuous `constant.numeric.float.python`
-                let es = i;
-                i = exp_pos;
-                while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'_') {
-                    i += 1;
-                }
-                spans.push(Span { start: es, end: i, kind: TokenKind::Number });
-            } else {
-                spans.push(Span { start: i, end: i + 1, kind: TokenKind::Keyword });
+            spans.push(Span { start: i, end: i + 1, kind: TokenKind::NumUnit });
+            i += 1;
+            if has_sign {
+                spans.push(Span { start: i, end: i + 1, kind: TokenKind::Operator });
                 i += 1;
-                if has_sign {
-                    spans.push(Span { start: i, end: i + 1, kind: TokenKind::Operator });
-                    i += 1;
-                }
-                let es = i;
-                while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'_') {
-                    i += 1;
-                }
-                spans.push(Span { start: es, end: i, kind: TokenKind::Number });
             }
+            let es = i;
+            while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'_') {
+                i += 1;
+            }
+            spans.push(Span { start: es, end: i, kind: TokenKind::Number });
         }
     }
 
-    // 4. Numeric type suffix (`LL`, `ull`, `f`, `u32`, `usize`, `f64`, `j`, `n`) -> Keyword
+    // 4. Numeric type suffix (`LL`, `ull`, `f`, `u32`, `usize`, `f64`, `j`, `n`) -> NumUnit (non-bold!)
     if i < len && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
         let suf_start = i;
         while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
             i += 1;
         }
-        spans.push(Span { start: suf_start, end: i, kind: TokenKind::Keyword });
+        spans.push(Span { start: suf_start, end: i, kind: TokenKind::NumUnit });
     }
 
     i
@@ -1419,7 +1590,6 @@ fn scan_quoted_with_escapes(
 ) -> (usize, bool) {
     let bytes = line.as_bytes();
     let len = bytes.len();
-    // Rust double-quoted strings mark `"` as Punctuation (`punctuation.definition.string.rust`)
     let rust_quote_punct = lang == Language::Rust && quote == b'"' && base_kind == TokenKind::String;
     if include_open && i < len {
         if rust_quote_punct {
@@ -1440,7 +1610,7 @@ fn scan_quoted_with_escapes(
             seg_start = i;
             continue;
         }
-        // Rust format placeholders `{}` / `{:?}` / `{:#?}` inside `"..."`
+        // Rust format placeholders `{}` / `{:?}` / `{:#?}` inside `"..."` -> Constant
         if lang == Language::Rust && base_kind == TokenKind::String && bytes[i] == b'{' {
             if let Some(rel) = line[i..].find('}') {
                 let inner = &line[i + 1..i + rel];
@@ -1451,20 +1621,41 @@ fn scan_quoted_with_escapes(
                         spans.push(Span { start: seg_start, end: i, kind: base_kind });
                     }
                     let end_p = i + rel + 1;
-                    spans.push(Span { start: i, end: end_p, kind: TokenKind::Punctuation });
+                    spans.push(Span { start: i, end: end_p, kind: TokenKind::Constant });
                     i = end_p;
                     seg_start = i;
                     continue;
                 }
             }
         }
-        // Go fmt placeholders (`%s`, `%d`, `%v`, `%+v`, `%02x`, `%.2f`)
-        if lang == Language::Go && base_kind == TokenKind::String && bytes[i] == b'%' && i + 1 < len {
+        // printf / fmt placeholders (`%d`, `%lld`, `%ld`, `%zu`, `%s`, `%.2f`, `%02x`, `%v`, `%+v`, `%%`)
+        if matches!(lang, Language::CLike | Language::Go | Language::Java | Language::Python)
+            && base_kind == TokenKind::String
+            && bytes[i] == b'%'
+            && i + 1 < len
+        {
             let mut j = i + 1;
             while j < len && matches!(bytes[j], b'+' | b'-' | b'#' | b'0'..=b'9' | b'.' | b'*') {
                 j += 1;
             }
-            if j < len && matches!(bytes[j], b'v' | b'T' | b'%' | b't' | b'b' | b'c' | b'd' | b'o' | b'q' | b'x' | b'X' | b'U' | b'e' | b'E' | b'f' | b'F' | b'g' | b'G' | b's' | b'p' | b'w') {
+            // Optional C/C++ length modifiers (`ll`, `hh`, `l`, `h`, `z`, `j`, `t`, `L`)
+            if matches!(lang, Language::CLike) && j < len {
+                if (bytes[j] == b'l' && j + 1 < len && bytes[j + 1] == b'l')
+                    || (bytes[j] == b'h' && j + 1 < len && bytes[j + 1] == b'h')
+                {
+                    j += 2;
+                } else if matches!(bytes[j], b'l' | b'h' | b'z' | b'j' | b't' | b'L') {
+                    j += 1;
+                }
+            }
+            if j < len
+                && matches!(
+                    bytes[j],
+                    b'v' | b'T' | b'%' | b't' | b'b' | b'c' | b'd' | b'i' | b'u' | b'o' | b'q'
+                        | b'x' | b'X' | b'U' | b'e' | b'E' | b'f' | b'F' | b'g' | b'G' | b'a'
+                        | b'A' | b's' | b'p' | b'w' | b'n'
+                )
+            {
                 if i > seg_start {
                     spans.push(Span { start: seg_start, end: i, kind: base_kind });
                 }
@@ -1496,7 +1687,7 @@ fn scan_quoted_with_escapes(
     (i, closed)
 }
 
-/// Detect generic/template angle-bracket pairs `<...>` (e.g. `vector<T>`, `Promise<boolean>`, `App<'a, T>`, `template <typename T>`)
+/// Detect generic/template angle-bracket pairs `<...>` (e.g. `vector<pair<int, int>>`, `static_cast<int>`, `Promise<boolean>`, `App<'a, T>`)
 /// without ever false-matching comparison operators like `a < b` or stream shifts `<<`.
 fn find_generic_angle_brackets(lang: Language, line: &str) -> Vec<(usize, usize)> {
     if !matches!(lang, Language::CLike | Language::Java | Language::Rust | Language::JsTs) {
@@ -1529,6 +1720,14 @@ fn find_generic_angle_brackets(lang: Language, line: &str) -> Vec<(usize, usize)
         if b == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
             break;
         }
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
+            if let Some(rel) = line[i + 2..].find("*/") {
+                i += 2 + rel + 2;
+                continue;
+            } else {
+                break;
+            }
+        }
         if b == b'<'
             && !(i + 1 < len && matches!(bytes[i + 1], b'<' | b'=' | b'-'))
             && !(i > 0 && matches!(bytes[i - 1], b'<' | b'-' | b'='))
@@ -1539,12 +1738,8 @@ fn find_generic_angle_brackets(lang: Language, line: &str) -> Vec<(usize, usize)
             let after_kw = before_trim.ends_with("template")
                 || before_trim.ends_with("impl")
                 || before_trim.ends_with("::");
-            // Exclude `#include <...>` and C++ `static_cast<...>` (VS Code scopes cast `< >` as comparison ops)
-            let is_include = before_trim.ends_with("#include")
-                || before_trim.ends_with("include")
-                || before_trim.ends_with("_cast");
+            let is_include = before_trim.ends_with("#include") || before_trim.ends_with("include");
             if !is_include && (touching_ident || after_kw) {
-                // Find matching `>` on this line, rejecting statement/logical tokens inside
                 let mut depth = 1i32;
                 let mut j = i + 1;
                 let mut valid = true;
@@ -1930,7 +2125,11 @@ fn is_go_struct_field_decl(lang: Language, _word: &str, rest_after: &str, prev_b
         return false;
     }
     let first_tok = after.split(|c: char| !c.is_ascii_alphanumeric() && c != '_').next().unwrap_or("");
-    !first_tok.is_empty() && (is_type_name(Language::Go, first_tok) || after.starts_with('*') || after.starts_with("[]"))
+    !first_tok.is_empty()
+        && (is_primitive_type(Language::Go, first_tok)
+            || is_type_name(Language::Go, first_tok)
+            || after.starts_with('*')
+            || after.starts_with("[]"))
 }
 
 fn is_shell_test_op(flag: &str) -> bool {
@@ -1974,41 +2173,82 @@ fn is_constant_literal(lang: Language, w: &str) -> bool {
     }
 }
 
+fn is_control_flow(lang: Language, w: &str) -> bool {
+    match lang {
+        Language::Rust => matches!(
+            w,
+            "if" | "else" | "match" | "for" | "in" | "while" | "loop" | "return"
+                | "break" | "continue" | "await" | "yield"
+        ),
+        Language::Python => matches!(
+            w,
+            "if" | "elif" | "else" | "for" | "in" | "while" | "return" | "yield"
+                | "try" | "except" | "finally" | "raise" | "with" | "pass"
+                | "break" | "continue" | "assert" | "await" | "match" | "case"
+        ),
+        Language::JsTs => matches!(
+            w,
+            "if" | "else" | "for" | "in" | "of" | "while" | "do" | "switch" | "case"
+                | "default" | "break" | "continue" | "return" | "try" | "catch"
+                | "finally" | "throw" | "await" | "yield"
+        ),
+        Language::Shell => matches!(
+            w,
+            "if" | "then" | "else" | "elif" | "fi" | "for" | "in" | "do" | "done"
+                | "while" | "until" | "case" | "esac" | "return" | "exit" | "select"
+        ),
+        Language::Sql => {
+            let up = w.to_ascii_uppercase();
+            matches!(up.as_str(), "CASE" | "WHEN" | "THEN" | "ELSE" | "END" | "WHERE" | "HAVING")
+        }
+        Language::CLike => matches!(
+            w,
+            "if" | "else" | "for" | "while" | "do" | "switch" | "case" | "default"
+                | "break" | "continue" | "return" | "try" | "catch" | "finally"
+                | "throw" | "goto" | "await" | "co_await" | "co_yield" | "co_return"
+        ),
+        Language::Java => matches!(
+            w,
+            "if" | "else" | "for" | "while" | "do" | "switch" | "case" | "default"
+                | "break" | "continue" | "return" | "try" | "catch" | "finally"
+                | "throw" | "throws" | "assert"
+        ),
+        Language::Go => matches!(
+            w,
+            "if" | "else" | "for" | "range" | "switch" | "case" | "default"
+                | "select" | "return" | "go" | "defer" | "break" | "continue"
+                | "fallthrough" | "goto"
+        ),
+        _ => false,
+    }
+}
+
 fn is_keyword(lang: Language, w: &str) -> bool {
     match lang {
         Language::Rust => matches!(
             w,
-            "fn" | "let" | "mut" | "pub" | "struct" | "enum" | "impl" | "trait" | "for" | "in"
-                | "while" | "loop" | "if" | "else" | "match" | "return" | "use" | "mod" | "crate"
-                | "const" | "static" | "type" | "where" | "async" | "await" | "move" | "ref"
-                | "unsafe" | "extern" | "as" | "break" | "continue" | "dyn"
-                | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
-                | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
-                | "f16" | "f32" | "f64" | "f128" | "bool" | "char" | "str"
+            "fn" | "let" | "mut" | "pub" | "struct" | "enum" | "impl" | "trait"
+                | "use" | "mod" | "crate" | "const" | "static" | "type" | "where"
+                | "async" | "move" | "ref" | "unsafe" | "extern" | "as" | "dyn"
         ),
         Language::Python => matches!(
             w,
-            "def" | "class" | "import" | "from" | "as" | "if" | "elif" | "else" | "for" | "while"
-                | "in" | "not" | "and" | "or" | "is" | "return" | "yield" | "try" | "except"
-                | "finally" | "raise" | "with" | "pass" | "break" | "continue" | "lambda"
-                | "async" | "await" | "global" | "nonlocal" | "assert" | "del" | "match" | "case"
+            "def" | "class" | "import" | "from" | "as" | "not" | "and" | "or" | "is"
+                | "lambda" | "async" | "global" | "nonlocal" | "del"
         ),
         Language::JsTs => matches!(
             w,
-            "function" | "const" | "let" | "var" | "return" | "if" | "else" | "for" | "while"
-                | "do" | "switch" | "case" | "default" | "break" | "continue" | "class"
-                | "extends" | "implements" | "interface" | "type" | "enum" | "import" | "export"
-                | "from" | "as" | "new" | "try" | "catch" | "finally" | "throw"
-                | "async" | "await" | "typeof" | "instanceof" | "in" | "of" | "delete"
-                | "readonly" | "public" | "private" | "protected" | "static" | "abstract"
-                | "declare" | "namespace" | "keyof" | "infer" | "satisfies" | "constructor" | "override"
+            "function" | "const" | "let" | "var" | "class" | "extends" | "implements"
+                | "interface" | "type" | "enum" | "import" | "export" | "from" | "as"
+                | "new" | "async" | "typeof" | "instanceof" | "delete" | "readonly"
+                | "public" | "private" | "protected" | "static" | "abstract" | "declare"
+                | "namespace" | "keyof" | "infer" | "satisfies" | "constructor" | "override"
         ),
         Language::Shell => matches!(
             w,
-            "if" | "then" | "else" | "elif" | "fi" | "for" | "in" | "do" | "done" | "while"
-                | "until" | "case" | "esac" | "function" | "local" | "export" | "return" | "exit"
-                | "source" | "alias" | "unalias" | "setopt" | "unsetopt" | "typeset" | "autoload"
-                | "bindkey" | "zle" | "zstyle" | "sudo" | "param" | "foreach" | "select"
+            "function" | "local" | "export" | "source" | "alias" | "unalias" | "setopt"
+                | "unsetopt" | "typeset" | "autoload" | "bindkey" | "zle" | "zstyle"
+                | "sudo" | "param" | "foreach"
         ),
         Language::Dockerfile => matches!(
             w,
@@ -2019,48 +2259,96 @@ fn is_keyword(lang: Language, w: &str) -> bool {
             let up = w.to_ascii_uppercase();
             matches!(
                 up.as_str(),
-                "SELECT" | "FROM" | "WHERE" | "JOIN" | "LEFT" | "RIGHT" | "INNER" | "OUTER" | "ON"
+                "SELECT" | "FROM" | "JOIN" | "LEFT" | "RIGHT" | "INNER" | "OUTER" | "ON"
                     | "GROUP" | "BY" | "ORDER" | "LIMIT" | "OFFSET" | "INSERT" | "INTO" | "VALUES"
                     | "UPDATE" | "SET" | "DELETE" | "CREATE" | "TABLE" | "DROP" | "ALTER" | "INDEX"
-                    | "AND" | "OR" | "NOT" | "IS" | "IN" | "AS" | "DISTINCT" | "HAVING"
-                    | "UNION" | "CASE" | "WHEN" | "THEN" | "ELSE" | "END" | "PRIMARY" | "KEY"
-                    | "FOREIGN" | "REFERENCES" | "EXISTS" | "LIKE" | "BETWEEN" | "ASC" | "DESC"
+                    | "AND" | "OR" | "NOT" | "IS" | "IN" | "AS" | "DISTINCT" | "UNION"
+                    | "PRIMARY" | "KEY" | "FOREIGN" | "REFERENCES" | "EXISTS" | "LIKE"
+                    | "BETWEEN" | "ASC" | "DESC"
             )
         }
         Language::CLike => matches!(
             w,
-            "if" | "else" | "for" | "while" | "do" | "switch" | "case" | "default" | "break"
-                | "continue" | "return" | "struct" | "class" | "enum" | "union" | "typedef"
-                | "const" | "static" | "extern" | "public" | "private" | "protected" | "using"
-                | "namespace" | "new" | "delete" | "var" | "sizeof" | "try" | "catch" | "throw"
-                | "finally" | "async" | "await" | "interface" | "extends" | "implements"
-                | "final" | "override" | "virtual" | "inline" | "template"
-                | "typename" | "auto" | "constexpr" | "consteval" | "noexcept" | "decltype"
-                | "mutable" | "volatile" | "register" | "friend" | "operator" | "explicit"
+            "struct" | "class" | "enum" | "union" | "typedef" | "const" | "static" | "extern"
+                | "public" | "private" | "protected" | "using" | "namespace" | "new" | "delete"
+                | "var" | "sizeof" | "async" | "interface" | "extends" | "implements"
+                | "final" | "override" | "virtual" | "inline" | "template" | "typename"
+                | "auto" | "constexpr" | "consteval" | "noexcept" | "decltype" | "mutable"
+                | "volatile" | "register" | "friend" | "operator" | "explicit"
                 | "static_cast" | "dynamic_cast" | "const_cast" | "reinterpret_cast" | "bit_cast"
                 | "alignof" | "alignas" | "thread_local" | "typeid" | "concept" | "requires"
-                | "co_await" | "co_yield" | "co_return" | "and" | "or" | "not" | "xor"
-                | "sealed" | "record" | "goto" | "delegate" | "event"
-                | "void" | "bool" | "_Bool" | "byte" | "sbyte" | "char" | "wchar_t"
+                | "and" | "or" | "not" | "xor" | "sealed" | "record" | "delegate" | "event"
+        ),
+        Language::Java => matches!(
+            w,
+            "class" | "interface" | "enum" | "record" | "extends" | "implements"
+                | "package" | "import" | "public" | "private" | "protected" | "static"
+                | "final" | "abstract" | "synchronized" | "volatile" | "transient"
+                | "native" | "strictfp" | "new" | "instanceof" | "var" | "sealed" | "permits"
+        ),
+        Language::Go => matches!(
+            w,
+            "package" | "import" | "func" | "type" | "struct" | "interface" | "map" | "chan"
+                | "var" | "const"
+        ),
+        _ => false,
+    }
+}
+
+fn is_primitive_type(lang: Language, w: &str) -> bool {
+    match lang {
+        Language::Rust => matches!(
+            w,
+            "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+                | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+                | "f16" | "f32" | "f64" | "f128" | "bool" | "char" | "str"
+        ),
+        Language::Python => matches!(
+            w,
+            "int" | "float" | "str" | "bool" | "list" | "dict" | "tuple" | "set"
+                | "bytes" | "bytearray" | "complex" | "frozenset" | "object"
+        ),
+        Language::JsTs => matches!(
+            w,
+            "string" | "number" | "boolean" | "any" | "unknown" | "never" | "void"
+                | "object" | "symbol" | "bigint"
+        ),
+        Language::CLike => matches!(
+            w,
+            "void" | "bool" | "_Bool" | "byte" | "sbyte" | "char" | "wchar_t"
                 | "char8_t" | "char16_t" | "char32_t" | "short" | "ushort" | "int" | "uint"
                 | "long" | "ulong" | "float" | "double" | "decimal" | "signed" | "unsigned"
         ),
         Language::Java => matches!(
             w,
-            "if" | "else" | "for" | "while" | "do" | "switch" | "case" | "default" | "break"
-                | "continue" | "return" | "class" | "interface" | "enum" | "record" | "extends"
-                | "implements" | "package" | "import" | "public" | "private" | "protected"
-                | "static" | "final" | "abstract" | "synchronized" | "volatile" | "transient"
-                | "native" | "strictfp" | "new" | "instanceof" | "try" | "catch" | "finally"
-                | "throw" | "throws" | "assert" | "var" | "sealed" | "permits"
-                | "void" | "boolean" | "byte" | "char" | "short" | "int" | "long" | "float" | "double"
+            "void" | "boolean" | "byte" | "char" | "short" | "int" | "long" | "float" | "double"
         ),
         Language::Go => matches!(
             w,
-            "package" | "import" | "func" | "type" | "struct" | "interface" | "map" | "chan"
-                | "var" | "const" | "if" | "else" | "for" | "range" | "switch" | "case" | "default"
-                | "select" | "return" | "go" | "defer" | "break" | "continue" | "fallthrough" | "goto"
+            "string" | "bool" | "int" | "int8" | "int16" | "int32" | "int64"
+                | "uint" | "uint8" | "uint16" | "uint32" | "uint64" | "uintptr"
+                | "float32" | "float64" | "complex64" | "complex128"
+                | "byte" | "rune" | "error" | "any" | "comparable"
         ),
+        Language::Sql => {
+            let up = w.to_ascii_uppercase();
+            matches!(
+                up.as_str(),
+                "INT" | "INTEGER" | "BIGINT" | "SMALLINT" | "TEXT" | "VARCHAR" | "CHAR"
+                    | "BOOLEAN" | "BOOL" | "FLOAT" | "DOUBLE" | "NUMERIC" | "DECIMAL"
+                    | "DATE" | "TIMESTAMP" | "UUID" | "JSON" | "JSONB"
+            )
+        }
+        _ => false,
+    }
+}
+
+fn is_std_builtin(lang: Language, w: &str) -> bool {
+    match lang {
+        Language::CLike => matches!(w, "cin" | "cout" | "cerr" | "clog" | "endl" | "std"),
+        Language::JsTs => matches!(w, "console" | "Math" | "JSON" | "process" | "window" | "document" | "globalThis"),
+        Language::Java => matches!(w, "System"),
+        Language::Go => matches!(w, "fmt" | "os"),
         _ => false,
     }
 }
@@ -2104,23 +2392,22 @@ fn is_type_name(lang: Language, w: &str) -> bool {
                     | "Instant" | "Duration" | "Cow" | "Some" | "None" | "Ok" | "Err"
             ) || is_pascal_case(w)
         }
-        Language::Python => matches!(
-            w,
-            "int" | "float" | "str" | "bool" | "list" | "dict" | "tuple" | "set" | "bytes"
-                | "bytearray" | "complex" | "frozenset" | "object"
-                | "BaseException" | "Exception" | "ValueError" | "TypeError" | "KeyError"
-                | "IndexError" | "AttributeError" | "RuntimeError" | "NotImplementedError"
-                | "FileNotFoundError" | "OSError" | "IOError" | "ZeroDivisionError"
-                | "StopIteration" | "AssertionError" | "ImportError" | "ModuleNotFoundError"
-                | "NameError" | "SyntaxError" | "TimeoutError" | "ConnectionError" | "PermissionError"
-        ),
+        Language::Python => {
+            matches!(
+                w,
+                "BaseException" | "Exception" | "ValueError" | "TypeError" | "KeyError"
+                    | "IndexError" | "AttributeError" | "RuntimeError" | "NotImplementedError"
+                    | "FileNotFoundError" | "OSError" | "IOError" | "ZeroDivisionError"
+                    | "StopIteration" | "AssertionError" | "ImportError" | "ModuleNotFoundError"
+                    | "NameError" | "SyntaxError" | "TimeoutError" | "ConnectionError" | "PermissionError"
+            ) || is_pascal_case(w)
+        }
         Language::JsTs => {
             matches!(
                 w,
-                "string" | "number" | "boolean" | "any" | "unknown" | "never" | "void" | "object"
-                    | "symbol" | "bigint" | "Math" | "JSON" | "Promise" | "Error"
-                    | "Array" | "Object" | "Map" | "Set" | "Date" | "RegExp" | "Number" | "String"
-                    | "Boolean" | "URL" | "Record" | "Partial" | "Required" | "Readonly" | "Pick" | "Omit"
+                "Promise" | "Error" | "Array" | "Object" | "Map" | "Set" | "Date" | "RegExp"
+                    | "Number" | "String" | "Boolean" | "URL" | "Record" | "Partial"
+                    | "Required" | "Readonly" | "Pick" | "Omit"
             ) || is_pascal_case(w)
         }
         Language::CLike => {
@@ -2137,15 +2424,7 @@ fn is_type_name(lang: Language, w: &str) -> bool {
             ) || is_pascal_case(w)
         }
         Language::Java => is_pascal_case(w),
-        Language::Go => {
-            matches!(
-                w,
-                "string" | "bool" | "int" | "int8" | "int16" | "int32" | "int64"
-                    | "uint" | "uint8" | "uint16" | "uint32" | "uint64" | "uintptr"
-                    | "float32" | "float64" | "complex64" | "complex128"
-                    | "byte" | "rune" | "error" | "any" | "comparable"
-            ) || is_pascal_case(w)
-        }
+        Language::Go => is_pascal_case(w),
         _ => false,
     }
 }
@@ -2253,15 +2532,16 @@ mod tests {
         assert_eq!(s1[0].kind, TokenKind::Comment);
         assert!(s2.iter().any(|sp| sp.kind == TokenKind::Keyword));
 
-        // Standalone Python triple-quoted docstring -> Comment (VS Code Dracula Redefined)
+        // Standalone Python triple-quoted docstring -> DocComment
         let py = Rope::from_str("\"\"\"doc\nstill doc\n\"\"\"\ns = \"\"\"str\"\"\"\ndef f(): pass");
         let mut pcache = SyntaxCache::new(Language::Python);
         let ps1 = pcache.line_spans(&py, 1);
-        assert_eq!(ps1[0].kind, TokenKind::Comment);
+        assert_eq!(ps1[0].kind, TokenKind::DocComment);
         let ps3 = pcache.line_spans(&py, 3);
         assert!(ps3.iter().any(|sp| sp.kind == TokenKind::String));
         let ps4 = pcache.line_spans(&py, 4);
         assert!(ps4.iter().any(|sp| sp.kind == TokenKind::Keyword));
+        assert!(ps4.iter().any(|sp| sp.kind == TokenKind::ControlFlow));
     }
 
     #[test]
@@ -2281,10 +2561,11 @@ mod tests {
     }
 
     #[test]
-    fn vscode_dracula_token_scopes() {
-        // Rust
-        let rust_line = "pub fn greet(&self, name: String) -> Self { println!(\"hi {}\\n\", self.cfg, MAX_LEN, true); }";
-        let (spans, _) = lex_line(Language::Rust, rust_line, LineState::Normal);
+    fn nave_semantic_color_map_roles() {
+        // Rust: Keyword vs ControlFlow vs PrimitiveType vs Type vs Macro vs Property vs ConstIdent
+        let rust_line = "pub fn greet(&self, name: String, n: usize) -> Self { if true { println!(\"hi {}\\n\", self.cfg, MAX_LEN); } }";
+        let (spans, out) = lex_line(Language::Rust, rust_line, LineState::NORMAL);
+        assert_eq!(out.bracket_depth, 0);
         let kind_of = |needle: &str| {
             let s = rust_line.find(needle).unwrap();
             let e = s + needle.len();
@@ -2293,81 +2574,156 @@ mod tests {
         assert_eq!(kind_of("pub"), Some(TokenKind::Keyword));
         assert_eq!(kind_of("fn"), Some(TokenKind::Keyword));
         assert_eq!(kind_of("greet"), Some(TokenKind::Function));
-        assert_eq!(kind_of("self"), Some(TokenKind::BuiltinVar));
-        assert_eq!(kind_of("Self"), Some(TokenKind::BuiltinVar));
+        assert_eq!(kind_of("self"), Some(TokenKind::Constant));
+        assert_eq!(kind_of("Self"), Some(TokenKind::Constant));
         assert_eq!(kind_of("String"), Some(TokenKind::Type));
-        assert_eq!(kind_of("println!"), Some(TokenKind::Function));
-        assert_eq!(kind_of("{}"), Some(TokenKind::Punctuation));
+        assert_eq!(kind_of("usize"), Some(TokenKind::PrimitiveType));
+        assert_eq!(kind_of("if"), Some(TokenKind::ControlFlow));
+        assert_eq!(kind_of("println!"), Some(TokenKind::Macro));
+        assert_eq!(kind_of("{}"), Some(TokenKind::Constant));
         assert_eq!(kind_of("\\n"), Some(TokenKind::Escape));
-        assert_eq!(kind_of("MAX_LEN"), Some(TokenKind::Constant));
+        assert_eq!(kind_of("cfg"), Some(TokenKind::Property));
+        assert_eq!(kind_of("MAX_LEN"), Some(TokenKind::ConstIdent));
         assert_eq!(kind_of("true"), Some(TokenKind::Constant));
 
-        // Python: def, param, self, None, f-string interpolation, decorator, colon Punctuation
-        let py_line = "def compute(self, count: int) -> None: # calc";
-        let (pspans, _) = lex_line(Language::Python, py_line, LineState::Normal);
+        // Python: def, param, self, PrimitiveType int, None, decorator Macro
+        let py_line = "@dataclass";
+        let (dspans, _) = lex_line(Language::Python, py_line, LineState::NORMAL);
+        assert_eq!(dspans[0].kind, TokenKind::Macro);
+        assert_eq!(dspans[1].kind, TokenKind::Macro);
+
+        let py_fn = "def compute(self, count: int) -> None: return count # calc";
+        let (pspans, _) = lex_line(Language::Python, py_fn, LineState::NORMAL);
         let pkind = |needle: &str| {
-            let s = py_line.find(needle).unwrap();
+            let s = py_fn.find(needle).unwrap();
             let e = s + needle.len();
             pspans.iter().find(|sp| sp.start == s && sp.end == e).map(|sp| sp.kind)
         };
         assert_eq!(pkind("def"), Some(TokenKind::Keyword));
         assert_eq!(pkind("compute"), Some(TokenKind::Function));
-        assert_eq!(pkind("self"), Some(TokenKind::BuiltinVar));
+        assert_eq!(pkind("self"), Some(TokenKind::Constant));
         assert_eq!(pkind("count"), Some(TokenKind::Parameter));
-        assert_eq!(pkind("int"), Some(TokenKind::Type));
+        assert_eq!(pkind("int"), Some(TokenKind::PrimitiveType));
         assert_eq!(pkind("None"), Some(TokenKind::Constant));
+        assert_eq!(pkind("return"), Some(TokenKind::ControlFlow));
         assert_eq!(pkind("# calc"), Some(TokenKind::Comment));
 
-        // C++: exact VS Code TextMate alignment (`const int INF = 10e9;`, `#include`, `#define`, `vector<T>`, `std::sort`)
+        // C++: full semantic map (`const int INF = 10e9;`, `#include`, `vector<pair<int, int>>`, `std::sort`, `printf`)
         let cpp_line = "const int INF = 10e9;";
-        let (cspans, _) = lex_line(Language::CLike, cpp_line, LineState::Normal);
+        let (cspans, _) = lex_line(Language::CLike, cpp_line, LineState::NORMAL);
         let ckind = |needle: &str| {
             let s = cpp_line.find(needle).unwrap();
             let e = s + needle.len();
             cspans.iter().find(|sp| sp.start == s && sp.end == e).map(|sp| sp.kind)
         };
         assert_eq!(ckind("const"), Some(TokenKind::Keyword));
-        assert_eq!(ckind("int"), Some(TokenKind::Keyword));
-        assert_eq!(ckind("INF"), None);
+        assert_eq!(ckind("int"), Some(TokenKind::PrimitiveType));
+        assert_eq!(ckind("INF"), Some(TokenKind::ConstIdent));
         assert_eq!(ckind("="), Some(TokenKind::Operator));
         assert_eq!(ckind("10"), Some(TokenKind::Number));
-        assert_eq!(ckind("e"), Some(TokenKind::Keyword));
+        assert_eq!(ckind("e"), Some(TokenKind::NumUnit));
         assert_eq!(ckind("9"), Some(TokenKind::Number));
         assert_eq!(ckind(";"), Some(TokenKind::Punctuation));
 
         let inc_line = "#include <bits/stdc++.h>";
-        let (ispans, _) = lex_line(Language::CLike, inc_line, LineState::Normal);
-        assert_eq!(ispans[0].kind, TokenKind::Punctuation); // #
-        assert_eq!(ispans[1].kind, TokenKind::Keyword);     // include
-        assert_eq!(ispans[2].kind, TokenKind::String);      // <bits/stdc++.h>
+        let (ispans, _) = lex_line(Language::CLike, inc_line, LineState::NORMAL);
+        assert_eq!(ispans[0].kind, TokenKind::Macro);  // #
+        assert_eq!(ispans[1].kind, TokenKind::Macro);  // include
+        assert_eq!(ispans[2].kind, TokenKind::String); // <bits/stdc++.h>
 
-        let tpl_line = "template <typename T> vector<T> std::sort";
-        let (tspans, _) = lex_line(Language::CLike, tpl_line, LineState::Normal);
+        let tpl_line = "template <typename T> vector<pair<int, T>> std::sort";
+        let (tspans, tout) = lex_line(Language::CLike, tpl_line, LineState::NORMAL);
+        assert_eq!(tout.bracket_depth, 0);
         let tkind = |s: usize, e: usize| tspans.iter().find(|sp| sp.start == s && sp.end == e).map(|sp| sp.kind);
-        assert_eq!(tkind(9, 10), Some(TokenKind::Punctuation));  // <
-        assert_eq!(tkind(19, 20), Some(TokenKind::Type));        // T
-        assert_eq!(tkind(20, 21), Some(TokenKind::Punctuation)); // >
-        assert_eq!(tkind(28, 29), Some(TokenKind::Punctuation)); // <
-        assert_eq!(tkind(29, 30), Some(TokenKind::Type));        // T
-        assert_eq!(tkind(30, 31), Some(TokenKind::Punctuation)); // >
-        assert_eq!(tkind(35, 37), Some(TokenKind::Punctuation)); // ::
+        assert_eq!(tkind(9, 10), Some(TokenKind::Rainbow(0)));  // <
+        assert_eq!(tkind(19, 20), Some(TokenKind::Type));       // T
+        assert_eq!(tkind(20, 21), Some(TokenKind::Rainbow(0))); // >
+        assert_eq!(tkind(28, 29), Some(TokenKind::Rainbow(0))); // vector<
+        assert_eq!(tkind(33, 34), Some(TokenKind::Rainbow(1))); // pair<
+        assert_eq!(tkind(34, 37), Some(TokenKind::PrimitiveType)); // int
+        assert_eq!(tkind(39, 40), Some(TokenKind::Type));       // T
+        assert_eq!(tkind(40, 41), Some(TokenKind::Rainbow(1))); // >
+        assert_eq!(tkind(41, 42), Some(TokenKind::Rainbow(0))); // >
+        assert_eq!(tkind(43, 46), Some(TokenKind::StdBuiltin)); // std
+        assert_eq!(tkind(46, 48), Some(TokenKind::Punctuation)); // ::
 
-        // Verify hex literals do NOT split on hex digit 'e', while scientific signs & suffixes DO split
+        // printf placeholders in C/C++
+        let pf = "printf(\"%lld %.2f\\n\", x, y);";
+        let (pfspans, _) = lex_line(Language::CLike, pf, LineState::NORMAL);
+        assert!(pfspans.iter().any(|sp| &pf[sp.start..sp.end] == "%lld" && sp.kind == TokenKind::Constant));
+        assert!(pfspans.iter().any(|sp| &pf[sp.start..sp.end] == "%.2f" && sp.kind == TokenKind::Constant));
+        assert!(pfspans.iter().any(|sp| &pf[sp.start..sp.end] == "\\n" && sp.kind == TokenKind::Escape));
+
+        // Numbers: hex does NOT split on 'e', prefixes/exponents/suffixes use NumUnit
         let num_line = "0x1e9f 1e-5 42usize 100LL 1'000";
-        let (nspans, _) = lex_line(Language::CLike, num_line, LineState::Normal);
+        let (nspans, _) = lex_line(Language::CLike, num_line, LineState::NORMAL);
         let nkind = |s: usize, e: usize| nspans.iter().find(|sp| sp.start == s && sp.end == e).map(|sp| sp.kind);
-        assert_eq!(nkind(0, 2), Some(TokenKind::Keyword));
+        assert_eq!(nkind(0, 2), Some(TokenKind::NumUnit));
         assert_eq!(nkind(2, 6), Some(TokenKind::Number));
         assert_eq!(nkind(7, 8), Some(TokenKind::Number));
-        assert_eq!(nkind(8, 9), Some(TokenKind::Keyword));
+        assert_eq!(nkind(8, 9), Some(TokenKind::NumUnit));
         assert_eq!(nkind(9, 10), Some(TokenKind::Operator));
         assert_eq!(nkind(10, 11), Some(TokenKind::Number));
         assert_eq!(nkind(12, 14), Some(TokenKind::Number));
-        assert_eq!(nkind(14, 19), Some(TokenKind::Keyword));
+        assert_eq!(nkind(14, 19), Some(TokenKind::NumUnit));
         assert_eq!(nkind(20, 23), Some(TokenKind::Number));
-        assert_eq!(nkind(23, 25), Some(TokenKind::Keyword));
+        assert_eq!(nkind(23, 25), Some(TokenKind::NumUnit));
         assert_eq!(nkind(26, 27), Some(TokenKind::Number));
         assert_eq!(nkind(27, 28), Some(TokenKind::Punctuation));
         assert_eq!(nkind(28, 31), Some(TokenKind::Number));
+    }
+
+    #[test]
+    fn multiline_rainbow_brackets_and_comment_badges() {
+        let cpp = Rope::from_str(
+            "/// Doc comment NOTE: fast O(n)\n\
+             int main() {\n\
+                 while (t--) {\n\
+                     cout << min({f1, p1}) << endl; // TODO: optimize FIXME: edge case\n\
+                 }\n\
+             }\n\
+             )",
+        );
+        let mut cache = SyntaxCache::new(Language::CLike);
+
+        // Line 0: DocComment + TodoBadge (`NOTE:`)
+        let l0 = cache.line_spans(&cpp, 0);
+        assert!(l0.iter().any(|sp| sp.kind == TokenKind::DocComment));
+        assert!(l0.iter().any(|sp| sp.kind == TokenKind::TodoBadge));
+
+        // Line 1: `int main() {` -> `()` level 0, `{` opens level 0 -> out depth = 1
+        let l1 = cache.line_spans(&cpp, 1);
+        let s1 = cpp.line(1);
+        assert!(l1.iter().any(|sp| &s1[sp.start..sp.end] == "int" && sp.kind == TokenKind::PrimitiveType));
+        assert!(l1.iter().any(|sp| &s1[sp.start..sp.end] == "main" && sp.kind == TokenKind::Function));
+        assert!(l1.iter().any(|sp| &s1[sp.start..sp.end] == "{" && sp.kind == TokenKind::Rainbow(0)));
+
+        // Line 2: `while (t--) {` -> ControlFlow + Rainbow(1)
+        let l2 = cache.line_spans(&cpp, 2);
+        let s2 = cpp.line(2);
+        assert!(l2.iter().any(|sp| &s2[sp.start..sp.end] == "while" && sp.kind == TokenKind::ControlFlow));
+        assert!(l2.iter().any(|sp| &s2[sp.start..sp.end] == "(" && sp.kind == TokenKind::Rainbow(1)));
+        assert!(l2.iter().any(|sp| &s2[sp.start..sp.end] == "{" && sp.kind == TokenKind::Rainbow(1)));
+
+        // Line 3: inside depth 2 -> `min({f1, p1})` uses Rainbow(2) for `()` and Rainbow(3) for `{}`
+        // plus StdBuiltin (`cout`, `endl`), TodoBadge (`TODO:`), FixmeBadge (`FIXME:`)
+        let l3 = cache.line_spans(&cpp, 3);
+        let s3 = cpp.line(3);
+        assert!(l3.iter().any(|sp| &s3[sp.start..sp.end] == "cout" && sp.kind == TokenKind::StdBuiltin));
+        assert!(l3.iter().any(|sp| &s3[sp.start..sp.end] == "endl" && sp.kind == TokenKind::StdBuiltin));
+        assert!(l3.iter().any(|sp| &s3[sp.start..sp.end] == "(" && sp.kind == TokenKind::Rainbow(2)));
+        assert!(l3.iter().any(|sp| &s3[sp.start..sp.end] == "{" && sp.kind == TokenKind::Rainbow(3)));
+        assert!(l3.iter().any(|sp| &s3[sp.start..sp.end] == "TODO:" && sp.kind == TokenKind::TodoBadge));
+        assert!(l3.iter().any(|sp| &s3[sp.start..sp.end] == "FIXME:" && sp.kind == TokenKind::FixmeBadge));
+
+        // Line 4 & 5: closing `}` at depth 1 and 0
+        let l4 = cache.line_spans(&cpp, 4);
+        assert!(l4.iter().any(|sp| sp.kind == TokenKind::Rainbow(1)));
+        let l5 = cache.line_spans(&cpp, 5);
+        assert!(l5.iter().any(|sp| sp.kind == TokenKind::Rainbow(0)));
+
+        // Line 6: orphan `)` -> BracketError!
+        let l6 = cache.line_spans(&cpp, 6);
+        assert_eq!(l6[0].kind, TokenKind::BracketError);
     }
 }

@@ -16,6 +16,8 @@ pub struct EditorConfig {
     pub auto_close: bool,
     pub cursorword: bool,
     pub indent_guides: bool,
+    pub rainbow_brackets: bool,
+    pub comment_badges: bool,
     pub show_trailing: bool,
     pub color_column: usize, // 0 = off, else 80 / 100 / 120
 }
@@ -36,6 +38,8 @@ impl Default for EditorConfig {
             auto_close: true,
             cursorword: true,
             indent_guides: true,
+            rainbow_brackets: true,
+            comment_badges: true,
             show_trailing: true,
             color_column: 120,
         }
@@ -90,6 +94,8 @@ impl EditorConfig {
                 "auto_close" => cfg.auto_close = parse_bool(v),
                 "cursorword" => cfg.cursorword = parse_bool(v),
                 "indent_guides" => cfg.indent_guides = parse_bool(v),
+                "rainbow_brackets" => cfg.rainbow_brackets = parse_bool(v),
+                "comment_badges" => cfg.comment_badges = parse_bool(v),
                 "show_trailing" => cfg.show_trailing = parse_bool(v),
                 "color_column" => {
                     if let Ok(n) = v.parse::<usize>() {
@@ -122,6 +128,8 @@ impl EditorConfig {
              auto_close={}\n\
              cursorword={}\n\
              indent_guides={}\n\
+             rainbow_brackets={}\n\
+             comment_badges={}\n\
              show_trailing={}\n\
              color_column={}\n",
             self.palette,
@@ -137,6 +145,8 @@ impl EditorConfig {
             self.auto_close,
             self.cursorword,
             self.indent_guides,
+            self.rainbow_brackets,
+            self.comment_badges,
             self.show_trailing,
             self.color_column
         );

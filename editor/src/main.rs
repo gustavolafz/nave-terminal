@@ -1019,6 +1019,18 @@ impl App {
                     let st = if self.cfg.indent_guides { "ON" } else { "OFF" };
                     self.set_status(format!("Guias de indentacao: {}", st));
                 }
+                PickerAction::ToggleRainbowBrackets => {
+                    self.cfg.rainbow_brackets = !self.cfg.rainbow_brackets;
+                    self.cfg.save();
+                    let st = if self.cfg.rainbow_brackets { "ON" } else { "OFF" };
+                    self.set_status(format!("Rainbow Brackets: {}", st));
+                }
+                PickerAction::ToggleCommentBadges => {
+                    self.cfg.comment_badges = !self.cfg.comment_badges;
+                    self.cfg.save();
+                    let st = if self.cfg.comment_badges { "ON" } else { "OFF" };
+                    self.set_status(format!("Badges TODO/FIXME: {}", st));
+                }
                 PickerAction::ToggleTrailingSpaces => {
                     self.cfg.show_trailing = !self.cfg.show_trailing;
                     self.cfg.save();

@@ -514,7 +514,16 @@ pub fn render_editor(
                         .any(|&(s, e)| byte_abs >= s && byte_abs < e);
                 let is_ruler = ruler_col == Some(cur_vis);
 
-                let style = pal.token_style(cell.kind);
+                let eff_kind = match cell.kind {
+                    TokenKind::Rainbow(_) | TokenKind::BracketError if !cfg.rainbow_brackets => {
+                        TokenKind::Punctuation
+                    }
+                    TokenKind::TodoBadge | TokenKind::FixmeBadge if !cfg.comment_badges => {
+                        TokenKind::Comment
+                    }
+                    other => other,
+                };
+                let style = pal.token_style(eff_kind);
                 let mut fg_c = style.fg;
                 let mut bold = style.bold;
                 let mut italic = style.italic;
@@ -543,6 +552,8 @@ pub fn render_editor(
                 } else if is_cursorword {
                     underline = true;
                     Some(pal.word_hl_bg)
+                } else if let Some(tok_bg) = style.bg {
+                    Some(tok_bg)
                 } else if is_cur_line {
                     Some(pal.cur_line_bg)
                 } else if is_ruler {
@@ -550,6 +561,11 @@ pub fn render_editor(
                 } else {
                     None
                 };
+
+                // Keep pill-badge text crisp when selection/search/cursorword overrides its bright bg
+                if style.bg.is_some() && !is_sec_caret && !is_bracket && bg_c != style.bg {
+                    fg_c = pal.fg;
+                }
 
                 // Trailing whitespace marker (`·`) or Indent guide (`▏`)
                 if !is_sec_caret && !is_selected && !is_match && !is_active_match {

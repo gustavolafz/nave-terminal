@@ -21,6 +21,8 @@ pub enum PickerAction {
     ToggleCenterScroll,
     ToggleCursorWord,
     ToggleIndentGuides,
+    ToggleRainbowBrackets,
+    ToggleCommentBadges,
     ToggleTrailingSpaces,
     CycleColorColumn,
     ToggleWrap,
@@ -124,6 +126,16 @@ impl Picker {
                 label: format!("Guias de Indentacao [{}]", onoff(cfg.indent_guides)),
                 detail: "▏ indent-blankline".into(),
                 action: PickerAction::ToggleIndentGuides,
+            },
+            PickerItem {
+                label: format!("Rainbow Brackets (cores por nivel) [{}]", onoff(cfg.rainbow_brackets)),
+                detail: "() [] {} por profundidade".into(),
+                action: PickerAction::ToggleRainbowBrackets,
+            },
+            PickerItem {
+                label: format!("Badges TODO / FIXME em Comentarios [{}]", onoff(cfg.comment_badges)),
+                detail: "TODO NOTE FIXME BUG HACK".into(),
+                action: PickerAction::ToggleCommentBadges,
             },
             PickerItem {
                 label: format!("Mostrar Espacos no Fim da Linha [{}]", onoff(cfg.show_trailing)),
