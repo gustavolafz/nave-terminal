@@ -911,6 +911,214 @@ function gdiff {
   [[ -n "$file" ]] && "${EDITOR:-nave-edit}" "$file"
 }
 
+unalias gpush 2>/dev/null
+
+# Commit + push rapido de uma pasta ou arquivo (ignora binarios compilados ELF/EXE por padrao):
+#   gpush                             -> commita e sobe a pasta atual (.) com msg automatica
+#   gpush "msg"                       -> commita e sobe a pasta atual (.) com sua mensagem
+#   gpush <arquivo|pasta> ["msg"]     -> commita e sobe apenas o alvo escolhido
+#   gpush -c|--code [...]             -> sobe apenas codigo-fonte (ignora in/out/expected.txt e binarios)
+#   gpush -a|--all  [...]             -> inclui ate binarios compilados
+#   gpush -n|--dry-run [...]          -> mostra o que seria commitado sem commitar/pushar
+#   gpush --no-push [...]             -> apenas commita localmente (sem push)
+function gpush {
+  local include_all=0 code_only=0 dry_run=0 no_push=0
+  local msg="" target=""
+  local -a positional=()
+
+  while (( $# > 0 )); do
+    case "$1" in
+      -h|--help)
+        print -P "%F{${_NAVE_C[dir]:-39}}Uso: gpush [opcoes] [pasta|arquivo] [mensagem]%f"
+        print -P "  gpush                           Commita e sobe a pasta atual (pula binarios compilados)"
+        print -P "  gpush \"solve: DP O(n)\"          Commita e sobe a pasta atual com mensagem customizada"
+        print -P "  gpush sol.cpp [\"msg\"]           Commita e sobe apenas um arquivo"
+        print -P "  gpush pasta/ [\"msg\"]            Commita e sobe apenas a pasta alvo"
+        print -P "  -c, --code                      Ignora tambem arquivos de I/O (in/out/expected/ans.txt)"
+        print -P "  -a, --all                       Inclui ate binarios compilados (ELF/EXE/.out)"
+        print -P "  -m <msg>                        Define mensagem de commit explicitamente"
+        print -P "  -n, --dry-run                   Apenas mostra o que entraria no commit"
+        print -P "  --no-push                       Faz apenas o commit local (sem git push)"
+        return 0
+        ;;
+      -a|--all) include_all=1; shift ;;
+      -c|--code) code_only=1; shift ;;
+      -n|--dry-run) dry_run=1; shift ;;
+      --no-push) no_push=1; shift ;;
+      -m|--message)
+        if (( $# < 2 )); then
+          print -P "%F{203}Faltou a mensagem apos $1.%f"
+          return 1
+        fi
+        msg="$2"; shift 2 ;;
+      *)
+        positional+=("$1"); shift ;;
+    esac
+  done
+
+  if (( ${#positional[@]} >= 1 )); then
+    if [[ -e "${positional[1]}" ]] || git ls-files --error-unmatch -- "${positional[1]}" >/dev/null 2>&1; then
+      target="${positional[1]}"
+      if (( ${#positional[@]} >= 2 )) && [[ -z "$msg" ]]; then
+        msg="${positional[2,-1]}"
+      fi
+    else
+      target="."
+      if [[ -z "$msg" ]]; then
+        msg="${positional[*]}"
+      fi
+    fi
+  else
+    target="."
+  fi
+
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+    print -P "%F{${_NAVE_C[warn]:-215}}Nao e um repositorio Git.%f Rode %Bgit init%b na pasta raiz dos seus projetos primeiro."
+    return 1
+  }
+
+  python3 - "$target" "$msg" "$include_all" "$code_only" "$dry_run" "$no_push" <<'PY'
+import os, pathlib, re, subprocess, sys
+from datetime import datetime
+
+target_arg, custom_msg = sys.argv[1], sys.argv[2]
+include_all = sys.argv[3] == "1"
+code_only = sys.argv[4] == "1"
+dry_run = sys.argv[5] == "1"
+no_push = sys.argv[6] == "1"
+
+def git(*args, check=True):
+    return subprocess.run(["git", *args], capture_output=True, text=True, check=check)
+
+top = pathlib.Path(git("rev-parse", "--show-toplevel").stdout.strip()).resolve()
+target_abs = pathlib.Path(target_arg).resolve()
+try:
+    rel_target = target_abs.relative_to(top)
+    rel_str = "." if str(rel_target) == "." else rel_target.as_posix()
+except ValueError:
+    print(f"Erro: '{target_arg}' esta fora do repositorio Git ({top}).", file=sys.stderr)
+    sys.exit(1)
+
+BIN_EXTS = {".out", ".exe", ".o", ".obj", ".dll", ".so", ".dylib", ".bin", ".pdb", ".class"}
+IO_TXT_RE = re.compile(r"^(?:in|out|ans|expected)\d*\.txt$", re.IGNORECASE)
+
+def is_compiled_binary(path: pathlib.Path) -> bool:
+    if not path.is_file() or path.is_symlink():
+        return False
+    if path.suffix.lower() in BIN_EXTS:
+        return True
+    try:
+        with path.open("rb") as f:
+            head = f.read(4)
+        if head.startswith(b"\x7fELF") or head.startswith(b"MZ"):
+            return True
+    except OSError:
+        pass
+    return False
+
+# Inspect porcelain status scoped strictly to `rel_str`
+st = git("-C", str(top), "status", "--porcelain=v1", "-uall", "--", rel_str)
+candidates = []
+skipped_bins = []
+skipped_io = []
+
+for line in st.stdout.splitlines():
+    if len(line) < 4:
+        continue
+    xy = line[:2]
+    raw_path = line[3:]
+    if " -> " in raw_path:
+        raw_path = raw_path.split(" -> ", 1)[1]
+    raw_path = raw_path.strip('"')
+    abs_p = top / raw_path
+    is_untracked = (xy == "??")
+
+    if not include_all and is_untracked and is_compiled_binary(abs_p):
+        skipped_bins.append(raw_path)
+        continue
+    if code_only and is_untracked and IO_TXT_RE.match(abs_p.name):
+        skipped_io.append(raw_path)
+        continue
+    candidates.append((xy, raw_path))
+
+if not candidates:
+    if skipped_bins or skipped_io:
+        print(f"Nada elegivel para commitar em '{rel_str}' (ignorados: {', '.join(skipped_bins + skipped_io)}). Use -a/--all se quiser inclui-los.")
+    else:
+        print(f"Nada alterado para commitar em '{rel_str}'.")
+    sys.exit(0)
+
+files = [p for _, p in candidates]
+all_new = all(xy == "??" or xy.startswith("A") for xy, _ in candidates)
+verb = "add" if all_new else "update"
+
+if custom_msg:
+    commit_msg = custom_msg
+else:
+    if rel_str == ".":
+        label = f"{top.name} [{datetime.now().strftime('%H:%M')}]"
+    else:
+        label = rel_str
+    commit_msg = f"{verb}: {label}"
+
+def short_list(paths):
+    base = top if rel_str == "." else (target_abs if target_abs.is_dir() else target_abs.parent)
+    names = []
+    for p in paths:
+        try:
+            names.append((top / p).relative_to(base).as_posix())
+        except ValueError:
+            names.append(p)
+    return ", ".join(names[:8]) + (f" (+{len(names) - 8})" if len(names) > 8 else "")
+
+if skipped_bins:
+    print(f"  ! ignorando binario(s) compilado(s): {short_list(skipped_bins)} (use -a p/ incluir)")
+if skipped_io:
+    print(f"  ! ignorando I/O (--code): {short_list(skipped_io)}")
+
+if dry_run:
+    print(f"[dry-run] Commit ({len(files)} arquivo(s)): {commit_msg}")
+    print(f"  arquivos: {short_list(files)}")
+    sys.exit(0)
+
+# Stage ONLY the eligible files (handles additions, modifications & deletions)
+add_res = git("-C", str(top), "add", "-A", "--", *files, check=False)
+if add_res.returncode != 0:
+    print(add_res.stderr.strip(), file=sys.stderr)
+    sys.exit(add_res.returncode)
+
+# Commit ONLY those exact pathspecs so unrelated staged changes outside this folder stay untouched
+cm_res = git("-C", str(top), "commit", "-m", commit_msg, "--", *files, check=False)
+if cm_res.returncode != 0:
+    msg_err = (cm_res.stderr or cm_res.stdout).strip()
+    print(msg_err, file=sys.stderr)
+    sys.exit(cm_res.returncode)
+
+sha = git("-C", str(top), "rev-parse", "--short", "HEAD").stdout.strip()
+print(f"✓ Commit {sha}: {commit_msg}  [{short_list(files)}]")
+
+if no_push:
+    sys.exit(0)
+
+has_upstream = git("-C", str(top), "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", check=False).returncode == 0
+if has_upstream:
+    p_res = git("-C", str(top), "push", check=False)
+else:
+    has_origin = git("-C", str(top), "remote", "get-url", "origin", check=False).returncode == 0
+    if not has_origin:
+        print("  (commit local criado; configure 'git remote add origin <url>' para habilitar push automatico)")
+        sys.exit(0)
+    br = git("-C", str(top), "symbolic-ref", "--short", "HEAD", check=False).stdout.strip() or "main"
+    p_res = git("-C", str(top), "push", "-u", "origin", br, check=False)
+
+if p_res.returncode != 0:
+    print((p_res.stderr or p_res.stdout).strip(), file=sys.stderr)
+    sys.exit(p_res.returncode)
+
+print("✓ Push concluido!")
+PY
+}
+
 # ------------------------------------------------------------------------------
 # Docker Cockpit (dks, dkl, dksh)
 # ------------------------------------------------------------------------------
@@ -1187,6 +1395,7 @@ function nave-help {
   print -P "%F{${c_frm}}│%f %F{${c_lbl}}%BGit, Docker, Portas & WSL%b%f"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}lg / ginfo / gbf%f       Lazygit, painel do repo, trocar branch fuzzy"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}glogf / gdiff%f          Explorer interativo de commits e diff (delta -> ne)"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}gpush [alvo] [msg]%f     Commit + push rapido de pasta/arquivo (pula binarios; -c/-a/-n)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}gwip / gunwip / gbclean%f Commit WIP rapido e limpeza de branches"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}dks / dkl / dksh%f       Containers, logs fuzzy e shell fuzzy"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}ports / killport [p]%f   Lista portas abertas e mata porta (interativo c/ fzf)"

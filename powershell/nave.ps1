@@ -666,6 +666,110 @@ function ginfo {
     Write-Host (_Nave-Fg $c.dir ("$($script:CH_BL)" + ([string]$script:CH_H * 50)))
 }
 
+function gpush {
+    param(
+        [Parameter(Position=0)][string]$Arg1 = "",
+        [Parameter(Position=1)][string]$Arg2 = "",
+        [Alias("a")][switch]$All,
+        [Alias("c")][switch]$Code,
+        [Alias("n")][switch]$DryRun,
+        [switch]$NoPush,
+        [Alias("m")][string]$Message = "",
+        [Alias("h")][switch]$Help
+    )
+    if ($Help) {
+        Write-Host (_Nave-Fg $script:NaveC.dir "Uso: gpush [opcoes] [pasta|arquivo] [mensagem]")
+        Write-Host "  gpush                           Commita e sobe a pasta atual (pula binarios compilados)"
+        Write-Host "  gpush `"solve: DP O(n)`"          Commita e sobe a pasta atual com mensagem customizada"
+        Write-Host "  gpush sol.cpp [`"msg`"]           Commita e sobe apenas um arquivo"
+        Write-Host "  gpush pasta/ [`"msg`"]            Commita e sobe apenas a pasta alvo"
+        Write-Host "  -c, -Code                       Ignora tambem arquivos de I/O (in/out/expected/ans.txt)"
+        Write-Host "  -a, -All                        Inclui ate binarios compilados (ELF/EXE/.out)"
+        Write-Host "  -m, -Message <msg>              Define mensagem de commit explicitamente"
+        Write-Host "  -n, -DryRun                     Apenas mostra o que entraria no commit"
+        Write-Host "  -NoPush                         Faz apenas o commit local (sem git push)"
+        return
+    }
+    $top = (& git rev-parse --show-toplevel 2>$null)
+    if ($LASTEXITCODE -ne 0 -or -not $top) {
+        Write-Host (_Nave-Fg $script:NaveC.warn "Nao e um repositorio Git. Rode 'git init' na pasta raiz primeiro.")
+        return
+    }
+    $topNorm = (Resolve-Path $top).Path
+    $target = "."
+    $msg = $Message
+    if ($Arg1) {
+        if ((Test-Path $Arg1) -or (& git ls-files --error-unmatch -- $Arg1 2>$null)) {
+            $target = $Arg1
+            if ($Arg2 -and -not $msg) { $msg = $Arg2 }
+        } else {
+            if (-not $msg) { $msg = ($Arg1 + $(if ($Arg2) { " $Arg2" } else { "" })).Trim() }
+        }
+    }
+    $targetAbs = (Resolve-Path $target -ErrorAction SilentlyContinue).Path
+    if (-not $targetAbs) { $targetAbs = Join-Path (Get-Location).Path $target }
+    $rel = if ($targetAbs -eq $topNorm) { "." } else { $targetAbs.Substring($topNorm.Length).TrimStart('\', '/').Replace('\', '/') }
+
+    $binExts = @(".out", ".exe", ".o", ".obj", ".dll", ".so", ".dylib", ".bin", ".pdb", ".class")
+    $lines = & git -C $topNorm status --porcelain=v1 -uall -- $rel
+    $files = @(); $skippedBins = @(); $skippedIo = @(); $allNew = $true
+    foreach ($ln in $lines) {
+        if ($ln.Length -lt 4) { continue }
+        $xy = $ln.Substring(0, 2)
+        $rp = $ln.Substring(3).Trim('"')
+        if ($rp -match ' -> (.+)$') { $rp = $Matches[1].Trim('"') }
+        $absP = Join-Path $topNorm $rp
+        $isUntracked = ($xy -eq "??")
+        if (-not $isUntracked -and -not $xy.StartsWith("A")) { $allNew = $false }
+        if (-not $All -and $isUntracked -and (Test-Path $absP -PathType Leaf)) {
+            $ext = [System.IO.Path]::GetExtension($absP).ToLowerInvariant()
+            $isBin = $ext -in $binExts
+            if (-not $isBin) {
+                try {
+                    $fs = [System.IO.File]::OpenRead($absP)
+                    try {
+                        $b = New-Object byte[] 4
+                        $nRead = $fs.Read($b, 0, 4)
+                        if ($nRead -ge 4 -and (($b[0] -eq 0x7F -and $b[1] -eq 0x45 -and $b[2] -eq 0x4C -and $b[3] -eq 0x46) -or ($b[0] -eq 0x4D -and $b[1] -eq 0x5A))) { $isBin = $true }
+                    } finally { $fs.Dispose() }
+                } catch {}
+            }
+            if ($isBin) { $skippedBins += $rp; continue }
+        }
+        if ($Code -and $isUntracked -and ([System.IO.Path]::GetFileName($absP) -match '^(in|out|ans|expected)\d*\.txt$')) {
+            $skippedIo += $rp; continue
+        }
+        $files += $rp
+    }
+    if ($files.Count -eq 0) { Write-Host "Nada elegivel para commitar em '$rel'."; return }
+    if (-not $msg) {
+        $verb = if ($allNew) { "add" } else { "update" }
+        $lbl = if ($rel -eq ".") { "$(Split-Path $topNorm -Leaf) [$(Get-Date -Format 'HH:mm')]" } else { $rel }
+        $msg = "${verb}: ${lbl}"
+    }
+    if ($skippedBins.Count -gt 0) { Write-Host (_Nave-Fg $script:NaveC.warn "  ! ignorando binario(s): $($skippedBins -join ', ') (use -a p/ incluir)") }
+    if ($skippedIo.Count -gt 0) { Write-Host (_Nave-Fg $script:NaveC.muted "  ! ignorando I/O (-c): $($skippedIo -join ', ')") }
+    if ($DryRun) { Write-Host "[dry-run] Commit ($($files.Count)): $msg -> $($files -join ', ')"; return }
+
+    & git -C $topNorm add -A -- @files
+    if ($LASTEXITCODE -ne 0) { return }
+    & git -C $topNorm commit -m $msg -- @files
+    if ($LASTEXITCODE -ne 0) { return }
+    $sha = (& git -C $topNorm rev-parse --short HEAD).Trim()
+    Write-Host (_Nave-Fg $script:NaveC.ok "$($script:CH_CHK) Commit ${sha}: $msg" -Bold)
+    if ($NoPush) { return }
+
+    & git -C $topNorm rev-parse --abbrev-ref --symbolic-full-name '@{u}' *> $null
+    if ($LASTEXITCODE -eq 0) { & git -C $topNorm push }
+    else {
+        $orig = (& git -C $topNorm remote get-url origin 2>$null)
+        if (-not $orig) { Write-Host "  (commit local criado; configure 'origin' para push automatico)"; return }
+        $br = (& git -C $topNorm symbolic-ref --short HEAD 2>$null); if (-not $br) { $br = "main" }
+        & git -C $topNorm push -u origin $br
+    }
+    if ($LASTEXITCODE -eq 0) { Write-Host (_Nave-Fg $script:NaveC.ok "$($script:CH_CHK) Push concluido!" -Bold) }
+}
+
 function ports {
     $c = $script:NaveC
     Write-Host (_Nave-Fg $c.dir ("$($script:CH_TL)$($script:CH_H) Portas TCP em escuta " + ([string]$script:CH_H * 36)))
@@ -714,7 +818,7 @@ function nave-help {
     Write-Host ("$frm " + (_Nave-Fg $c.ok "sysinfo / hr [tit]   ") + "Arte gradiente + sistema / regua divisoria")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "nave-hud / nave-warp ") + "Cockpit em tempo real / starfield 3D")
     Write-Host ("$frm " + (_Nave-Fg $c.ok "ne / nave-edit <arq> ") + "Editor nativo Rust estilo VS Code (multi-cursor, Git)")
-    Write-Host ("$frm " + (_Nave-Fg $c.ok "ginfo / ports / mkcd ") + "Git painel / portas TCP (+ killport) / mkcd")
+    Write-Host ("$frm " + (_Nave-Fg $c.ok "ginfo / gpush / mkcd ") + "Git painel / commit+push rapido de pasta ou arquivo / mkcd")
     Write-Host (_Nave-Fg $c.dir ("$($script:CH_BL)" + ([string]$script:CH_H * 57)))
 }
 
