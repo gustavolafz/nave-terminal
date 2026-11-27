@@ -158,6 +158,34 @@ impl Document {
         self.rope.byte_to_line_col(self.primary_cursor().head)
     }
 
+    pub fn clamp_byte_pos(&self, byte_pos: usize) -> usize {
+        let clamped = byte_pos.min(self.rope.len_bytes());
+        let (r, c) = self.rope.byte_to_line_col(clamped);
+        self.rope.line_col_to_byte(r, c)
+    }
+
+    pub fn clamp_view_state(
+        &self,
+        cursors: &mut Vec<Selection>,
+        primary: &mut usize,
+        scroll_row: &mut usize,
+    ) {
+        if cursors.is_empty() {
+            cursors.push(Selection::caret(0));
+        }
+        for sel in cursors.iter_mut() {
+            sel.anchor = self.clamp_byte_pos(sel.anchor);
+            sel.head = self.clamp_byte_pos(sel.head);
+        }
+        if *primary >= cursors.len() {
+            *primary = cursors.len() - 1;
+        }
+        let max_r = self.rope.line_count().saturating_sub(1);
+        if *scroll_row > max_r {
+            *scroll_row = max_r;
+        }
+    }
+
     pub fn reload_from_disk(&mut self) -> io::Result<()> {
         let Some(ref path) = self.path.clone() else {
             return Ok(());

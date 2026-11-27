@@ -34,6 +34,17 @@ pub enum PickerAction {
     GotoLine,
     SaveAs,
     NewBuffer,
+    SplitHorizontal,
+    SplitVertical,
+    ToggleSplitOrientation,
+    MoveTabRight,
+    MoveTabLeft,
+    MoveTabDown,
+    MoveTabUp,
+    SwapPanes,
+    ResizePaneMode,
+    EqualizePanes,
+    ClosePane,
     SetPalette(usize),
 }
 
@@ -190,6 +201,61 @@ impl Picker {
                 label: "Nova aba em branco".into(),
                 detail: "Ctrl+N".into(),
                 action: PickerAction::NewBuffer,
+            },
+            PickerItem {
+                label: "Dividir Painel Lado a Lado (Esquerda │ Direita)".into(),
+                detail: "Ctrl+\\ · Ctrl+K \\".into(),
+                action: PickerAction::SplitHorizontal,
+            },
+            PickerItem {
+                label: "Dividir Painel Acima / Abaixo (Topo ─ Base)".into(),
+                detail: "Ctrl+K -".into(),
+                action: PickerAction::SplitVertical,
+            },
+            PickerItem {
+                label: "Inverter Orientacao da Divisao (│ <-> ─)".into(),
+                detail: "Ctrl+K o · Shift+Alt+0".into(),
+                action: PickerAction::ToggleSplitOrientation,
+            },
+            PickerItem {
+                label: "Mover Aba para Divisao a Direita (→)".into(),
+                detail: "Ctrl+Alt+→ · Ctrl+K Shift+→".into(),
+                action: PickerAction::MoveTabRight,
+            },
+            PickerItem {
+                label: "Mover Aba para Divisao a Esquerda (←)".into(),
+                detail: "Ctrl+Alt+← · Ctrl+K Shift+←".into(),
+                action: PickerAction::MoveTabLeft,
+            },
+            PickerItem {
+                label: "Mover Aba para Divisao Abaixo (↓)".into(),
+                detail: "Ctrl+K Shift+↓".into(),
+                action: PickerAction::MoveTabDown,
+            },
+            PickerItem {
+                label: "Mover Aba para Divisao Acima (↑)".into(),
+                detail: "Ctrl+K Shift+↑".into(),
+                action: PickerAction::MoveTabUp,
+            },
+            PickerItem {
+                label: "Trocar Paineis de Lugar (Swap)".into(),
+                detail: "Ctrl+K s".into(),
+                action: PickerAction::SwapPanes,
+            },
+            PickerItem {
+                label: "Redimensionar Painel (Modo Interativo 2D)".into(),
+                detail: "Ctrl+K r · Alt+=/Alt+-".into(),
+                action: PickerAction::ResizePaneMode,
+            },
+            PickerItem {
+                label: "Igualar Tamanho dos Paineis (50/50)".into(),
+                detail: "Ctrl+K =".into(),
+                action: PickerAction::EqualizePanes,
+            },
+            PickerItem {
+                label: "Fechar Painel Atual".into(),
+                detail: "Ctrl+K w".into(),
+                action: PickerAction::ClosePane,
             },
             PickerItem {
                 label: "Recarregar arquivo do disco".into(),

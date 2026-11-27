@@ -1,6 +1,7 @@
 use crate::config::EditorConfig;
-use crate::document::Document;
+use crate::document::{Document, Selection};
 use crate::git::GutterMark;
+use crate::layout::{ComputedLayout, DividerHit, PaneId, Rect, SplitAxis};
 use crate::palette::{lerp_grad, push_bg, push_fg, push_fg_styled, push_grad_text, Palette, TokenKind};
 use crate::picker::Picker;
 use crate::syntax::{find_matching_bracket, Span};
@@ -19,11 +20,41 @@ pub struct VisualRowInfo {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct LayoutInfo {
+pub struct PaneLayoutInfo {
+    pub pane_id: PaneId,
+    pub rect: Rect,
     pub gutter_width: usize,
     pub content_start_row: usize,
     pub visual_rows: Vec<VisualRowInfo>,
+    pub tab_bar_row: usize,
     pub tab_hitboxes: Vec<(usize, usize, usize)>, // (start_col, end_col, tab_idx)
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct LayoutInfo {
+    pub panes: Vec<PaneLayoutInfo>,
+    pub dividers: Vec<DividerHit>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TabBadge {
+    pub name: String,
+    pub dirty: bool,
+    pub active: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct PaneRenderInput {
+    pub pane_id: PaneId,
+    pub group_num: usize, // 1-based group index
+    pub rect: Rect,
+    pub is_focused: bool,
+    pub doc_id: usize,
+    pub tabs: Vec<TabBadge>,
+    pub scroll_row: usize,
+    pub scroll_col: usize,
+    pub cursors: Vec<Selection>,
+    pub primary: usize,
 }
 
 pub enum PromptBar<'a> {
@@ -113,12 +144,16 @@ pub fn char_col_at_visual(line: &str, target_vis: usize, tab_w: usize) -> usize 
     line.chars().count()
 }
 
-pub fn ensure_cursor_visible(doc: &mut Document, cols: usize, rows: usize, cfg: &EditorConfig, has_prompt: bool) {
-    let reserved = if has_prompt { 3 } else { 2 };
-    let view_h = rows.saturating_sub(reserved).max(1);
+pub fn ensure_cursor_visible(
+    doc: &mut Document,
+    pane_w: usize,
+    pane_content_h: usize,
+    cfg: &EditorConfig,
+) {
+    let view_h = pane_content_h.max(1);
     let gutter_w = compute_gutter_width(doc.rope.line_count());
-    let sb_w = if cfg.scrollbar && cols >= 24 { 1 } else { 0 };
-    let text_w = cols.saturating_sub(gutter_w + sb_w).max(4);
+    let sb_w = if cfg.scrollbar && pane_w >= 24 { 1 } else { 0 };
+    let text_w = pane_w.saturating_sub(gutter_w + sb_w).max(4);
     let (prow, pcol) = doc.primary_line_col();
 
     if cfg.center_scroll {
@@ -151,10 +186,27 @@ pub fn compute_gutter_width(line_count: usize) -> usize {
     digits + 5 // "▸ 123 ▎ " or "  123 ▎ "
 }
 
+fn group_badge_glyph(num: usize) -> String {
+    match num {
+        1 => "①".into(),
+        2 => "②".into(),
+        3 => "③".into(),
+        4 => "④".into(),
+        5 => "⑤".into(),
+        6 => "⑥".into(),
+        7 => "⑦".into(),
+        8 => "⑧".into(),
+        9 => "⑨".into(),
+        n => format!("[{}]", n),
+    }
+}
+
 pub fn render_editor(
-    tabs: &[Document],
-    active_tab: usize,
-    doc: &mut Document,
+    docs: &mut [Option<Document>],
+    pane_views: &[PaneRenderInput],
+    computed: &ComputedLayout,
+    active_divider: Option<usize>,
+    highlight_all_dividers: bool,
     pal: &Palette,
     cols: usize,
     rows: usize,
@@ -162,528 +214,108 @@ pub fn render_editor(
     prompt: PromptBar<'_>,
     picker: Option<&Picker>,
     status_msg: Option<&str>,
+    mode_hint: Option<&str>,
     synced: bool,
 ) -> (String, LayoutInfo) {
-    let wrap = cfg.wrap;
     let mut out = String::with_capacity(cols * rows * 4);
     if synced {
         out.push_str(SYNC_START);
     }
-    out.push_str("\x1b[?25l\x1b[H");
+    out.push_str("\x1b[?25l");
 
     let has_prompt = !matches!(prompt, PromptBar::None);
-    let reserved = if has_prompt { 3 } else { 2 };
-    let content_h = rows.saturating_sub(reserved).max(1);
-    let gutter_w = compute_gutter_width(doc.rope.line_count());
-    let show_sb = cfg.scrollbar && cols >= 24;
-    let sb_w = if show_sb { 1 } else { 0 };
-    let text_w = cols.saturating_sub(gutter_w + sb_w).max(4);
+    let multi_pane = pane_views.len() > 1;
 
     let mut layout = LayoutInfo {
-        gutter_width: gutter_w,
-        content_start_row: 1,
-        visual_rows: Vec::with_capacity(content_h),
-        tab_hitboxes: Vec::new(),
-    };
-
-    // -------------------------------------------------------------------------
-    // Row 0: Header / Tab Bar
-    // -------------------------------------------------------------------------
-    push_bg(&mut out, pal.bar_bg);
-    let brand = " NAVE EDIT ";
-    push_grad_text(&mut out, brand, pal.grad, true);
-    let mut used_cols = brand.chars().count();
-
-    push_fg(&mut out, pal.border, false);
-    out.push('│');
-    used_cols += 1;
-
-    let right_meta = format!(
-        " [{} · {}{}{}] [{}] ",
-        doc.lang.name(),
-        doc.eol.label(),
-        if wrap { " · WRAP" } else { "" },
-        if cfg.relative_numbers { " · REL" } else { "" },
-        pal.name
-    );
-    let right_w = right_meta.chars().count();
-    let max_tabs_col = cols.saturating_sub(right_w + 1);
-
-    for (idx, t) in tabs.iter().enumerate() {
-        let dirty = if idx == active_tab {
-            doc.is_dirty()
-        } else {
-            t.is_dirty()
-        };
-        let name = if idx == active_tab {
-            doc.display_name()
-        } else {
-            t.display_name()
-        };
-        let label = if dirty {
-            format!(" {} ● ", name)
-        } else {
-            format!(" {} ", name)
-        };
-        let lw = label.chars().count();
-        if used_cols + lw + 1 > max_tabs_col && idx > 0 {
-            break;
-        }
-        let start_c = used_cols;
-        if idx == active_tab {
-            push_bg(&mut out, pal.tab_active_bg);
-            push_fg(&mut out, pal.grad[0], true);
-            out.push_str(&label);
-            push_bg(&mut out, pal.bar_bg);
-        } else {
-            push_fg(&mut out, pal.dim, false);
-            out.push_str(&label);
-        }
-        layout.tab_hitboxes.push((start_c, start_c + lw, idx));
-        used_cols += lw;
-        push_fg(&mut out, pal.border, false);
-        out.push('│');
-        used_cols += 1;
-    }
-
-    if used_cols + right_w <= cols {
-        let pad = cols - used_cols - right_w;
-        for _ in 0..pad {
-            out.push(' ');
-        }
-        push_fg(&mut out, pal.dim, false);
-        out.push_str(&right_meta);
-    } else {
-        out.push_str("\x1b[K");
-    }
-    out.push_str(RST);
-    out.push_str("\r\n");
-
-    // -------------------------------------------------------------------------
-    // Editor Canvas (Rows 1 .. content_h)
-    // -------------------------------------------------------------------------
-    let (primary_row, primary_col) = doc.primary_line_col();
-    let primary_head = doc.primary_cursor().head;
-    let bracket_pair = if cfg.bracket_match {
-        find_matching_bracket(&doc.rope, primary_head, cfg.block_cursor)
-    } else {
-        None
-    };
-    let git_marks: HashMap<usize, GutterMark> = doc.git.snapshot();
-    let total_lines = doc.rope.line_count();
-    let num_digits = gutter_w - 5;
-
-    // Precompute right-edge scrollbar geometry
-    let (sb_start, sb_end, sb_cursor_row) = if show_sb {
-        let tot = total_lines.max(1);
-        let thumb_h = ((content_h * content_h) / tot).clamp(1, content_h);
-        let max_scroll = tot.saturating_sub(content_h).max(1);
-        let start = if tot <= content_h {
-            0
-        } else {
-            (doc.scroll_row.min(max_scroll) * (content_h - thumb_h)) / max_scroll
-        };
-        let cur_y = (primary_row * content_h.saturating_sub(1)) / tot.saturating_sub(1).max(1);
-        (start, (start + thumb_h).min(content_h), cur_y.min(content_h.saturating_sub(1)))
-    } else {
-        (0, 0, 0)
-    };
-
-    // Precompute selection ranges and secondary caret bytes
-    let sel_ranges: Vec<(usize, usize)> = doc
-        .cursors
-        .iter()
-        .filter(|c| !c.is_empty())
-        .map(|c| c.range())
-        .collect();
-    let secondary_carets: Vec<usize> = doc
-        .cursors
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != doc.primary)
-        .map(|(_, c)| c.head)
-        .collect();
-
-    // 1. Cursorword (illuminate) — collect whole-word matches in visible viewport only when >= 2 occurrences
-    let cursorword_ranges: Vec<(usize, usize)> = if cfg.cursorword && doc.search.query.is_empty() {
-        if let Some(word) = doc.word_at_primary() {
-            let mut found = Vec::new();
-            let last_vis = (doc.scroll_row + content_h + 2).min(total_lines);
-            for r in doc.scroll_row..last_vis {
-                let ls = doc.rope.line_start_byte(r);
-                let txt = doc.rope.line(r);
-                for (s, e) in find_whole_word_in_line(&txt, &word) {
-                    found.push((ls + s, ls + e));
-                }
-            }
-            if found.len() >= 2 { found } else { Vec::new() }
-        } else {
-            Vec::new()
-        }
-    } else {
-        Vec::new()
-    };
-
-    // 2. Active indent scope for indent-blankline guides (`▏`)
-    let indent_w = doc.tab_width.max(1);
-    let active_scope: Option<(usize, usize, usize)> = if cfg.indent_guides {
-        compute_active_indent_scope(&doc.rope, primary_row, indent_w)
-    } else {
-        None
+        panes: Vec::with_capacity(pane_views.len()),
+        dividers: computed.dividers.clone(),
     };
 
     let mut primary_screen_pos: Option<(usize, usize)> = None;
-    let mut screen_y = 0usize;
-    let mut doc_row = doc.scroll_row;
+    let mut active_status_info: Option<(usize, usize, usize, usize, String, String, bool, usize)> = None;
 
-    while screen_y < content_h {
-        if doc_row >= total_lines {
-            push_fg(&mut out, pal.border, false);
-            let _ = write!(out, "  {:>width$} │ ", "~", width = num_digits);
-            out.push_str(RST);
-            if show_sb {
-                for _ in 0..text_w {
-                    out.push(' ');
-                }
-                push_scrollbar_cell(&mut out, screen_y, content_h, sb_start, sb_end, sb_cursor_row, pal);
-                out.push_str(RST);
-            } else {
-                out.push_str("\x1b[K");
-            }
-            if screen_y + 1 < content_h || has_prompt || rows > 2 {
-                out.push_str("\r\n");
-            }
-            screen_y += 1;
+    // -------------------------------------------------------------------------
+    // Render each Pane inside its exact Rect (header tab bar + editor canvas)
+    // -------------------------------------------------------------------------
+    for p in pane_views {
+        let Some(doc) = docs.get_mut(p.doc_id).and_then(|d| d.as_mut()) else {
             continue;
-        }
-
-        let line_start = doc.rope.line_start_byte(doc_row);
-        let line_text = doc.rope.line(doc_row);
-        let spans = doc.syntax.line_spans(&doc.rope, doc_row);
-        let is_cur_line = doc_row == primary_row;
-
-        // Build per-char metadata once for this logical line
-        let char_info = build_char_cells(&line_text, line_start, &spans, doc.tab_width);
-
-        // Split into 1 visual segment (no wrap) or N segments (soft wrap)
-        let segments: Vec<(usize, usize)> = if wrap {
-            split_wrapped_segments(&char_info, text_w)
-        } else {
-            vec![(0, char_info.len())]
         };
 
-        for (seg_idx, (seg_start, seg_end)) in segments.into_iter().enumerate() {
-            if screen_y >= content_h {
-                break;
-            }
-            layout.visual_rows.push(VisualRowInfo {
-                doc_row,
-                start_char_col: seg_start,
-                end_char_col: seg_end,
-            });
+        let (p_layout, p_cursor, sel_chars, cur_row, cur_col, cur_count) = render_pane(
+            &mut out,
+            doc,
+            p,
+            multi_pane,
+            pal,
+            cfg,
+        );
 
-            // Gutter (with optional Vim relativenumber, bookmark `◆`, and active line indicator `▸`)
-            let is_bookmarked = doc.bookmarks.contains(&doc_row);
-            if is_cur_line {
-                push_bg(&mut out, pal.cur_line_bg);
-            }
-            if seg_idx == 0 {
-                if is_bookmarked {
-                    push_fg(&mut out, pal.grad[2], true);
-                    out.push('◆');
-                } else if is_cur_line {
-                    push_fg(&mut out, pal.active_line_num, true);
-                    out.push('▸');
-                } else {
-                    out.push(' ');
-                }
-                if is_cur_line {
-                    push_fg(&mut out, pal.active_line_num, true);
-                    let _ = write!(out, " {:>width$} ", doc_row + 1, width = num_digits);
-                } else if cfg.relative_numbers {
-                    let dist = doc_row.abs_diff(primary_row);
-                    push_fg(&mut out, pal.line_num, false);
-                    let _ = write!(out, " {:>width$} ", dist, width = num_digits);
-                } else {
-                    push_fg(&mut out, pal.line_num, false);
-                    let _ = write!(out, " {:>width$} ", doc_row + 1, width = num_digits);
-                }
-            } else {
-                push_fg(&mut out, pal.dim, false);
-                let _ = write!(out, "  {:>width$} ", "↪", width = num_digits);
-            }
-
-            // Git gutter marker
-            match git_marks.get(&doc_row) {
-                Some(GutterMark::Added) if seg_idx == 0 => {
-                    push_fg(&mut out, pal.ok, false);
-                    out.push_str("▎ ");
-                }
-                Some(GutterMark::Modified) if seg_idx == 0 => {
-                    push_fg(&mut out, pal.warn, false);
-                    out.push_str("▎ ");
-                }
-                Some(GutterMark::Deleted) if seg_idx == 0 => {
-                    push_fg(&mut out, pal.err, false);
-                    out.push_str("▁ ");
-                }
-                _ => {
-                    push_fg(&mut out, pal.border, false);
-                    out.push_str("│ ");
-                }
-            }
-
-            // Content cells
-            let h_off = if wrap { 0 } else { doc.scroll_col };
-            let mut cur_vis = 0usize;
-            let mut drawn_cols = 0usize;
-
-            // Check if primary cursor sits on this segment
-            if is_cur_line {
-                let on_this_seg = if !wrap {
-                    true
-                } else {
-                    (primary_col >= seg_start && primary_col < seg_end)
-                        || (seg_end == char_info.len() && primary_col == seg_end)
-                };
-                if on_this_seg {
-                    let mut c_vis = 0usize;
-                    for cell in &char_info[seg_start..primary_col.min(seg_end)] {
-                        c_vis += cell.width;
-                    }
-                    if c_vis >= h_off && c_vis - h_off < text_w {
-                        primary_screen_pos = Some((1 + screen_y, gutter_w + (c_vis - h_off)));
-                    }
-                }
-            }
-
-            // Leading-whitespace visual width (for indent guides) and trailing-space start index
-            let is_blank_line = line_text.trim().is_empty();
-            let lead_vis = if cfg.indent_guides {
-                if is_blank_line {
-                    blank_line_inherited_indent(&doc.rope, doc_row, indent_w)
-                } else {
-                    leading_visual_width(&line_text, indent_w)
-                }
-            } else {
-                0
-            };
-            let trail_start_idx = if cfg.show_trailing && !is_blank_line {
-                let trimmed_chars = line_text.trim_end_matches(|c| c == ' ' || c == '\t').chars().count();
-                // Don't show trailing dots while user is actively typing at end of current line
-                if is_cur_line && primary_col >= trimmed_chars {
-                    char_info.len()
-                } else {
-                    trimmed_chars
-                }
-            } else {
-                char_info.len()
-            };
-            let ruler_col = if !wrap && cfg.color_column > 0 {
-                Some(cfg.color_column)
-            } else {
-                None
-            };
-
-            for (local_i, cell) in char_info[seg_start..seg_end].iter().enumerate() {
-                let char_idx = seg_start + local_i;
-                let cw = cell.width;
-                if cur_vis + cw <= h_off {
-                    cur_vis += cw;
-                    continue;
-                }
-                if drawn_cols + cw > text_w {
-                    break;
-                }
-
-                let byte_abs = cell.abs_byte;
-                let is_sec_caret = secondary_carets.contains(&byte_abs);
-                let is_selected = sel_ranges.iter().any(|&(s, e)| byte_abs >= s && byte_abs < e);
-                let is_active_match = doc
-                    .search
-                    .active_match()
-                    .is_some_and(|(s, e)| byte_abs >= s && byte_abs < e);
-                let is_match = !is_active_match
-                    && doc
-                        .search
-                        .matches
-                        .iter()
-                        .any(|&(s, e)| byte_abs >= s && byte_abs < e);
-                let is_bracket = bracket_pair.is_some_and(|(a, b)| byte_abs == a || byte_abs == b);
-                let is_cursorword = !is_selected
-                    && !is_match
-                    && !is_active_match
-                    && cursorword_ranges
-                        .iter()
-                        .any(|&(s, e)| byte_abs >= s && byte_abs < e);
-                let is_ruler = ruler_col == Some(cur_vis);
-
-                let eff_kind = match cell.kind {
-                    TokenKind::Rainbow(_) | TokenKind::BracketError if !cfg.rainbow_brackets => {
-                        TokenKind::Punctuation
-                    }
-                    TokenKind::TodoBadge | TokenKind::FixmeBadge if !cfg.comment_badges => {
-                        TokenKind::Comment
-                    }
-                    other => other,
-                };
-                let style = pal.token_style(eff_kind);
-                let mut fg_c = style.fg;
-                let mut bold = style.bold;
-                let mut italic = style.italic;
-                let mut underline = false;
-                let mut glyph_override: Option<char> = None;
-
-                let bg_c = if is_sec_caret {
-                    fg_c = pal.bar_bg;
-                    bold = true;
-                    italic = false;
-                    Some(pal.grad[0])
-                } else if is_selected {
-                    Some(pal.sel_bg)
-                } else if is_active_match {
-                    bold = true;
-                    Some(pal.active_match_bg)
-                } else if is_match {
-                    Some(pal.match_bg)
-                } else if is_bracket {
-                    // VS Code + Vim MatchParen highlight on both opening & closing bracket
-                    fg_c = pal.bracket_fg;
-                    bold = true;
-                    italic = false;
-                    underline = true;
-                    Some(pal.bracket_bg)
-                } else if is_cursorword {
-                    underline = true;
-                    Some(pal.word_hl_bg)
-                } else if let Some(tok_bg) = style.bg {
-                    Some(tok_bg)
-                } else if is_cur_line {
-                    Some(pal.cur_line_bg)
-                } else if is_ruler {
-                    Some(pal.cur_line_bg)
-                } else {
-                    None
-                };
-
-                // Keep pill-badge text crisp when selection/search/cursorword overrides its bright bg
-                if style.bg.is_some() && !is_sec_caret && !is_bracket && bg_c != style.bg {
-                    fg_c = pal.fg;
-                }
-
-                // Trailing whitespace marker (`·`) or Indent guide (`▏`)
-                if !is_sec_caret && !is_selected && !is_match && !is_active_match {
-                    if char_idx >= trail_start_idx && (cell.ch == ' ' || cell.ch == '\t') {
-                        fg_c = pal.err;
-                        italic = false;
-                        glyph_override = Some('·');
-                    } else if cfg.indent_guides
-                        && cell.ch == ' '
-                        && cur_vis > 0
-                        && cur_vis < lead_vis
-                        && cur_vis % indent_w == 0
-                    {
-                        let in_active_scope = active_scope.is_some_and(|(s_r, e_r, a_col)| {
-                            doc_row >= s_r && doc_row <= e_r && cur_vis == a_col
-                        });
-                        fg_c = if in_active_scope { pal.indent_active } else { pal.indent_guide };
-                        italic = false;
-                        glyph_override = Some('▏');
-                    }
-                }
-
-                if let Some(bg) = bg_c {
-                    push_bg(&mut out, bg);
-                } else {
-                    out.push_str("\x1b[49m");
-                }
-                push_fg_styled(&mut out, fg_c, bold, italic);
-                if underline {
-                    out.push_str("\x1b[4m");
-                }
-
-                if cell.ch == '\t' {
-                    if let Some(g) = glyph_override {
-                        out.push(g);
-                        for _ in 1..cw {
-                            out.push(' ');
-                        }
-                    } else {
-                        for _ in 0..cw {
-                            out.push(' ');
-                        }
-                    }
-                } else {
-                    out.push(glyph_override.unwrap_or(cell.ch));
-                }
-                if underline {
-                    out.push_str("\x1b[24m");
-                }
-                cur_vis += cw;
-                drawn_cols += cw;
-            }
-
-            // Secondary caret at end-of-line
-            let eol_byte = line_start + line_text.len();
-            if seg_end == char_info.len()
-                && secondary_carets.contains(&eol_byte)
-                && drawn_cols < text_w
-                && cur_vis >= h_off
-            {
-                push_bg(&mut out, pal.grad[0]);
-                push_fg(&mut out, pal.bar_bg, true);
-                out.push(' ');
-                drawn_cols += 1;
-            }
-
-            // Fill remaining width, painting blank-line indent guides and/or colorcolumn ruler!
-            while drawn_cols < text_w {
-                let vis_x = h_off + drawn_cols;
-                let is_blank_guide = is_blank_line
-                    && cfg.indent_guides
-                    && seg_idx == 0
-                    && vis_x > 0
-                    && vis_x < lead_vis
-                    && vis_x % indent_w == 0;
-                let is_ruler = ruler_col == Some(vis_x);
-
-                if is_cur_line || is_ruler {
-                    push_bg(&mut out, pal.cur_line_bg);
-                } else {
-                    out.push_str("\x1b[49m");
-                }
-                if is_blank_guide {
-                    let in_active_scope = active_scope.is_some_and(|(s_r, e_r, a_col)| {
-                        doc_row >= s_r && doc_row <= e_r && vis_x == a_col
-                    });
-                    push_fg(&mut out, if in_active_scope { pal.indent_active } else { pal.indent_guide }, false);
-                    out.push('▏');
-                } else {
-                    out.push(' ');
-                }
-                drawn_cols += 1;
-            }
-            if show_sb {
-                out.push_str("\x1b[49m");
-                push_scrollbar_cell(&mut out, screen_y, content_h, sb_start, sb_end, sb_cursor_row, pal);
-                out.push_str(RST);
-                out.push_str("\r\n");
-            } else {
-                out.push_str(RST);
-                out.push_str("\x1b[K\r\n");
-            }
-            screen_y += 1;
+        if p.is_focused {
+            primary_screen_pos = p_cursor;
+            active_status_info = Some((
+                cur_row,
+                cur_col,
+                sel_chars,
+                cur_count,
+                doc.lang.name().to_string(),
+                doc.eol.label().to_string(),
+                doc.external_changed,
+                p.group_num,
+            ));
         }
 
-        doc_row += 1;
+        layout.panes.push(p_layout);
     }
 
     // -------------------------------------------------------------------------
-    // Optional Prompt Bar (Find / Replace / Goto / SaveAs / Confirm)
+    // Render Split Dividers (`│`, `─`) and Intersections (`┼`, `├`, `┤`, `┬`, `┴`)
+    // -------------------------------------------------------------------------
+    if multi_pane {
+        out.push_str("\x1b[49m");
+        for d in &computed.dividers {
+            let is_hot = highlight_all_dividers || active_divider == Some(d.split_id);
+            if is_hot {
+                push_fg(&mut out, pal.grad[0], true);
+            } else {
+                push_fg(&mut out, pal.border, false);
+            }
+            match d.axis {
+                SplitAxis::Horizontal => {
+                    for r in d.y..(d.y + d.len) {
+                        let _ = write!(out, "\x1b[{};{}H│", r + 1, d.x + 1);
+                    }
+                }
+                SplitAxis::Vertical => {
+                    let _ = write!(out, "\x1b[{};{}H", d.y + 1, d.x + 1);
+                    for _ in 0..d.len {
+                        out.push('─');
+                    }
+                }
+            }
+        }
+        if !computed.junctions.is_empty() {
+            if highlight_all_dividers {
+                push_fg(&mut out, pal.grad[0], true);
+            } else {
+                push_fg(&mut out, pal.border, false);
+            }
+            for &(jx, jy, jch) in &computed.junctions {
+                let _ = write!(out, "\x1b[{};{}H{}", jy + 1, jx + 1, jch);
+            }
+        }
+        out.push_str(RST);
+    }
+
+    // -------------------------------------------------------------------------
+    // Optional Prompt Bar (Row `rows - 2`, 0-based)
     // -------------------------------------------------------------------------
     let mut prompt_cursor_pos: Option<(usize, usize)> = None;
-    let prompt_row = 1 + content_h;
+    let prompt_row = rows.saturating_sub(2);
 
+    if has_prompt {
+        let _ = write!(out, "\x1b[{};1H", prompt_row + 1);
+    }
     match prompt {
         PromptBar::None => {}
         PromptBar::Find {
@@ -723,7 +355,6 @@ pub fn render_editor(
             out.push_str(&truncate_to_cols(&info, cols.saturating_sub(cur_x)));
             out.push_str("\x1b[K");
             out.push_str(RST);
-            out.push_str("\r\n");
         }
         PromptBar::Replace {
             query,
@@ -771,7 +402,6 @@ pub fn render_editor(
             out.push_str(&truncate_to_cols(&info, cols.saturating_sub(r_end)));
             out.push_str("\x1b[K");
             out.push_str(RST);
-            out.push_str("\r\n");
         }
         PromptBar::Input { label, value, hint } => {
             push_bg(&mut out, pal.tab_active_bg);
@@ -787,7 +417,6 @@ pub fn render_editor(
             out.push_str(&truncate_to_cols(&h, cols.saturating_sub(cx)));
             out.push_str("\x1b[K");
             out.push_str(RST);
-            out.push_str("\r\n");
         }
         PromptBar::Confirm { message } => {
             push_bg(&mut out, pal.tab_active_bg);
@@ -795,60 +424,82 @@ pub fn render_editor(
             out.push_str(&format!(" {} ", message));
             out.push_str("\x1b[K");
             out.push_str(RST);
-            out.push_str("\r\n");
         }
     }
 
     // -------------------------------------------------------------------------
-    // Bottom Status Bar (Last Row)
+    // Bottom Global Status Bar (Last Row)
     // -------------------------------------------------------------------------
+    let _ = write!(out, "\x1b[{};1H", rows.max(1));
     push_bg(&mut out, pal.bar_bg);
-    let sel_chars: usize = doc
-        .cursors
-        .iter()
-        .map(|c| {
-            let (s, e) = c.range();
-            doc.rope.slice(s, e).chars().count()
-        })
-        .sum();
-    let multi_badge = if doc.cursors.len() > 1 {
-        format!(" · {} cursores", doc.cursors.len())
+
+    let (primary_row, primary_col, sel_chars, cur_count, lang_name, eol_lbl, ext_changed, active_group) =
+        active_status_info.unwrap_or((0, 0, 0, 1, "text".into(), "LF".into(), false, 1));
+
+    let multi_badge = if cur_count > 1 {
+        format!(" · {} cursores", cur_count)
     } else if sel_chars > 0 {
         format!(" · Sel {}", sel_chars)
     } else {
         String::new()
     };
+    let pane_badge = if multi_pane {
+        format!(" · Painel {}/{}", active_group, pane_views.len())
+    } else {
+        String::new()
+    };
     let left_status = format!(
-        " Ln {}, Col {}{}",
+        " Ln {}, Col {}{}{}",
         primary_row + 1,
         primary_col + 1,
-        multi_badge
+        multi_badge,
+        pane_badge
     );
     push_fg(&mut out, pal.grad[0], true);
-    out.push_str(&left_status);
+    let left_disp = truncate_to_cols(&left_status, cols);
+    out.push_str(&left_disp);
 
-    let mut used_s = left_status.chars().count();
-    if let Some(msg) = status_msg {
+    let mut used_s = str_display_width(&left_disp);
+    if let Some(hint) = mode_hint {
+        let m = format!("  │  {}", hint);
+        push_fg(&mut out, pal.warn, true);
+        let disp = truncate_to_cols(&m, cols.saturating_sub(used_s));
+        out.push_str(&disp);
+        used_s += str_display_width(&disp);
+    } else if let Some(msg) = status_msg {
         let m = format!("  │  {}", msg);
         push_fg(&mut out, pal.ok, false);
-        out.push_str(&truncate_to_cols(&m, cols.saturating_sub(used_s)));
-        used_s += m.chars().count();
-    } else if doc.external_changed {
+        let disp = truncate_to_cols(&m, cols.saturating_sub(used_s));
+        out.push_str(&disp);
+        used_s += str_display_width(&disp);
+    } else if ext_changed {
         let m = "  │  ⚠ Alterado no disco (F5 recarregar)";
         push_fg(&mut out, pal.warn, true);
-        out.push_str(&truncate_to_cols(m, cols.saturating_sub(used_s)));
-        used_s += m.chars().count();
+        let disp = truncate_to_cols(m, cols.saturating_sub(used_s));
+        out.push_str(&disp);
+        used_s += str_display_width(&disp);
     }
 
-    let right_help = "Ctrl+S salvar · Ctrl+F buscar · Ctrl+P abrir · F1 cmds · Ctrl+Q sair ";
-    let rh_w = right_help.chars().count();
+    let right_help = if multi_pane {
+        format!(
+            "[{} · {}{}{}] [{}] · Ctrl+K painel · F1 cmds ",
+            lang_name,
+            eol_lbl,
+            if cfg.wrap { " · WRAP" } else { "" },
+            if cfg.relative_numbers { " · REL" } else { "" },
+            pal.name
+        )
+    } else {
+        "Ctrl+S salvar · Ctrl+\\ dividir · Ctrl+K painel · Ctrl+P abrir · F1 cmds ".into()
+    };
+    let rh_w = str_display_width(&right_help);
     if used_s + rh_w + 2 <= cols {
         let pad = cols - used_s - rh_w;
         for _ in 0..pad {
             out.push(' ');
         }
         push_fg(&mut out, pal.dim, false);
-        out.push_str(right_help);
+        out.push_str(&right_help);
     } else {
         out.push_str("\x1b[K");
     }
@@ -883,7 +534,7 @@ pub fn render_editor(
         let inner_w = modal_w.saturating_sub(2);
         let q_disp = truncate_to_cols(&pk.query, inner_w.saturating_sub(4));
         out.push_str(&q_disp);
-        let q_len = 3 + q_disp.chars().count();
+        let q_len = 3 + str_display_width(&q_disp);
         for _ in q_len..inner_w {
             out.push(' ');
         }
@@ -920,7 +571,7 @@ pub fn render_editor(
                 let detail_w = if item.detail.is_empty() {
                     0
                 } else {
-                    item.detail.chars().count() + 2
+                    str_display_width(&item.detail) + 2
                 };
                 let avail_lbl = inner_w.saturating_sub(3 + detail_w);
                 push_fg(&mut out, if is_sel { pal.grad[0] } else { pal.dim }, is_sel);
@@ -945,11 +596,11 @@ pub fn render_editor(
                     out.push(' ');
                     written += 1;
                 }
-                if !item.detail.is_empty() && written + item.detail.chars().count() + 1 <= inner_w {
+                if !item.detail.is_empty() && written + str_display_width(&item.detail) + 1 <= inner_w {
                     push_fg(&mut out, pal.dim, false);
                     out.push_str(&item.detail);
                     out.push(' ');
-                    written += item.detail.chars().count() + 1;
+                    written += str_display_width(&item.detail) + 1;
                 }
                 while written < inner_w {
                     out.push(' ');
@@ -983,6 +634,600 @@ pub fn render_editor(
         out.push_str(SYNC_END);
     }
     (out, layout)
+}
+
+fn render_pane(
+    out: &mut String,
+    doc: &mut Document,
+    p: &PaneRenderInput,
+    multi_pane: bool,
+    pal: &Palette,
+    cfg: &EditorConfig,
+) -> (PaneLayoutInfo, Option<(usize, usize)>, usize, usize, usize, usize) {
+    let rect = p.rect;
+    let wrap = cfg.wrap;
+    let total_lines = doc.rope.line_count();
+    let content_h = rect.h.saturating_sub(1);
+    let content_start_row = rect.y + 1;
+
+    let raw_gutter_w = compute_gutter_width(total_lines);
+    let show_gutter = rect.w >= raw_gutter_w + 4;
+    let gutter_w = if show_gutter { raw_gutter_w } else { 0 };
+    let num_digits = gutter_w.saturating_sub(5);
+    let show_sb = cfg.scrollbar && rect.w >= gutter_w + 16;
+    let sb_w = if show_sb { 1 } else { 0 };
+    let text_w = rect.w.saturating_sub(gutter_w + sb_w);
+
+    let mut p_layout = PaneLayoutInfo {
+        pane_id: p.pane_id,
+        rect,
+        gutter_width: gutter_w,
+        content_start_row,
+        visual_rows: Vec::with_capacity(content_h),
+        tab_bar_row: rect.y,
+        tab_hitboxes: Vec::new(),
+    };
+
+    // -------------------------------------------------------------------------
+    // Row `rect.y`: Pane Header / Tab Bar (exact `rect.w` columns)
+    // -------------------------------------------------------------------------
+    let _ = write!(out, "\x1b[{};{}H", rect.y + 1, rect.x + 1);
+    let bar_base_bg = if multi_pane && p.is_focused {
+        pal.tab_active_bg
+    } else {
+        pal.bar_bg
+    };
+    push_bg(out, bar_base_bg);
+    let mut used_cols = 0usize;
+
+    if !multi_pane {
+        // Single-pane mode: exact signature NAVE EDIT brand + tabs + right metadata
+        let brand = " NAVE EDIT ";
+        let bw = brand.chars().count();
+        if bw + 2 <= rect.w {
+            push_grad_text(out, brand, pal.grad, true);
+            used_cols += bw;
+            push_fg(out, pal.border, false);
+            out.push('│');
+            used_cols += 1;
+        }
+    } else {
+        // Multi-pane mode: compact active/inactive group badge ` ① `
+        let badge = format!(" {} ", group_badge_glyph(p.group_num));
+        let bw = str_display_width(&badge);
+        if bw <= rect.w {
+            if p.is_focused {
+                push_fg(out, pal.grad[0], true);
+            } else {
+                push_fg(out, pal.dim, false);
+            }
+            out.push_str(&badge);
+            used_cols += bw;
+        }
+    }
+
+    let right_meta = if !multi_pane {
+        format!(
+            " [{} · {}{}{}] [{}] ",
+            doc.lang.name(),
+            doc.eol.label(),
+            if wrap { " · WRAP" } else { "" },
+            if cfg.relative_numbers { " · REL" } else { "" },
+            pal.name
+        )
+    } else {
+        String::new()
+    };
+    let right_w = str_display_width(&right_meta);
+    let max_tabs_col = if !multi_pane && right_w + 2 < rect.w {
+        rect.w - right_w - 1
+    } else {
+        rect.w
+    };
+
+    // Ensure the active tab is visible even in narrow panes
+    let active_idx = p.tabs.iter().position(|t| t.active).unwrap_or(0);
+    let mut start_tab = 0usize;
+    if p.tabs.len() > 1 {
+        let mut w_to_active = 0usize;
+        for t in p.tabs.iter().take(active_idx + 1) {
+            let lbl_w = str_display_width(&t.name) + if t.dirty { 4 } else { 2 } + 1;
+            w_to_active += lbl_w;
+        }
+        if used_cols + w_to_active > max_tabs_col {
+            start_tab = active_idx;
+        }
+    }
+
+    for (idx, t) in p.tabs.iter().enumerate().skip(start_tab) {
+        let full_label = if t.dirty {
+            format!(" {} ● ", t.name)
+        } else {
+            format!(" {} ", t.name)
+        };
+        let avail = max_tabs_col.saturating_sub(used_cols);
+        if avail < 3 {
+            break;
+        }
+        let label = if str_display_width(&full_label) > avail {
+            if idx == active_idx || idx == start_tab {
+                truncate_to_cols(&full_label, avail)
+            } else {
+                break;
+            }
+        } else {
+            full_label
+        };
+        let lw = str_display_width(&label);
+        let abs_start = rect.x + used_cols;
+        if t.active {
+            if p.is_focused {
+                push_bg(out, pal.tab_active_bg);
+                push_fg(out, pal.grad[0], true);
+            } else {
+                push_bg(out, pal.bar_bg);
+                push_fg(out, pal.fg, false);
+            }
+            out.push_str(&label);
+            push_bg(out, bar_base_bg);
+        } else {
+            push_fg(out, pal.dim, false);
+            out.push_str(&label);
+        }
+        p_layout.tab_hitboxes.push((abs_start, abs_start + lw, idx));
+        used_cols += lw;
+        if used_cols < max_tabs_col {
+            push_fg(out, pal.border, false);
+            out.push('│');
+            used_cols += 1;
+        }
+    }
+
+    if !right_meta.is_empty() && used_cols + right_w <= rect.w {
+        let pad = rect.w - used_cols - right_w;
+        for _ in 0..pad {
+            out.push(' ');
+        }
+        push_fg(out, pal.dim, false);
+        out.push_str(&right_meta);
+    } else {
+        while used_cols < rect.w {
+            out.push(' ');
+            used_cols += 1;
+        }
+    }
+    out.push_str(RST);
+
+    // -------------------------------------------------------------------------
+    // Pane Editor Canvas (`rect.y + 1 .. rect.y + rect.h`)
+    // -------------------------------------------------------------------------
+    let cursors = if p.cursors.is_empty() {
+        vec![Selection::caret(0)]
+    } else {
+        p.cursors.clone()
+    };
+    let primary_idx = p.primary.min(cursors.len() - 1);
+    let primary_sel = cursors[primary_idx];
+    let primary_head = doc.clamp_byte_pos(primary_sel.head);
+    let (primary_row, primary_col) = doc.rope.byte_to_line_col(primary_head);
+
+    let bracket_pair = if p.is_focused && cfg.bracket_match {
+        find_matching_bracket(&doc.rope, primary_head, cfg.block_cursor)
+    } else {
+        None
+    };
+    let git_marks: HashMap<usize, GutterMark> = doc.git.snapshot();
+
+    // Right-edge scrollbar geometry
+    let (sb_start, sb_end, sb_cursor_row) = if show_sb && content_h > 0 {
+        let tot = total_lines.max(1);
+        let thumb_h = ((content_h * content_h) / tot).clamp(1, content_h);
+        let max_scroll = tot.saturating_sub(content_h).max(1);
+        let start = if tot <= content_h {
+            0
+        } else {
+            (p.scroll_row.min(max_scroll) * (content_h - thumb_h)) / max_scroll
+        };
+        let cur_y = (primary_row * content_h.saturating_sub(1)) / tot.saturating_sub(1).max(1);
+        (start, (start + thumb_h).min(content_h), cur_y.min(content_h.saturating_sub(1)))
+    } else {
+        (0, 0, 0)
+    };
+
+    let sel_ranges: Vec<(usize, usize)> = cursors
+        .iter()
+        .filter(|c| !c.is_empty())
+        .map(|c| {
+            let (s, e) = c.range();
+            (doc.clamp_byte_pos(s), doc.clamp_byte_pos(e))
+        })
+        .collect();
+    let sel_chars: usize = sel_ranges
+        .iter()
+        .map(|&(s, e)| doc.rope.slice(s, e).chars().count())
+        .sum();
+    let secondary_carets: Vec<usize> = if p.is_focused {
+        cursors
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != primary_idx)
+            .map(|(_, c)| doc.clamp_byte_pos(c.head))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // Cursorword (only in focused pane)
+    let cursorword_ranges: Vec<(usize, usize)> =
+        if p.is_focused && cfg.cursorword && doc.search.query.is_empty() {
+            if let Some(word) = doc.word_at_primary() {
+                let mut found = Vec::new();
+                let last_vis = (p.scroll_row + content_h + 2).min(total_lines);
+                for r in p.scroll_row..last_vis {
+                    let ls = doc.rope.line_start_byte(r);
+                    let txt = doc.rope.line(r);
+                    for (s, e) in find_whole_word_in_line(&txt, &word) {
+                        found.push((ls + s, ls + e));
+                    }
+                }
+                if found.len() >= 2 { found } else { Vec::new() }
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
+    let indent_w = doc.tab_width.max(1);
+    let active_scope: Option<(usize, usize, usize)> = if p.is_focused && cfg.indent_guides {
+        compute_active_indent_scope(&doc.rope, primary_row, indent_w)
+    } else {
+        None
+    };
+
+    let mut primary_screen_pos: Option<(usize, usize)> = None;
+    let mut screen_y = 0usize;
+    let mut doc_row = p.scroll_row.min(total_lines.saturating_sub(1));
+
+    while screen_y < content_h {
+        let abs_row = content_start_row + screen_y;
+
+        if doc_row >= total_lines {
+            let _ = write!(out, "\x1b[{};{}H", abs_row + 1, rect.x + 1);
+            out.push_str("\x1b[49m");
+            if show_gutter {
+                push_fg(out, pal.border, false);
+                let _ = write!(out, "  {:>width$} │ ", "~", width = num_digits);
+            }
+            out.push_str(RST);
+            for _ in 0..text_w {
+                out.push(' ');
+            }
+            if show_sb {
+                push_scrollbar_cell(out, screen_y, content_h, sb_start, sb_end, sb_cursor_row, pal);
+                out.push_str(RST);
+            }
+            screen_y += 1;
+            continue;
+        }
+
+        let line_start = doc.rope.line_start_byte(doc_row);
+        let line_text = doc.rope.line(doc_row);
+        let spans = doc.syntax.line_spans(&doc.rope, doc_row);
+        let is_cur_line = p.is_focused && doc_row == primary_row;
+
+        let char_info = build_char_cells(&line_text, line_start, &spans, doc.tab_width);
+        let segments: Vec<(usize, usize)> = if wrap && text_w > 0 {
+            split_wrapped_segments(&char_info, text_w)
+        } else {
+            vec![(0, char_info.len())]
+        };
+
+        for (seg_idx, (seg_start, seg_end)) in segments.into_iter().enumerate() {
+            if screen_y >= content_h {
+                break;
+            }
+            let abs_row = content_start_row + screen_y;
+            let _ = write!(out, "\x1b[{};{}H", abs_row + 1, rect.x + 1);
+
+            p_layout.visual_rows.push(VisualRowInfo {
+                doc_row,
+                start_char_col: seg_start,
+                end_char_col: seg_end,
+            });
+
+            // Gutter
+            if show_gutter {
+                let is_bookmarked = doc.bookmarks.contains(&doc_row);
+                if is_cur_line {
+                    push_bg(out, pal.cur_line_bg);
+                } else {
+                    out.push_str("\x1b[49m");
+                }
+                if seg_idx == 0 {
+                    if is_bookmarked {
+                        push_fg(out, pal.grad[2], true);
+                        out.push('◆');
+                    } else if is_cur_line {
+                        push_fg(out, pal.active_line_num, true);
+                        out.push('▸');
+                    } else {
+                        out.push(' ');
+                    }
+                    if is_cur_line {
+                        push_fg(out, pal.active_line_num, true);
+                        let _ = write!(out, " {:>width$} ", doc_row + 1, width = num_digits);
+                    } else if cfg.relative_numbers {
+                        let dist = doc_row.abs_diff(primary_row);
+                        push_fg(out, pal.line_num, false);
+                        let _ = write!(out, " {:>width$} ", dist, width = num_digits);
+                    } else {
+                        push_fg(out, pal.line_num, false);
+                        let _ = write!(out, " {:>width$} ", doc_row + 1, width = num_digits);
+                    }
+                } else {
+                    push_fg(out, pal.dim, false);
+                    let _ = write!(out, "  {:>width$} ", "↪", width = num_digits);
+                }
+
+                match git_marks.get(&doc_row) {
+                    Some(GutterMark::Added) if seg_idx == 0 => {
+                        push_fg(out, pal.ok, false);
+                        out.push_str("▎ ");
+                    }
+                    Some(GutterMark::Modified) if seg_idx == 0 => {
+                        push_fg(out, pal.warn, false);
+                        out.push_str("▎ ");
+                    }
+                    Some(GutterMark::Deleted) if seg_idx == 0 => {
+                        push_fg(out, pal.err, false);
+                        out.push_str("▁ ");
+                    }
+                    _ => {
+                        push_fg(out, pal.border, false);
+                        out.push_str("│ ");
+                    }
+                }
+            }
+
+            // Content cells
+            let h_off = if wrap { 0 } else { p.scroll_col };
+            let mut cur_vis = 0usize;
+            let mut drawn_cols = 0usize;
+
+            if is_cur_line {
+                let on_this_seg = if !wrap {
+                    true
+                } else {
+                    (primary_col >= seg_start && primary_col < seg_end)
+                        || (seg_end == char_info.len() && primary_col == seg_end)
+                };
+                if on_this_seg {
+                    let mut c_vis = 0usize;
+                    for cell in &char_info[seg_start..primary_col.min(seg_end)] {
+                        c_vis += cell.width;
+                    }
+                    if c_vis >= h_off && c_vis - h_off < text_w {
+                        primary_screen_pos = Some((abs_row, rect.x + gutter_w + (c_vis - h_off)));
+                    }
+                }
+            }
+
+            let is_blank_line = line_text.trim().is_empty();
+            let lead_vis = if cfg.indent_guides {
+                if is_blank_line {
+                    blank_line_inherited_indent(&doc.rope, doc_row, indent_w)
+                } else {
+                    leading_visual_width(&line_text, indent_w)
+                }
+            } else {
+                0
+            };
+            let trail_start_idx = if cfg.show_trailing && !is_blank_line {
+                let trimmed_chars = line_text.trim_end_matches(|c| c == ' ' || c == '\t').chars().count();
+                if is_cur_line && primary_col >= trimmed_chars {
+                    char_info.len()
+                } else {
+                    trimmed_chars
+                }
+            } else {
+                char_info.len()
+            };
+            let ruler_col = if !wrap && cfg.color_column > 0 {
+                Some(cfg.color_column)
+            } else {
+                None
+            };
+
+            for (local_i, cell) in char_info[seg_start..seg_end].iter().enumerate() {
+                let char_idx = seg_start + local_i;
+                let cw = cell.width;
+                if cur_vis + cw <= h_off {
+                    cur_vis += cw;
+                    continue;
+                }
+                if drawn_cols + cw > text_w {
+                    break;
+                }
+
+                let byte_abs = cell.abs_byte;
+                let is_sec_caret = secondary_carets.contains(&byte_abs);
+                let is_selected = sel_ranges.iter().any(|&(s, e)| byte_abs >= s && byte_abs < e);
+                let is_active_match = p.is_focused
+                    && doc
+                        .search
+                        .active_match()
+                        .is_some_and(|(s, e)| byte_abs >= s && byte_abs < e);
+                let is_match = !is_active_match
+                    && doc
+                        .search
+                        .matches
+                        .iter()
+                        .any(|&(s, e)| byte_abs >= s && byte_abs < e);
+                let is_bracket = bracket_pair.is_some_and(|(a, b)| byte_abs == a || byte_abs == b);
+                let is_cursorword = !is_selected
+                    && !is_match
+                    && !is_active_match
+                    && cursorword_ranges
+                        .iter()
+                        .any(|&(s, e)| byte_abs >= s && byte_abs < e);
+                let is_ruler = ruler_col == Some(cur_vis);
+
+                let eff_kind = match cell.kind {
+                    TokenKind::Rainbow(_) | TokenKind::BracketError if !cfg.rainbow_brackets => {
+                        TokenKind::Punctuation
+                    }
+                    TokenKind::TodoBadge | TokenKind::FixmeBadge if !cfg.comment_badges => {
+                        TokenKind::Comment
+                    }
+                    other => other,
+                };
+                let style = pal.token_style(eff_kind);
+                let mut fg_c = style.fg;
+                let mut bold = style.bold;
+                let mut italic = style.italic;
+                let mut underline = false;
+                let mut glyph_override: Option<char> = None;
+
+                let bg_c = if is_sec_caret {
+                    fg_c = pal.bar_bg;
+                    bold = true;
+                    italic = false;
+                    Some(pal.grad[0])
+                } else if is_selected {
+                    Some(pal.sel_bg)
+                } else if is_active_match {
+                    bold = true;
+                    Some(pal.active_match_bg)
+                } else if is_match {
+                    Some(pal.match_bg)
+                } else if is_bracket {
+                    fg_c = pal.bracket_fg;
+                    bold = true;
+                    italic = false;
+                    underline = true;
+                    Some(pal.bracket_bg)
+                } else if is_cursorword {
+                    underline = true;
+                    Some(pal.word_hl_bg)
+                } else if let Some(tok_bg) = style.bg {
+                    Some(tok_bg)
+                } else if is_cur_line {
+                    Some(pal.cur_line_bg)
+                } else if is_ruler {
+                    Some(pal.cur_line_bg)
+                } else {
+                    None
+                };
+
+                if style.bg.is_some() && !is_sec_caret && !is_bracket && bg_c != style.bg {
+                    fg_c = pal.fg;
+                }
+
+                if !is_sec_caret && !is_selected && !is_match && !is_active_match {
+                    if char_idx >= trail_start_idx && (cell.ch == ' ' || cell.ch == '\t') {
+                        fg_c = pal.err;
+                        italic = false;
+                        glyph_override = Some('·');
+                    } else if cfg.indent_guides
+                        && cell.ch == ' '
+                        && cur_vis > 0
+                        && cur_vis < lead_vis
+                        && cur_vis % indent_w == 0
+                    {
+                        let in_active_scope = active_scope.is_some_and(|(s_r, e_r, a_col)| {
+                            doc_row >= s_r && doc_row <= e_r && cur_vis == a_col
+                        });
+                        fg_c = if in_active_scope { pal.indent_active } else { pal.indent_guide };
+                        italic = false;
+                        glyph_override = Some('▏');
+                    }
+                }
+
+                if let Some(bg) = bg_c {
+                    push_bg(out, bg);
+                } else {
+                    out.push_str("\x1b[49m");
+                }
+                push_fg_styled(out, fg_c, bold, italic);
+                if underline {
+                    out.push_str("\x1b[4m");
+                }
+
+                if cell.ch == '\t' {
+                    if let Some(g) = glyph_override {
+                        out.push(g);
+                        for _ in 1..cw {
+                            out.push(' ');
+                        }
+                    } else {
+                        for _ in 0..cw {
+                            out.push(' ');
+                        }
+                    }
+                } else {
+                    out.push(glyph_override.unwrap_or(cell.ch));
+                }
+                if underline {
+                    out.push_str("\x1b[24m");
+                }
+                cur_vis += cw;
+                drawn_cols += cw;
+            }
+
+            // Secondary caret at end-of-line
+            let eol_byte = line_start + line_text.len();
+            if seg_end == char_info.len()
+                && secondary_carets.contains(&eol_byte)
+                && drawn_cols < text_w
+                && cur_vis >= h_off
+            {
+                push_bg(out, pal.grad[0]);
+                push_fg(out, pal.bar_bg, true);
+                out.push(' ');
+                drawn_cols += 1;
+            }
+
+            // Fill remaining width to EXACT `text_w` columns (never `\x1b[K`!)
+            while drawn_cols < text_w {
+                let vis_x = h_off + drawn_cols;
+                let is_blank_guide = is_blank_line
+                    && cfg.indent_guides
+                    && seg_idx == 0
+                    && vis_x > 0
+                    && vis_x < lead_vis
+                    && vis_x % indent_w == 0;
+                let is_ruler = ruler_col == Some(vis_x);
+
+                if is_cur_line || is_ruler {
+                    push_bg(out, pal.cur_line_bg);
+                } else {
+                    out.push_str("\x1b[49m");
+                }
+                if is_blank_guide {
+                    let in_active_scope = active_scope.is_some_and(|(s_r, e_r, a_col)| {
+                        doc_row >= s_r && doc_row <= e_r && vis_x == a_col
+                    });
+                    push_fg(out, if in_active_scope { pal.indent_active } else { pal.indent_guide }, false);
+                    out.push('▏');
+                } else {
+                    out.push(' ');
+                }
+                drawn_cols += 1;
+            }
+
+            if show_sb {
+                out.push_str("\x1b[49m");
+                push_scrollbar_cell(out, screen_y, content_h, sb_start, sb_end, sb_cursor_row, pal);
+            }
+            out.push_str(RST);
+            screen_y += 1;
+        }
+
+        doc_row += 1;
+    }
+
+    (p_layout, primary_screen_pos, sel_chars, primary_row, primary_col, cursors.len())
 }
 
 fn is_ident_byte(b: u8) -> bool {
@@ -1159,6 +1404,10 @@ fn split_wrapped_segments(cells: &[CharCell], max_w: usize) -> Vec<(usize, usize
     }
     segs.push((start, cells.len()));
     segs
+}
+
+fn str_display_width(s: &str) -> usize {
+    s.chars().map(char_display_width).sum()
 }
 
 fn truncate_to_cols(s: &str, max_cols: usize) -> String {

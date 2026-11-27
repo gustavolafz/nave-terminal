@@ -223,6 +223,7 @@ impl InputDecoder {
                     0x08 => KeyEvent::ctrl(KeyCode::Backspace), // WT Ctrl+Backspace
                     0x09 => KeyEvent::plain(KeyCode::Tab),
                     0x0a | 0x0d => KeyEvent::plain(KeyCode::Enter),
+                    0x1c => KeyEvent::ctrl(KeyCode::Char('\\')), // Ctrl+\ (split pane)
                     0x1f => KeyEvent::ctrl(KeyCode::Char('/')), // Ctrl+/
                     0x7f => KeyEvent::plain(KeyCode::Backspace),
                     1..=26 => KeyEvent::ctrl(KeyCode::Char((b'a' + (b - 1)) as char)),
@@ -461,6 +462,23 @@ mod tests {
                 alt: false,
                 shift: false,
             }))
+        );
+
+        // Multi-pane keys: Ctrl+PageUp, Ctrl+PageDown, Ctrl+Shift+PageUp, Ctrl+\ (0x1c & CSI-u), Ctrl+1, Alt+=, Shift+Alt+0
+        d.push(b"\x1b[5;5~\x1b[6;5~\x1b[5;6~\x1c\x1b[92;5u\x1b[49;5u\x1b=\x1b[48;4u");
+        assert_eq!(d.next_event(), Some(Event::Key(KeyEvent::ctrl(KeyCode::PageUp))));
+        assert_eq!(d.next_event(), Some(Event::Key(KeyEvent::ctrl(KeyCode::PageDown))));
+        assert_eq!(
+            d.next_event(),
+            Some(Event::Key(KeyEvent { code: KeyCode::PageUp, ctrl: true, alt: false, shift: true }))
+        );
+        assert_eq!(d.next_event(), Some(Event::Key(KeyEvent::ctrl(KeyCode::Char('\\')))));
+        assert_eq!(d.next_event(), Some(Event::Key(KeyEvent::ctrl(KeyCode::Char('\\')))));
+        assert_eq!(d.next_event(), Some(Event::Key(KeyEvent::ctrl(KeyCode::Char('1')))));
+        assert_eq!(d.next_event(), Some(Event::Key(KeyEvent::alt(KeyCode::Char('=')))));
+        assert_eq!(
+            d.next_event(),
+            Some(Event::Key(KeyEvent { code: KeyCode::Char('0'), ctrl: false, alt: true, shift: true }))
         );
     }
 }
