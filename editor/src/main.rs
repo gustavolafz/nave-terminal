@@ -2444,6 +2444,20 @@ impl App {
                     self.open_next_pending_pane_picker();
                     return;
                 }
+                KeyCode::Up if k.alt => {
+                    pk.go_parent();
+                    return;
+                }
+                KeyCode::Left if pk.query.is_empty() && pk.browse_dir.is_some() => {
+                    pk.go_parent();
+                    return;
+                }
+                KeyCode::Right if pk.query.is_empty() && pk.browse_dir.is_some() => {
+                    if let Some(PickerAction::BrowseDir(dir)) = pk.chosen() {
+                        pk.browse_to(&dir);
+                    }
+                    return;
+                }
                 KeyCode::Up => {
                     pk.move_sel(-1);
                     return;
@@ -2470,7 +2484,13 @@ impl App {
                     pk.refilter();
                     return;
                 }
-                KeyCode::Enter => pk.chosen(),
+                KeyCode::Enter => {
+                    if let Some(PickerAction::BrowseDir(dir)) = pk.chosen() {
+                        pk.browse_to(&dir);
+                        return;
+                    }
+                    pk.chosen()
+                }
                 _ => return,
             }
         } else {
@@ -2481,6 +2501,7 @@ impl App {
         if let Some(act) = action {
             match act {
                 PickerAction::OpenFile(path) => self.open_or_focus_file(&path, None),
+                PickerAction::BrowseDir(_) => {}
                 PickerAction::ToggleVimVisual => {
                     self.cfg.toggle_vim_visual();
                     self.term_sync_needed = true;

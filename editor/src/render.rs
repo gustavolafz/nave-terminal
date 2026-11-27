@@ -3,7 +3,7 @@ use crate::document::{Document, Selection};
 use crate::git::GutterMark;
 use crate::layout::{ComputedLayout, DividerHit, PaneId, Rect, SplitAxis};
 use crate::palette::{lerp_grad, push_bg, push_fg, push_fg_styled, push_grad_text, Palette, TokenKind};
-use crate::picker::Picker;
+use crate::picker::{Picker, PickerAction};
 use crate::syntax::{find_matching_bracket, Span};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -673,6 +673,7 @@ pub fn render_editor(
                 push_fg(&mut out, if is_sel { pal.grad[0] } else { pal.dim }, is_sel);
                 out.push_str(if is_sel { " › " } else { "   " });
 
+                let is_dir = matches!(item.action, PickerAction::BrowseDir(_));
                 let mut written = 3usize;
                 for (ci, ch) in item.label.chars().enumerate() {
                     let cw = char_display_width(ch);
@@ -681,6 +682,8 @@ pub fn render_editor(
                     }
                     if scored.matched_chars.contains(&ci) {
                         push_fg(&mut out, pal.grad[0], true);
+                    } else if is_dir {
+                        push_fg(&mut out, pal.std_bi, is_sel);
                     } else {
                         push_fg(&mut out, pal.fg, is_sel);
                     }
@@ -723,8 +726,13 @@ pub fn render_editor(
         // Bottom border
         let _ = write!(out, "\x1b[{};{}H", y0 + 4 + max_items, x0 + 1);
         push_bg(&mut out, pal.bar_bg);
-        let hint = format!(" {}/{} · Enter abrir · Esc fechar ", pk.filtered.len(), pk.items.len());
-        let bf = modal_w.saturating_sub(hint.chars().count() + 2);
+        let raw_hint = if pk.browse_dir.is_some() {
+            format!(" {}/{} · Alt+↑/← subir · Enter abrir · Esc fechar ", pk.filtered.len(), pk.items.len())
+        } else {
+            format!(" {}/{} · Enter abrir · Esc fechar ", pk.filtered.len(), pk.items.len())
+        };
+        let hint = truncate_to_cols(&raw_hint, modal_w.saturating_sub(4));
+        let bf = modal_w.saturating_sub(str_display_width(&hint) + 2);
         let bot = format!("╰{}{}─╯", "─".repeat(bf.saturating_sub(1)), hint);
         push_grad_text(&mut out, &bot, pal.grad, false);
         out.push_str(RST);

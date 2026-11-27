@@ -1,6 +1,8 @@
+use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug)]
 pub struct PickerItem {
@@ -12,6 +14,7 @@ pub struct PickerItem {
 #[derive(Clone, Debug)]
 pub enum PickerAction {
     OpenFile(PathBuf),
+    BrowseDir(PathBuf),
     ToggleVimVisual,
     ToggleRelativeNumbers,
     ToggleBlockCursor,
@@ -57,10 +60,12 @@ pub struct ScoredItem {
 
 pub struct Picker {
     pub title: String,
+    pub title_prefix: Option<String>,
     pub query: String,
     pub items: Vec<PickerItem>,
     pub filtered: Vec<ScoredItem>,
     pub selected: usize,
+    pub browse_dir: Option<PathBuf>,
     pub create_base: Option<PathBuf>,
 }
 
@@ -70,39 +75,117 @@ impl Picker {
     }
 
     pub fn quick_open_titled(base_dir: &Path, title_prefix: Option<&str>) -> Self {
-        let root = find_project_root(base_dir).unwrap_or_else(|| base_dir.to_path_buf());
-        let mut files = Vec::new();
-        walk_files(&root, &root, &mut files, 0, 8_000);
-        files.sort();
-        let items = files
-            .into_iter()
-            .map(|rel| {
-                let full = root.join(&rel);
-                PickerItem {
-                    label: rel.to_string_lossy().into_owned(),
-                    detail: String::new(),
-                    action: PickerAction::OpenFile(full),
-                }
-            })
-            .collect();
-        let dir_lbl = base_dir
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(".");
-        let title = match title_prefix {
-            Some(pref) => format!("{} · Abrir/Criar ({})", pref, dir_lbl),
-            None => format!("Abrir Arquivo ({})", root.file_name().and_then(|s| s.to_str()).unwrap_or(".")),
-        };
+        let abs_base = fs::canonicalize(base_dir).unwrap_or_else(|_| base_dir.to_path_buf());
+        let root = find_project_root(&abs_base).unwrap_or(abs_base);
         let mut p = Self {
-            title,
+            title: String::new(),
+            title_prefix: title_prefix.map(|s| s.to_string()),
             query: String::new(),
-            items,
+            items: Vec::new(),
             filtered: Vec::new(),
             selected: 0,
-            create_base: Some(base_dir.to_path_buf()),
+            browse_dir: None,
+            create_base: None,
         };
-        p.refilter();
+        p.browse_to(&root);
         p
+    }
+
+    pub fn browse_to(&mut self, dir: &Path) {
+        let abs = fs::canonicalize(dir).unwrap_or_else(|_| normalize_path(dir));
+        let mut items = Vec::new();
+
+        // 1. Parent directory navigation entry (`../`) always at top when available
+        if let Some(parent) = abs.parent() {
+            let parent_path = parent.to_path_buf();
+            let parent_name = parent
+                .file_name()
+                .and_then(|s| s.to_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("/");
+            items.push(PickerItem {
+                label: "../".to_string(),
+                detail: format!("↑ pasta mae ({})", parent_name),
+                action: PickerAction::BrowseDir(parent_path),
+            });
+        }
+
+        // 2. Direct subdirectories (sorted) so user can enter any sibling/child folder
+        let mut subdirs = Vec::new();
+        let mut direct_files = Vec::new();
+        if let Ok(entries) = fs::read_dir(&abs) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if matches!(name.as_str(), ".git" | "node_modules" | "target" | "__pycache__") {
+                    continue;
+                }
+                let Ok(ft) = entry.file_type() else {
+                    continue;
+                };
+                if ft.is_dir() {
+                    subdirs.push((name, path));
+                } else if ft.is_file() {
+                    direct_files.push((name, path));
+                }
+            }
+        }
+        subdirs.sort_by(|a, b| a.0.cmp(&b.0));
+        direct_files.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (name, path) in subdirs {
+            items.push(PickerItem {
+                label: format!("{}/", name),
+                detail: "pasta ▸".to_string(),
+                action: PickerAction::BrowseDir(path),
+            });
+        }
+
+        // 3. Direct files first, then nested files (time-bounded so `/` or `~` never lags)
+        for (name, path) in direct_files {
+            items.push(PickerItem {
+                label: name,
+                detail: String::new(),
+                action: PickerAction::OpenFile(path),
+            });
+        }
+
+        let mut nested_files = Vec::new();
+        let deadline = Instant::now() + Duration::from_millis(60);
+        walk_nested_files(&abs, &abs, &mut nested_files, 0, 4_000, deadline);
+        nested_files.sort();
+        for rel in nested_files {
+            let full = abs.join(&rel);
+            items.push(PickerItem {
+                label: rel.to_string_lossy().into_owned(),
+                detail: String::new(),
+                action: PickerAction::OpenFile(full),
+            });
+        }
+
+        let dir_lbl = compact_dir_label(&abs);
+        self.title = match self.title_prefix.as_deref() {
+            Some(pref) => format!("{} · {}", pref, dir_lbl),
+            None => format!("Abrir Arquivo · {}", dir_lbl),
+        };
+        self.query.clear();
+        self.items = items;
+        self.selected = 0;
+        self.browse_dir = Some(abs.clone());
+        self.create_base = Some(abs);
+        self.refilter();
+    }
+
+    pub fn go_parent(&mut self) -> bool {
+        let Some(parent) = self
+            .browse_dir
+            .as_ref()
+            .and_then(|d| d.parent().map(Path::to_path_buf))
+        else {
+            return false;
+        };
+        self.browse_to(&parent);
+        true
     }
 
     pub fn command_palette(cfg: &crate::config::EditorConfig, eol: &str) -> Self {
@@ -309,10 +392,12 @@ impl Picker {
         ];
         let mut p = Self {
             title: "Command Palette".into(),
+            title_prefix: None,
             query: String::new(),
             items,
             filtered: Vec::new(),
             selected: 0,
+            browse_dir: None,
             create_base: None,
         };
         p.refilter();
@@ -367,15 +452,61 @@ impl Picker {
         if let Some(ref base) = self.create_base {
             let q = self.query.trim();
             if !q.is_empty() {
-                let target = if Path::new(q).is_absolute() {
+                let raw = if Path::new(q).is_absolute() {
                     PathBuf::from(q)
                 } else {
                     base.join(q)
                 };
+                let target = normalize_path(&raw);
+                if target.is_dir() {
+                    return Some(PickerAction::BrowseDir(target));
+                }
                 return Some(PickerAction::OpenFile(target));
             }
         }
         None
+    }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push(comp.as_os_str());
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        out
+    }
+}
+
+fn compact_dir_label(dir: &Path) -> String {
+    let raw = if let Ok(home) = env::var("HOME") {
+        let hp = Path::new(&home);
+        if dir == hp {
+            "~".to_string()
+        } else if let Ok(rel) = dir.strip_prefix(hp) {
+            format!("~/{}", rel.to_string_lossy())
+        } else {
+            dir.to_string_lossy().into_owned()
+        }
+    } else {
+        dir.to_string_lossy().into_owned()
+    };
+    let chars: Vec<char> = raw.chars().collect();
+    if chars.len() <= 32 {
+        raw
+    } else {
+        let tail: String = chars[chars.len() - 30..].iter().collect();
+        format!("…{}", tail)
     }
 }
 
@@ -439,8 +570,15 @@ fn find_project_root(base: &Path) -> Option<PathBuf> {
     None
 }
 
-fn walk_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>, depth: usize, limit: usize) {
-    if depth > 8 || out.len() >= limit {
+fn walk_nested_files(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    depth: usize,
+    limit: usize,
+    deadline: Instant,
+) {
+    if depth > 6 || out.len() >= limit || Instant::now() >= deadline {
         return;
     }
     let entries = match fs::read_dir(dir) {
@@ -448,7 +586,7 @@ fn walk_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>, depth: usize, lim
         Err(_) => return,
     };
     for entry in entries.flatten() {
-        if out.len() >= limit {
+        if out.len() >= limit || Instant::now() >= deadline {
             return;
         }
         let path = entry.path();
@@ -456,7 +594,27 @@ fn walk_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>, depth: usize, lim
         let name_str = name.to_string_lossy();
         if matches!(
             name_str.as_ref(),
-            ".git" | "node_modules" | "target" | ".venv" | "venv" | "__pycache__" | ".next" | "dist" | "build"
+            ".git"
+                | "node_modules"
+                | "target"
+                | ".venv"
+                | "venv"
+                | "__pycache__"
+                | ".next"
+                | "dist"
+                | "build"
+                | ".cache"
+                | ".cargo"
+                | ".rustup"
+                | ".npm"
+                | ".nvm"
+                | ".local"
+                | ".vscode-server"
+                | "proc"
+                | "sys"
+                | "dev"
+                | "run"
+                | "snap"
         ) {
             continue;
         }
@@ -465,11 +623,57 @@ fn walk_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>, depth: usize, lim
             Err(_) => continue,
         };
         if ft.is_dir() {
-            walk_files(root, &path, out, depth + 1, limit);
-        } else if ft.is_file() {
+            if depth >= 1 && name_str.starts_with('.') {
+                continue;
+            }
+            walk_nested_files(root, &path, out, depth + 1, limit, deadline);
+        } else if ft.is_file() && depth >= 1 {
             if let Ok(rel) = path.strip_prefix(root) {
                 out.push(rel.to_path_buf());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quick_open_navigates_parent_and_child_dirs() {
+        let base = env::temp_dir().join(format!("nave_picker_test_{}", std::process::id()));
+        let child_a = base.join("pasta_a");
+        let child_b = base.join("pasta_b");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&child_a).unwrap();
+        fs::create_dir_all(&child_b).unwrap();
+        fs::write(child_a.join("um.txt"), "1").unwrap();
+        fs::write(child_b.join("dois.txt"), "2").unwrap();
+        fs::write(base.join("raiz.txt"), "0").unwrap();
+
+        let mut pk = Picker::quick_open_titled(&child_a, Some("Painel 2"));
+        assert_eq!(pk.items[0].label, "../");
+        assert!(matches!(pk.items[0].action, PickerAction::BrowseDir(_)));
+
+        assert!(pk.go_parent());
+        assert_eq!(pk.browse_dir.as_deref(), Some(fs::canonicalize(&base).unwrap().as_path()));
+        assert!(pk.title.starts_with("Painel 2 · "));
+        assert!(pk.items.iter().any(|it| it.label == "pasta_b/"));
+        assert!(pk.items.iter().any(|it| it.label == "raiz.txt"));
+
+        // Enter pasta_b
+        pk.browse_to(&child_b);
+        assert!(pk.items.iter().any(|it| it.label == "dois.txt"));
+
+        // Relative creation after navigating to parent resolves cleanly
+        assert!(pk.go_parent());
+        pk.query = "novo_na_mae.rs".into();
+        pk.refilter();
+        match pk.chosen() {
+            Some(PickerAction::OpenFile(p)) => assert_eq!(p.file_name().unwrap(), "novo_na_mae.rs"),
+            other => panic!("Expected OpenFile for new file in parent, got {:?}", other),
+        }
+
+        let _ = fs::remove_dir_all(&base);
     }
 }
