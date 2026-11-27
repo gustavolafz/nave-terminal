@@ -572,6 +572,37 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
             continue;
         }
 
+        // C/C++ preprocessor directives (`#include <header>`, `#define NAME`, `#pragma ...`)
+        if lang == Language::CLike && b == b'#' {
+            let start = i;
+            i += 1;
+            while i < len && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            let dir_start = i;
+            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let dir_word = &line[dir_start..i];
+            spans.push(Span { start, end: i, kind: TokenKind::Keyword });
+            // Highlight `<header.h>` as String right after `#include` (exact VS Code `string.quoted.other.lt-gt.include.cpp`)
+            if dir_word == "include" {
+                while i < len && bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                if i < len && bytes[i] == b'<' {
+                    let hs = i;
+                    if let Some(rel) = line[i..].find('>') {
+                        i += rel + 1;
+                        spans.push(Span { start: hs, end: i, kind: TokenKind::String });
+                    }
+                }
+            }
+            prev_word = dir_word;
+            prev_non_ws_byte = Some(b'#');
+            continue;
+        }
+
         // Attributes / decorators (#[...], #![...], @decorator)
         if (lang == Language::Rust && (rest.starts_with("#[") || rest.starts_with("#![")))
             || (matches!(lang, Language::Python | Language::JsTs | Language::CLike) && b == b'@')
@@ -618,7 +649,7 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
             continue;
         }
 
-        // Shell CLI flags (--flag, -la)
+        // Shell CLI flags (--flag, -la) — VS Code `constant.other.option.shell`
         if lang == Language::Shell
             && b == b'-'
             && (i == 0 || bytes[i - 1].is_ascii_whitespace())
@@ -630,13 +661,13 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
             while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_') {
                 i += 1;
             }
-            spans.push(Span { start, end: i, kind: TokenKind::Parameter });
+            spans.push(Span { start, end: i, kind: TokenKind::Constant });
             prev_non_ws_byte = Some(b'-');
             prev_word = "";
             continue;
         }
 
-        // Numbers (decimal, hex, binary, octal, floats, suffixes)
+        // Numbers (decimal, hex, binary, octal, floats, scientific 10e9 / 1e-5, suffixes)
         if b.is_ascii_digit() {
             let start = i;
             i += 1;
@@ -644,8 +675,10 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
                 && (bytes[i].is_ascii_alphanumeric()
                     || bytes[i] == b'_'
                     || bytes[i] == b'.'
-                    || bytes[i] == b'x'
-                    || bytes[i] == b'X')
+                    || ((bytes[i] == b'+' || bytes[i] == b'-')
+                        && matches!(bytes[i - 1], b'e' | b'E')
+                        && i + 1 < len
+                        && bytes[i + 1].is_ascii_digit()))
             {
                 if bytes[i] == b'.' && i + 1 < len && bytes[i + 1] == b'.' {
                     break; // Don't eat Rust range `0..10`
@@ -714,7 +747,10 @@ pub fn lex_line(lang: Language, line: &str, mut state: LineState) -> (Vec<Span>,
                 TokenKind::Function
             } else if after_dot {
                 TokenKind::Property
-            } else if is_screaming_const(word) && !matches!(lang, Language::Sql | Language::Dockerfile) {
+            } else if matches!(lang, Language::Rust | Language::Python) && is_screaming_const(word) {
+                // Only Rust (`constant.other.caps.rust`) and Python (`constant.other.caps.python`)
+                // highlight ALL_CAPS identifiers as constants in VS Code TextMate grammars;
+                // C/C++/Java/C#/JS/TS/Go leave `const int INF = 10e9;` as plain variables.
                 TokenKind::Constant
             } else if is_type_name(lang, word) {
                 TokenKind::Type
@@ -1148,10 +1184,14 @@ fn is_keyword(lang: Language, w: &str) -> bool {
     match lang {
         Language::Rust => matches!(
             w,
+            // Keywords + Rust `storage.type.primitive.rust` / `storage.type.numeric.rust`
             "fn" | "let" | "mut" | "pub" | "struct" | "enum" | "impl" | "trait" | "for" | "in"
                 | "while" | "loop" | "if" | "else" | "match" | "return" | "use" | "mod" | "crate"
                 | "const" | "static" | "type" | "where" | "async" | "await" | "move" | "ref"
                 | "unsafe" | "extern" | "as" | "break" | "continue" | "dyn"
+                | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+                | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+                | "f16" | "f32" | "f64" | "f128" | "bool" | "char" | "str"
         ),
         Language::Python => matches!(
             w,
@@ -1168,7 +1208,7 @@ fn is_keyword(lang: Language, w: &str) -> bool {
                 | "from" | "as" | "new" | "try" | "catch" | "finally" | "throw"
                 | "async" | "await" | "typeof" | "instanceof" | "in" | "of" | "delete"
                 | "readonly" | "public" | "private" | "protected" | "static" | "abstract"
-                | "declare" | "namespace" | "keyof" | "infer" | "satisfies"
+                | "declare" | "namespace" | "keyof" | "infer" | "satisfies" | "constructor" | "override"
         ),
         Language::Shell => matches!(
             w,
@@ -1196,19 +1236,29 @@ fn is_keyword(lang: Language, w: &str) -> bool {
         }
         Language::CLike => matches!(
             w,
+            // Keywords + C/C++/Java/C# `storage.type.built-in.primitive` / `storage.type.primitive`
             "if" | "else" | "for" | "while" | "do" | "switch" | "case" | "default" | "break"
                 | "continue" | "return" | "struct" | "class" | "enum" | "union" | "typedef"
                 | "const" | "static" | "extern" | "public" | "private" | "protected" | "using"
                 | "namespace" | "new" | "delete" | "var" | "sizeof" | "try" | "catch" | "throw"
                 | "throws" | "finally" | "async" | "await" | "interface" | "extends" | "implements"
                 | "package" | "import" | "final" | "override" | "virtual" | "inline" | "template"
-                | "typename" | "auto" | "constexpr" | "sealed" | "record"
+                | "typename" | "auto" | "constexpr" | "consteval" | "noexcept" | "decltype"
+                | "mutable" | "volatile" | "register" | "friend" | "operator" | "explicit"
+                | "sealed" | "record" | "goto" | "delegate" | "event"
+                | "void" | "bool" | "boolean" | "_Bool" | "byte" | "sbyte" | "char" | "wchar_t"
+                | "char8_t" | "char16_t" | "char32_t" | "short" | "ushort" | "int" | "uint"
+                | "long" | "ulong" | "float" | "double" | "decimal" | "signed" | "unsigned"
         ),
         Language::Go => matches!(
             w,
+            // Keywords + Go `storage.type.*` built-in types
             "package" | "import" | "func" | "type" | "struct" | "interface" | "map" | "chan"
                 | "var" | "const" | "if" | "else" | "for" | "range" | "switch" | "case" | "default"
                 | "select" | "return" | "go" | "defer" | "break" | "continue" | "fallthrough" | "goto"
+                | "string" | "bool" | "int" | "int8" | "int16" | "int32" | "int64"
+                | "uint" | "uint8" | "uint16" | "uint32" | "uint64" | "uintptr"
+                | "float32" | "float64" | "complex64" | "complex128" | "byte" | "rune" | "error"
         ),
         _ => false,
     }
@@ -1248,9 +1298,7 @@ fn is_type_name(lang: Language, w: &str) -> bool {
         Language::Rust => {
             matches!(
                 w,
-                "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64"
-                    | "i128" | "isize" | "f32" | "f64" | "bool" | "char" | "str" | "Self"
-                    | "String" | "Vec" | "Option" | "Result" | "Box" | "Arc" | "Rc" | "Mutex"
+                "Self" | "String" | "Vec" | "Option" | "Result" | "Box" | "Arc" | "Rc" | "Mutex"
                     | "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet" | "Path" | "PathBuf"
                     | "Instant" | "Duration" | "Cow"
             ) || is_pascal_case(w)
@@ -1259,8 +1307,9 @@ fn is_type_name(lang: Language, w: &str) -> bool {
             matches!(
                 w,
                 "int" | "float" | "str" | "bool" | "list" | "dict" | "tuple" | "set" | "bytes"
-                    | "object" | "Any" | "Optional" | "Union" | "List" | "Dict" | "Tuple" | "Set"
-                    | "Callable" | "Path" | "Sequence" | "Mapping" | "Iterable"
+                    | "bytearray" | "complex" | "frozenset" | "object" | "Any" | "Optional"
+                    | "Union" | "List" | "Dict" | "Tuple" | "Set" | "Callable" | "Path"
+                    | "Sequence" | "Mapping" | "Iterable"
             ) || is_pascal_case(w)
         }
         Language::JsTs => {
@@ -1275,19 +1324,17 @@ fn is_type_name(lang: Language, w: &str) -> bool {
         Language::CLike => {
             matches!(
                 w,
-                "void" | "bool" | "boolean" | "byte" | "char" | "short" | "int" | "long" | "float"
-                    | "double" | "unsigned" | "signed" | "size_t" | "ssize_t" | "int32_t" | "uint32_t"
-                    | "int64_t" | "uint64_t" | "uint8_t" | "string" | "object" | "decimal"
+                "size_t" | "ssize_t" | "ptrdiff_t" | "intptr_t" | "uintptr_t" | "time_t"
+                    | "int8_t" | "int16_t" | "int32_t" | "int64_t"
+                    | "uint8_t" | "uint16_t" | "uint32_t" | "uint64_t"
+                    | "string" | "string_view" | "vector" | "map" | "unordered_map" | "set"
+                    | "unordered_set" | "multiset" | "multimap" | "pair" | "tuple" | "array"
+                    | "queue" | "stack" | "priority_queue" | "deque" | "bitset" | "list"
+                    | "shared_ptr" | "unique_ptr" | "weak_ptr" | "optional" | "variant"
+                    | "stringstream" | "ifstream" | "ofstream" | "istream" | "ostream"
             ) || is_pascal_case(w)
         }
-        Language::Go => {
-            matches!(
-                w,
-                "string" | "bool" | "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8"
-                    | "uint16" | "uint32" | "uint64" | "uintptr" | "float32" | "float64" | "byte"
-                    | "rune" | "error" | "any"
-            ) || is_pascal_case(w)
-        }
+        Language::Go => matches!(w, "any" | "comparable") || is_pascal_case(w),
         _ => false,
     }
 }
@@ -1443,5 +1490,25 @@ mod tests {
         assert_eq!(pkind("int"), Some(TokenKind::Type));
         assert_eq!(pkind("None"), Some(TokenKind::Constant));
         assert_eq!(pkind("# calc"), Some(TokenKind::Comment));
+
+        // C++: exact VS Code TextMate alignment (`const int INF = 10e9;` + `#include <bits/stdc++.h>`)
+        let cpp_line = "const int INF = 10e9;";
+        let (cspans, _) = lex_line(Language::CLike, cpp_line, LineState::Normal);
+        let ckind = |needle: &str| {
+            let s = cpp_line.find(needle).unwrap();
+            let e = s + needle.len();
+            cspans.iter().find(|sp| sp.start == s && sp.end == e).map(|sp| sp.kind)
+        };
+        assert_eq!(ckind("const"), Some(TokenKind::Keyword));
+        assert_eq!(ckind("int"), Some(TokenKind::Keyword));
+        assert_eq!(ckind("INF"), None); // Plain white variable, matching VS Code!
+        assert_eq!(ckind("="), Some(TokenKind::Operator));
+        assert_eq!(ckind("10e9"), Some(TokenKind::Number));
+        assert_eq!(ckind(";"), Some(TokenKind::Punctuation));
+
+        let inc_line = "#include <bits/stdc++.h>";
+        let (ispans, _) = lex_line(Language::CLike, inc_line, LineState::Normal);
+        assert_eq!(ispans[0].kind, TokenKind::Keyword);
+        assert_eq!(ispans[1].kind, TokenKind::String);
     }
 }
