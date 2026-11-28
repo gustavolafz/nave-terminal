@@ -496,6 +496,64 @@ function winopen {
   (explorer.exe "$win_path" >/dev/null 2>&1 &)
 }
 
+# Copia o caminho estilo Windows Explorer (\\wsl.localhost\Ubuntu\...) da pasta atual ou arquivo:
+#   wp / winpath                -> copia o caminho Windows da pasta atual (.)
+#   wp sol.cpp                  -> copia o caminho Windows do arquivo (otimo p/ upload no Chrome/USACO!)
+#   wp -l [alvo]                -> copia o caminho Linux absoluto (/home/...)
+#   wp -o [alvo]                -> copia e tambem abre no Explorer
+#   wp -p [alvo]                -> imprime apenas o caminho puro (sem prefixo)
+function winpath {
+  local mode="win" open_exp=0 plain=0 target="."
+  while (( $# > 0 )); do
+    case "$1" in
+      -h|--help)
+        print -P "%F{${_NAVE_C[dir]:-39}}Uso: wp | winpath [-l|-o|-p] [pasta|arquivo]%f"
+        print -r -- "  wp                Copia caminho Windows da pasta atual (\\\\wsl.localhost\\...)"
+        print -r -- "  wp sol.cpp        Copia caminho Windows exato do arquivo (cole direto no dialogo de upload)"
+        print -r -- "  wp -l [alvo]      Copia caminho Linux absoluto (/home/...)"
+        print -r -- "  wp -o [alvo]      Copia e tambem abre no Windows Explorer"
+        print -r -- "  wp -p [alvo]      Imprime somente o caminho puro (para scripts/pipes)"
+        return 0
+        ;;
+      -l|--linux) mode="linux"; shift ;;
+      -o|--open) open_exp=1; shift ;;
+      -p|--plain) plain=1; shift ;;
+      *) target="$1"; shift ;;
+    esac
+  done
+
+  local abs_target="${target:A}"
+  local out_path=""
+  if [[ "$mode" == "linux" ]]; then
+    out_path="$abs_target"
+  elif command -v wslpath >/dev/null 2>&1; then
+    out_path=$(wslpath -w "$abs_target" 2>/dev/null) || {
+      print -P "%F{${_NAVE_C[err]:-203}}Caminho invalido: ${target}%f"
+      return 1
+    }
+  else
+    out_path="$abs_target"
+  fi
+
+  printf '%s' "$out_path" | clip
+  if (( plain )) || [[ ! -t 1 ]]; then
+    print -r -- "$out_path"
+  else
+    print -rnP "%F{${_NAVE_C[ok]:-48}}✓ Copiado:%f "
+    print -r -- "$out_path"
+  fi
+
+  if (( open_exp )) && [[ "$mode" == "win" ]] && command -v explorer.exe >/dev/null 2>&1; then
+    if [[ -f "$abs_target" ]]; then
+      (explorer.exe "/select,${out_path}" >/dev/null 2>&1 &)
+    else
+      (explorer.exe "$out_path" >/dev/null 2>&1 &)
+    fi
+  fi
+}
+unalias wp 2>/dev/null
+function wp { winpath "$@"; }
+
 function winip {
   local wsl_ip host_ip
   wsl_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
@@ -1534,6 +1592,7 @@ function nave-help {
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}dks / dkl / dksh%f       Containers, logs fuzzy e shell fuzzy"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}ports / killport [p]%f   Lista portas abertas e mata porta (interativo c/ fzf)"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}clip / paste / winopen%f Clipboard Windows e abrir no Explorer"
+  print -P "%F{${c_frm}}│%f   %F{${c_ok}}wp / winpath [alvo]%f    Copia caminho Explorer (\\\\wsl.localhost\\...) p/ clipboard"
   print -P "%F{${c_frm}}│%f   %F{${c_ok}}notify <cmd> / mon%f     Toast ao terminar comando / monitor btop"
   print -P "%F{${c_dir}}╰───────────────────────────────────────────────────────────%f"
 }

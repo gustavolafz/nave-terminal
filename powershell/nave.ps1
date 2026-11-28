@@ -880,6 +880,13 @@ function killport {
 
 function mkcd { param([Parameter(Mandatory=$true)][string]$Path) New-Item -ItemType Directory -Path $Path -Force | Out-Null; Set-Location $Path }
 function which { param([Parameter(Mandatory=$true)][string]$Name) (Get-Command $Name -ErrorAction SilentlyContinue).Source }
+function winpath {
+    param([string]$Target = ".")
+    $resolved = try { (Resolve-Path $Target -ErrorAction Stop).Path } catch { [System.IO.Path]::GetFullPath($Target) }
+    Set-Clipboard -Value $resolved
+    Write-Host ((_Nave-Fg $script:NaveC.ok "$($script:CH_CHK) Copiado: ") + $resolved)
+}
+Set-Alias -Name wp -Value winpath -Scope Global -ErrorAction SilentlyContinue
 
 function nave-welcome {
     param([string]$Mode)
