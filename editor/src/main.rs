@@ -141,6 +141,7 @@ struct App {
     term_sync_needed: bool,
     mode: Mode,
     clipboard: String,
+    clipboard_linewise: bool,
     status_msg: Option<(String, Instant)>,
     layout: LayoutInfo,
     last_computed: ComputedLayout,
@@ -234,6 +235,7 @@ impl App {
             term_sync_needed: false,
             mode: Mode::Edit,
             clipboard: String::new(),
+            clipboard_linewise: false,
             status_msg: None,
             layout: LayoutInfo::default(),
             last_computed: ComputedLayout::default(),
@@ -1121,6 +1123,7 @@ impl App {
             Some(sol) => {
                 let lines = sol.lines().count();
                 self.clipboard = sol.clone();
+                self.clipboard_linewise = false;
                 copy_to_system_clipboard(&sol);
                 self.set_status(format!(
                     "✓ Solution limpa copiada p/ clipboard ({} linhas · pronto p/ LeetCode)",
@@ -1701,6 +1704,22 @@ impl App {
         }
     }
 
+    fn paste_in_editor(&mut self, text: &str) {
+        if text.is_empty() || self.active_is_md_preview() {
+            return;
+        }
+        let norm = text.replace("\r\n", "\n");
+        let clip_norm = self.clipboard.replace("\r\n", "\n");
+        let is_linewise = self.clipboard_linewise
+            && !self.doc().has_any_selection()
+            && (norm == clip_norm || norm.strip_suffix('\n') == Some(clip_norm.as_str()));
+        if is_linewise {
+            self.doc_mut().paste_lines_below(&norm);
+        } else {
+            self.doc_mut().paste(&norm);
+        }
+    }
+
     fn handle_paste(&mut self, text: &str) {
         if matches!(self.mode, Mode::Edit) && self.term_open && self.term_focused {
             if let Some(ref mut t) = self.term_panel {
@@ -1709,7 +1728,7 @@ impl App {
             }
         }
         match &mut self.mode {
-            Mode::Edit => self.doc_mut().paste(text),
+            Mode::Edit => self.paste_in_editor(text),
             Mode::Find => {
                 let clean = text.replace('\n', " ");
                 self.doc_mut().search.query.push_str(&clean);
@@ -3268,6 +3287,7 @@ impl App {
                     return;
                 }
                 KeyCode::Char('c') => {
+                    let linewise = !self.active_is_md_preview() && !self.doc().has_any_selection();
                     let txt = if self.active_is_md_preview() {
                         let d = self.doc();
                         d.rope.slice(0, d.rope.len_bytes())
@@ -3276,8 +3296,13 @@ impl App {
                     };
                     if !txt.is_empty() {
                         self.clipboard = txt.clone();
+                        self.clipboard_linewise = linewise;
                         copy_to_system_clipboard(&txt);
-                        self.set_status(format!("Copiado ({} chars)", txt.chars().count()));
+                        if linewise {
+                            self.set_status(format!("Linha copiada ({} chars)", txt.chars().count()));
+                        } else {
+                            self.set_status(format!("Copiado ({} chars)", txt.chars().count()));
+                        }
                     }
                     return;
                 }
@@ -3285,11 +3310,17 @@ impl App {
                     if self.active_is_md_preview() {
                         return;
                     }
+                    let linewise = !self.doc().has_any_selection();
                     let txt = self.doc_mut().cut_text();
                     if !txt.is_empty() {
                         self.clipboard = txt.clone();
+                        self.clipboard_linewise = linewise;
                         copy_to_system_clipboard(&txt);
-                        self.set_status(format!("Recortado ({} chars)", txt.chars().count()));
+                        if linewise {
+                            self.set_status(format!("Linha recortada ({} chars)", txt.chars().count()));
+                        } else {
+                            self.set_status(format!("Recortado ({} chars)", txt.chars().count()));
+                        }
                     }
                     return;
                 }
@@ -3298,9 +3329,7 @@ impl App {
                         return;
                     }
                     let txt = paste_from_system_clipboard().unwrap_or_else(|| self.clipboard.clone());
-                    if !txt.is_empty() {
-                        self.doc_mut().paste(&txt);
-                    }
+                    self.paste_in_editor(&txt);
                     return;
                 }
                 KeyCode::Char('/') => {

@@ -945,6 +945,67 @@ impl Document {
         });
     }
 
+    pub fn has_any_selection(&self) -> bool {
+        self.cursors.iter().any(|c| !c.is_empty())
+    }
+
+    /// VS Code-style linewise paste (after Ctrl+C / Ctrl+X with no selection):
+    /// clones the line cleanly right BELOW the current line (instead of sandwiching mid-line!),
+    /// or fills cleanly in-place when the current line is blank/whitespace-only.
+    pub fn paste_lines_below(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let clean = text.strip_suffix('\n').unwrap_or(text);
+        let single_line = !clean.contains('\n');
+        self.record_tx(None, |doc| {
+            let mut new_cursors = doc.cursors.clone();
+            for i in (0..doc.cursors.len()).rev() {
+                let (s, e) = doc.cursors[i].range();
+                if s < e {
+                    // Explicit selection present -> replace selection normally
+                    doc.rope.remove(s, e);
+                    doc.rope.insert(s, clean);
+                    shift_tail(&mut new_cursors[(i + 1)..], clean.len() as isize - (e - s) as isize);
+                    new_cursors[i] = Selection::caret(s + clean.len());
+                    continue;
+                }
+                let (row, col) = doc.rope.byte_to_line_col(s);
+                let line_start = doc.rope.line_start_byte(row);
+                let line_end = doc.rope.line_end_byte(row);
+                let line_txt = doc.rope.line(row);
+
+                if line_txt.trim().is_empty() {
+                    // Blank / whitespace-only line -> place directly on this line (no extra blank line)
+                    if line_start < line_end {
+                        doc.rope.remove(line_start, line_end);
+                    }
+                    doc.rope.insert(line_start, clean);
+                    let delta = clean.len() as isize - (line_end - line_start) as isize;
+                    shift_tail(&mut new_cursors[(i + 1)..], delta);
+                    new_cursors[i] = Selection::caret(line_start + clean.len());
+                } else {
+                    // Non-empty line -> insert full line cleanly BELOW current line and move cursor there
+                    let ins = format!("\n{}", clean);
+                    doc.rope.insert(line_end, &ins);
+                    shift_tail(&mut new_cursors[(i + 1)..], ins.len() as isize);
+                    let caret_pos = if single_line {
+                        let byte_off = clean
+                            .char_indices()
+                            .nth(col)
+                            .map(|(bi, _)| bi)
+                            .unwrap_or(clean.len());
+                        line_end + 1 + byte_off
+                    } else {
+                        line_end + ins.len()
+                    };
+                    new_cursors[i] = Selection::caret(caret_pos);
+                }
+            }
+            doc.cursors = new_cursors;
+        });
+    }
+
     pub fn backspace(&mut self, word: bool) {
         let coalesce = if word { None } else { Some(b'b') };
         let auto_close = self.auto_close;
@@ -1932,5 +1993,40 @@ mod tests {
         assert_eq!(doc.rope.line(0), "");
         assert_eq!(doc.rope.line(1), "        int a;");
         assert_eq!(doc.primary_line_col(), (1, 8));
+    }
+
+    #[test]
+    fn linewise_copy_and_paste_clones_line_below_without_sandwich() {
+        let mut doc = Document::new_empty();
+        doc.rope = Rope::from_str("    vector<int> dp(1001, -INF);\n");
+        // Cursor mid-line right inside `int` (`    vector<in|t> dp(1001, -INF);`, col 13)
+        doc.cursors = vec![Selection::caret(13)];
+        assert!(!doc.has_any_selection());
+        let copied = doc.copy_text();
+        assert_eq!(copied, "    vector<int> dp(1001, -INF);");
+
+        // 1st Ctrl+V -> clones exact line right below (NO sandwich!), cursor moves to (1, 13)
+        doc.paste_lines_below(&copied);
+        assert_eq!(doc.rope.line(0), "    vector<int> dp(1001, -INF);");
+        assert_eq!(doc.rope.line(1), "    vector<int> dp(1001, -INF);");
+        assert_eq!(doc.primary_line_col(), (1, 13));
+
+        // 2nd Ctrl+V -> clones a 3rd identical line right below at (2, 13)
+        doc.paste_lines_below(&copied);
+        assert_eq!(doc.rope.line(2), "    vector<int> dp(1001, -INF);");
+        assert_eq!(doc.primary_line_col(), (2, 13));
+
+        // Undo reverts cleanly
+        assert!(doc.undo());
+        assert_eq!(doc.rope.line(1), "    vector<int> dp(1001, -INF);");
+        assert_eq!(doc.rope.line(2), "");
+
+        // Pasting onto a blank/indented-empty line fills that line without leaving a blank line above
+        doc.rope = Rope::from_str("first\n    \nlast\n");
+        doc.cursors = vec![Selection::caret(10)]; // end of "    " on row 1
+        doc.paste_lines_below(&copied);
+        assert_eq!(doc.rope.line(0), "first");
+        assert_eq!(doc.rope.line(1), "    vector<int> dp(1001, -INF);");
+        assert_eq!(doc.rope.line(2), "last");
     }
 }
