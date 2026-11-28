@@ -2079,7 +2079,7 @@ fn render_pane(
                     if is_cur_line {
                         let s = format!(" {:>width$} ", doc_row + 1, width = num_digits);
                         emit_g(out, &mut g_col, &s, pal.active_line_num, true);
-                    } else if cfg.relative_numbers {
+                    } else if cfg.relative_numbers && p.is_focused {
                         let dist = doc_row.abs_diff(primary_row);
                         let s = format!(" {:>width$} ", dist, width = num_digits);
                         emit_g(out, &mut g_col, &s, pal.line_num, false);
@@ -2855,5 +2855,35 @@ mod tests {
         // Explicit horizontal follow (e.g. typing or Left/Right) brings col 0 cleanly back into view
         ensure_cursor_visible(&mut doc, 80, 20, &cfg, true, true);
         assert_eq!(doc.scroll_col, 0);
+    }
+
+    #[test]
+    fn unfocused_pane_uses_absolute_line_numbers_starting_at_one() {
+        let pal = &crate::palette::PALETTES[0];
+        let mut cfg = EditorConfig::default();
+        cfg.relative_numbers = true;
+        let mut doc = Document::new_empty();
+        doc.rope = crate::rope::Rope::from_str("5 1\nP\nP\nH\n");
+        let p = PaneRenderInput {
+            pane_id: 1,
+            group_num: 2,
+            rect: Rect { x: 0, y: 0, w: 30, h: 8 },
+            is_focused: false, // unfocused split pane with saved cursor at row 0 (line 1)
+            doc_id: 1,
+            tabs: vec![TabBadge { name: "in.txt".into(), dirty: false, active: true, md_preview: false }],
+            scroll_row: 0,
+            scroll_col: 0,
+            cursors: vec![Selection::caret(0)],
+            primary: 0,
+            md_preview: false,
+        };
+        let mut out = String::new();
+        render_pane(&mut out, &mut doc, &p, true, false, false, &[], None, &HashMap::new(), pal, &cfg);
+        // Line 1 (row 0) in unfocused pane must display `1`, NEVER `0`!
+        let r2 = out.find("\x1b[2;1H").expect("row 2 rendered");
+        let r3 = out.find("\x1b[3;1H").expect("row 3 rendered");
+        let row2 = &out[r2..r3];
+        assert!(row2.contains("   1 "), "unfocused pane line 1 must render '1', got: {:?}", row2);
+        assert!(!row2.contains("   0 "), "unfocused pane must never render '0' for line 1");
     }
 }
