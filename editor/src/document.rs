@@ -839,13 +839,21 @@ impl Document {
                 let prev_non_ws = before.trim_end().chars().last();
                 let next_non_ws = after.trim_start().chars().next();
 
-                let extra = matches!(prev_non_ws, Some('{' | '[' | '(' | ':'));
-                let split_pair = matches!(
-                    (prev_non_ws, next_non_ws),
-                    (Some('{'), Some('}')) | (Some('['), Some(']')) | (Some('('), Some(')'))
-                );
+                let in_leading_ws_before_code =
+                    before.trim().is_empty() && !after.trim().is_empty();
+                let extra = !in_leading_ws_before_code
+                    && matches!(prev_non_ws, Some('{' | '[' | '(' | ':'));
+                let split_pair = !in_leading_ws_before_code
+                    && matches!(
+                        (prev_non_ws, next_non_ws),
+                        (Some('{'), Some('}')) | (Some('['), Some(']')) | (Some('('), Some(')'))
+                    );
 
-                let ins_indent = if extra {
+                let ins_indent = if in_leading_ws_before_code {
+                    // `after` already carries the remaining indentation before the code,
+                    // so only re-insert `before` (empty at col 0) — never double `y` to `2y`!
+                    before.clone()
+                } else if extra {
                     format!("{}{}", lead_ws, " ".repeat(indent_w))
                 } else {
                     lead_ws.clone()
@@ -864,12 +872,16 @@ impl Document {
 
                 // If pressing Enter on a whitespace-only line (e.g. 2nd Enter), leave the
                 // skipped blank line cleanly empty while keeping indentation on the new line.
+                // Likewise, pressing Enter inside leading spaces before code keeps the blank
+                // line above clean and preserves the exact original indentation `y` below.
                 let (rem_s, rem_e) = if s == e
                     && before.trim().is_empty()
                     && after.trim().is_empty()
                     && line_start < line_end
                 {
                     (line_start, line_end)
+                } else if s == e && in_leading_ws_before_code && line_start < s {
+                    (line_start, s)
                 } else {
                     (s, e)
                 };
@@ -1890,5 +1902,35 @@ mod tests {
         assert_eq!(doc.rope.line(1), "");
         assert_eq!(doc.rope.line(2), "            ");
         assert_eq!(doc.primary_line_col(), (2, 12));
+    }
+
+    #[test]
+    fn enter_at_col0_or_inside_indent_never_doubles_indentation() {
+        let mut doc = Document::new_empty();
+        doc.tab_width = 4;
+
+        // 1) Cursor at col 0 of an 8-space indented line -> pushes line down keeping EXACT 8 spaces (not 16!)
+        doc.rope = Rope::from_str("        int a;\n");
+        doc.cursors = vec![Selection::caret(0)];
+        doc.insert_newline();
+        assert_eq!(doc.rope.line(0), "");
+        assert_eq!(doc.rope.line(1), "        int a;");
+        assert_eq!(doc.primary_line_col(), (1, 0));
+
+        // 2) Cursor at col 4 (mid-indent) -> blank line above clean, exact 8 spaces preserved below!
+        doc.rope = Rope::from_str("        int a;\n");
+        doc.cursors = vec![Selection::caret(4)];
+        doc.insert_newline();
+        assert_eq!(doc.rope.line(0), "");
+        assert_eq!(doc.rope.line(1), "        int a;");
+        assert_eq!(doc.primary_line_col(), (1, 4));
+
+        // 3) Cursor at col 8 (right before code) -> blank line above clean, exact 8 spaces preserved below!
+        doc.rope = Rope::from_str("        int a;\n");
+        doc.cursors = vec![Selection::caret(8)];
+        doc.insert_newline();
+        assert_eq!(doc.rope.line(0), "");
+        assert_eq!(doc.rope.line(1), "        int a;");
+        assert_eq!(doc.primary_line_col(), (1, 8));
     }
 }

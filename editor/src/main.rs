@@ -3519,12 +3519,14 @@ impl App {
                 }
             }
             KeyCode::Tab => {
+                self.arm_trail();
                 if !self.accept_completion() && !self.try_expand_exact_snippet_on_tab() {
                     self.doc_mut().indent(false);
                 }
             }
             KeyCode::BackTab => {
                 self.clear_completion();
+                self.arm_trail();
                 self.doc_mut().indent(true);
             }
             KeyCode::Backspace => {
